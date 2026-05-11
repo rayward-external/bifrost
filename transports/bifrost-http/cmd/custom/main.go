@@ -1,7 +1,7 @@
-// Package main is the Rayward production entry point for Bifrost. It wraps the
+// Package main is the custom production entry point for Bifrost. It wraps the
 // standard bifrost-http server with the embedded admin UI.
 //
-// This binary is built by Dockerfile.rayward using a go.work workspace that
+// This binary is built by Dockerfile.custom using a go.work workspace that
 // resolves local module dependencies (core, framework, plugins, transports).
 package main
 
@@ -32,7 +32,7 @@ var server *bifrostServer.BifrostHTTPServer
 
 func init() {
 	if Version == "" {
-		Version = "v1.0.0-rayward"
+		Version = "v1.0.0-custom"
 	}
 	defaultHost := os.Getenv("BIFROST_HOST")
 	if defaultHost == "" {

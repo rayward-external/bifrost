@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"flag"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -17,9 +18,9 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
+	uiassets "github.com/maximhq/bifrost/transports/bifrost-http/internal/uiassets"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bifrostServer "github.com/maximhq/bifrost/transports/bifrost-http/server"
-	uiassets "github.com/maximhq/bifrost/transports/bifrost-http/ui"
 )
 
 var Version string
@@ -39,7 +40,11 @@ func init() {
 	if defaultLogLevel == "" {
 		defaultLogLevel = bifrostServer.DefaultLogLevel
 	}
-	server = bifrostServer.NewBifrostHTTPServer(Version, uiassets.Content)
+	uiContent, err := fs.Sub(uiassets.Content, "ui")
+	if err != nil {
+		panic(err)
+	}
+	server = bifrostServer.NewBifrostHTTPServer(Version, uiContent)
 	flag.StringVar(&server.Port, "port", bifrostServer.DefaultPort, "Port to run the server on")
 	flag.StringVar(&server.Host, "host", defaultHost, "Host to bind the server to")
 	flag.StringVar(&server.AppDir, "app-dir", bifrostServer.DefaultAppDir, "Application data directory")

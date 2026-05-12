@@ -74,6 +74,7 @@ jobs:
 
       - name: "Filter fork-inapplicable findings"
         run: |
+          sudo chown "$(id -u):$(id -g)" results.sarif
           python3 - <<'PY'
           import json
           from pathlib import Path

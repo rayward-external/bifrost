@@ -63,7 +63,7 @@ for mcp_dir in examples/mcps/*/; do
       fi
     elif [ -f "$mcp_dir/package.json" ]; then
       echo "  Building $mcp_name (TypeScript)..."
-      if cd "$mcp_dir" && npm install --silent && npm run build && cd - > /dev/null; then
+      if cd "$mcp_dir" && npm ci --silent && npm run build && cd - > /dev/null; then
         echo -e "  ${GREEN}✓ $mcp_name${NC}"
       else
         echo -e "  ${RED}✗ $mcp_name${NC}"
@@ -91,30 +91,13 @@ cd ..
 echo ""
 echo "🛡️  4/5 - Running Governance Tests..."
 echo "-----------------------------------"
-if [ -d "tests/governance" ]; then
+if [ -f "tests/governance/go.mod" ]; then
   cd tests/governance
-  
-  # Check if virtual environment exists, create if not
-  if [ ! -d "venv" ]; then
-    echo "Creating Python virtual environment..."
-    python3 -m venv venv
-  fi
-  
-  # Activate virtual environment
-  source venv/bin/activate
-  
-  # Install dependencies
-  echo "Installing Python dependencies..."
-  pip install -q -r requirements.txt
-  
-  # Run tests
-  if pytest -v; then
+  if GOWORK=off go test -v ./...; then
     report_result "Governance Tests" 0
   else
     report_result "Governance Tests" 1
   fi
-  
-  deactivate
   cd ../..
 else
   echo -e "${YELLOW}⚠️  Governance tests directory not found, skipping...${NC}"
@@ -124,31 +107,19 @@ fi
 echo ""
 echo "🔗 5/5 - Running Integration Tests..."
 echo "-----------------------------------"
-if [ -d "tests/integrations" ]; then
-  cd tests/integrations
-  
-  # Check if virtual environment exists, create if not
-  if [ ! -d "venv" ]; then
-    echo "Creating Python virtual environment..."
-    python3 -m venv venv
-  fi
-  
-  # Activate virtual environment
-  source venv/bin/activate
-  
-  # Install dependencies
-  echo "Installing Python dependencies..."
-  pip install -q -r requirements.txt
-  
-  # Run tests
-  if python run_all_tests.py; then
+if [ -d "tests/integrations/python" ]; then
+  cd tests/integrations/python
+
+  if ! command -v uv >/dev/null 2>&1; then
+    echo -e "${RED}❌ uv is required for Python integration tests${NC}"
+    report_result "Integration Tests" 1
+  elif uv sync --frozen --quiet && uv run python run_all_tests.py; then
     report_result "Integration Tests" 0
   else
     report_result "Integration Tests" 1
   fi
-  
-  deactivate
-  cd ../..
+
+  cd ../../..
 else
   echo -e "${YELLOW}⚠️  Integration tests directory not found, skipping...${NC}"
 fi
@@ -169,4 +140,3 @@ else
   echo -e "${GREEN}✅ All tests passed successfully!${NC}"
   exit 0
 fi
-

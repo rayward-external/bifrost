@@ -9,6 +9,11 @@ set -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+if [ -d "$API_DIR/node_modules/.bin" ]; then
+    export PATH="$API_DIR/node_modules/.bin:$PATH"
+    export NODE_PATH="$API_DIR/node_modules${NODE_PATH:+:$NODE_PATH}"
+fi
+
 # Configuration
 COLLECTION="$API_DIR/collections/bifrost-api-management.postman_collection.json"
 REPORT_DIR="$API_DIR/newman-reports/api-management"
@@ -28,7 +33,7 @@ echo ""
 # Check if Newman is installed
 if ! command -v newman &> /dev/null; then
     echo -e "${RED}Error: Newman is not installed${NC}"
-    echo "Install it with: npm install -g newman newman-reporter-htmlextra"
+    echo "Run npm ci in tests/e2e/api before starting this runner"
     exit 1
 fi
 
@@ -132,22 +137,13 @@ if { [ "${GITHUB_ACTIONS:-}" = "true" ] || [ "${CI:-0}" = "1" ]; } && [[ "$REPOR
     REPORTERS="${REPORTERS},htmlextra"
 fi
 
-# Make globally-installed npm packages (e.g. newman-reporter-htmlextra from
-# `npm install -g`) visible to Node's module resolver. Node 20+ no longer falls
-# back to the global npm prefix automatically, so without this NODE_PATH addition
-# the require.resolve check below fails even when the package is installed.
-if NPM_GLOBAL_ROOT="$(npm root -g 2>/dev/null)" && [ -n "$NPM_GLOBAL_ROOT" ]; then
-    export NODE_PATH="$NPM_GLOBAL_ROOT${NODE_PATH:+:$NODE_PATH}"
-fi
-
 # Validate optional reporters are resolvable before invoking newman so we fail
 # fast with a clear message instead of a cryptic mid-run newman error. node's
-# require.resolve uses the same module-resolution path newman uses (including
-# the NODE_PATH set above for the global npm root and below for newman-reporter-dbverify).
+# require.resolve uses the same module-resolution path newman uses.
 if [[ "$REPORTERS" == *"htmlextra"* ]]; then
     if ! node -e 'require.resolve("newman-reporter-htmlextra")' >/dev/null 2>&1; then
         echo -e "${RED}Error: newman-reporter-htmlextra is not installed${NC}"
-        echo "Install it with: npm install -g newman-reporter-htmlextra"
+        echo "Run npm ci in tests/e2e/api before starting this runner"
         exit 1
     fi
 fi
@@ -251,11 +247,9 @@ if [ -n "$DB_VERIFY" ]; then
     # Install dependencies for the dbverify reporter if not already present
     if [ ! -d "$API_DIR/node_modules" ]; then
         echo "Installing DB verify reporter dependencies..."
-        (cd "$API_DIR" && npm install --silent)
+        (cd "$API_DIR" && npm ci --silent)
     fi
-    # Newman (global) resolves reporters via Node's module search. Prepend the
-    # local node_modules so it can find newman-reporter-dbverify without a
-    # global install.
+    # Prepend local node_modules so Newman can find newman-reporter-dbverify.
     export NODE_PATH="$API_DIR/node_modules${NODE_PATH:+:$NODE_PATH}"
 fi
 

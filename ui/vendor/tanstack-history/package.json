@@ -1,0 +1,32 @@
+{
+  "name": "@bifrost/tanstack-history",
+  "version": "0.0.0-bifrost.1",
+  "description": "Vendored TanStack history implementation for Bifrost UI",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "main": "dist/cjs/index.cjs",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.cts",
+        "default": "./dist/cjs/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "bifrost": {
+    "source": "https://github.com/TanStack/router/tree/a0a6aa8b8ad801f0a364b6c27722d5a929c14e70/packages/history",
+    "reason": "Avoid registry package @tanstack/history while GHSA-rmmr-r34h-pfm5 has no patched npm version."
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}

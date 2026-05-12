@@ -14,6 +14,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 
 CONFIGS_DIR="$REPO_ROOT/.github/workflows/configs"
 COMPOSE_FILE="$CONFIGS_DIR/docker-compose.yml"
+E2E_API_DIR="$REPO_ROOT/tests/e2e/api"
 SOURCE_CONFIG="$REPO_ROOT/tests/config.json"
 RUNNER="$REPO_ROOT/tests/e2e/api/runners/run-newman-api-tests.sh"
 BIN_DIR="$REPO_ROOT/tmp"
@@ -45,8 +46,16 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "❌ jq is required" >&2
   exit 1
 fi
+
+if [ ! -x "$E2E_API_DIR/node_modules/.bin/newman" ]; then
+  echo "📦 Installing API test dependencies..."
+  (cd "$E2E_API_DIR" && npm ci --silent)
+fi
+export PATH="$E2E_API_DIR/node_modules/.bin:$PATH"
+export NODE_PATH="$E2E_API_DIR/node_modules${NODE_PATH:+:$NODE_PATH}"
+
 if ! command -v newman >/dev/null 2>&1; then
-  echo "❌ newman is required (npm install -g newman newman-reporter-htmlextra)" >&2
+  echo "❌ newman is required; run npm ci in tests/e2e/api" >&2
   exit 1
 fi
 

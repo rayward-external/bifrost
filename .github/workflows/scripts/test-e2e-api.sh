@@ -121,8 +121,15 @@ echo "🧪 Running E2E API tests (Newman)"
 echo "   BIFROST_BASE_URL=$BIFROST_BASE_URL"
 echo ""
 
+if [ ! -x "$E2E_API_DIR/node_modules/.bin/newman" ]; then
+  echo "📦 Installing API test dependencies..."
+  (cd "$E2E_API_DIR" && npm ci --silent)
+fi
+export PATH="$E2E_API_DIR/node_modules/.bin:$PATH"
+export NODE_PATH="$E2E_API_DIR/node_modules${NODE_PATH:+:$NODE_PATH}"
+
 if ! command -v newman &>/dev/null; then
-  echo "❌ Newman is not installed. Install with: npm install -g newman" >&2
+  echo "❌ Newman is not installed; run npm ci in tests/e2e/api" >&2
   exit 1
 fi
 

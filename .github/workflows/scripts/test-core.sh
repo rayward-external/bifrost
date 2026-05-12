@@ -23,7 +23,7 @@ for mcp_dir in examples/mcps/*/; do
     elif [ -f "$mcp_dir/package.json" ]; then
       echo "  Building $mcp_name (TypeScript)..."
       pushd "$mcp_dir" > /dev/null
-      npm install --silent && npm run build
+      npm ci --silent && npm run build
       popd > /dev/null
     fi
   fi

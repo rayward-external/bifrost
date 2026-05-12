@@ -53,7 +53,6 @@ package main
 
 import (
 	"context"
-	"embed"
 	"flag"
 	"fmt"
 	"os"
@@ -67,10 +66,8 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bifrostServer "github.com/maximhq/bifrost/transports/bifrost-http/server"
+	uiassets "github.com/maximhq/bifrost/transports/bifrost-http/ui"
 )
-
-//go:embed all:ui
-var uiContent embed.FS
 
 var Version string
 
@@ -100,7 +97,7 @@ func init() {
 		defaultLogLevel = bifrostServer.DefaultLogLevel
 	}
 	// Initializing server
-	server = bifrostServer.NewBifrostHTTPServer(Version, uiContent)
+	server = bifrostServer.NewBifrostHTTPServer(Version, uiassets.Content)
 	// Updating server properties from flags
 	flag.StringVar(&server.Port, "port", bifrostServer.DefaultPort, "Port to run the server on")
 	flag.StringVar(&server.Host, "host", defaultHost, "Host to bind the server to (default: localhost, override with BIFROST_HOST env var)")

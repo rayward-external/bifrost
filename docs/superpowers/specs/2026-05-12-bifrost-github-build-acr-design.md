@@ -35,7 +35,7 @@ Use a two-repository event-driven workflow:
 1. `rayward-external/bifrost` listens for `push` to `main`
 2. It sends a `repository_dispatch` event to `rayward-internal/llm-gateway-infra`
 3. The private repo checks out the exact Bifrost commit SHA from the dispatch payload
-4. The private repo builds the image in GitHub Actions from `transports/Dockerfile`
+4. The private repo builds the image in GitHub Actions from `transports/Dockerfile.custom`
 5. The private repo authenticates to Azure using GitHub Actions OIDC
 6. The private repo pushes the image to ACR
 7. The existing ACR webhook deploys the pushed digest to the live Container App
@@ -81,7 +81,7 @@ Rejected for this phase.
 - Repository: `rayward-external/bifrost`
 - Existing upstream GitHub workflows are present under `.github/workflows/`
 - No Rayward-specific image publish workflow exists yet
-- Candidate image build file is `transports/Dockerfile`
+- Candidate image build file is `transports/Dockerfile.custom`
 
 ### Private repo
 
@@ -100,7 +100,7 @@ merge to rayward-external/bifrost main
   -> repository_dispatch to rayward-internal/llm-gateway-infra
   -> private GitHub Actions workflow
   -> checkout exact bifrost SHA
-  -> docker build using transports/Dockerfile
+  -> docker build using transports/Dockerfile.custom
   -> azure/login via OIDC
   -> docker push to ACR as bifrost-rayward:<short-sha>
   -> ACR webhook fires
@@ -202,10 +202,10 @@ The build must use the exact merged commit SHA instead of rebuilding `main` loos
 Build source:
 
 - Repository: `rayward-external/bifrost`
-- Dockerfile: `transports/Dockerfile`
+- Dockerfile: `transports/Dockerfile.custom`
 - Build context: repository root unless Dockerfile requirements force a narrower explicit context
 
-The implementation must verify the correct context because the Dockerfile copies both `ui/` and `transports/` content.
+The implementation must verify the correct context because `transports/Dockerfile.custom` may depend on files outside `transports/`, and the workflow should use the narrowest build context that still satisfies that file's `COPY` requirements.
 
 ### Tagging strategy
 

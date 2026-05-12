@@ -149,7 +149,7 @@ cleanup_ports() {
 install_vegeta() {
   if ! command -v vegeta &> /dev/null; then
     log_info "Installing Vegeta load testing tool..."
-    go install github.com/tsenart/vegeta/v12@latest
+    go install github.com/tsenart/vegeta/v12@v12.12.0
     export PATH="$PATH:$(go env GOPATH)/bin"
     if ! command -v vegeta &> /dev/null; then
       log_error "Failed to install Vegeta"

@@ -4,8 +4,19 @@
   "private": true,
   "description": "E2E API test dependencies",
   "dependencies": {
-    "pg": "^8.13.0",
     "better-sqlite3": "^11.0.0",
-    "newman-reporter-dbverify": "file:./newman-reporter-dbverify"
+    "newman": "6.2.2",
+    "newman-reporter-dbverify": "file:./newman-reporter-dbverify",
+    "newman-reporter-htmlextra": "1.23.1",
+    "pg": "^8.13.0"
+  },
+  "overrides": {
+    "flatted": "3.4.2",
+    "handlebars": "4.7.9",
+    "jose": "4.15.9",
+    "lodash": "4.18.1",
+    "node-forge": "1.4.0",
+    "qs": "6.15.1",
+    "underscore": "1.13.8"
   }
 }

@@ -134,22 +134,8 @@ if command -v uv >/dev/null 2>&1; then
     TEST_FAILED=1
   fi
 else
-  echo "⚠️  uv not found, trying pip..."
-  
-  # Create virtual environment if needed
-  if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
-  fi
-  
-  source .venv/bin/activate
-  pip install -q -e .
-  
-  echo ""
-  echo "🏃 Running Python tests..."
-  if ! pytest -v --tb=short; then
-    echo "⚠️  Python tests failed"
-    TEST_FAILED=1
-  fi
+  echo "❌ uv is required for Python integration tests"
+  TEST_FAILED=1
 fi
 
 # Step 4: Run TypeScript integration tests

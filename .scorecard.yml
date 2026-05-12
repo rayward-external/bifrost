@@ -1,0 +1,13 @@
+annotations:
+  - checks:
+      - maintained
+    reasons:
+      - reason: not-applicable
+  - checks:
+      - code-review
+    reasons:
+      - reason: remediated
+  - checks:
+      - cii-best-practices
+    reasons:
+      - reason: not-applicable

@@ -257,7 +257,7 @@ echo ""
 echo "🧪 Running Python integration tests..."
 echo "="
 
-cd "$REPO_ROOT/tests/integrations"
+cd "$REPO_ROOT/tests/integrations/python"
 
 # Check if uv is available
 if command -v uv >/dev/null 2>&1; then
@@ -269,20 +269,8 @@ if command -v uv >/dev/null 2>&1; then
   TEST_EXIT_CODE=0
   uv run python run_all_tests.py --verbose || TEST_EXIT_CODE=$?
 else
-  echo "⚠️  uv not found, trying pip..."
-  
-  # Create virtual environment if needed
-  if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
-  fi
-  
-  source .venv/bin/activate
-  pip install -q -e .
-  
-  echo ""
-  echo "🏃 Running tests..."
-  TEST_EXIT_CODE=0
-  python run_all_tests.py --verbose || TEST_EXIT_CODE=$?
+  echo "❌ uv is required for Python integration tests"
+  TEST_EXIT_CODE=1
 fi
 
 echo ""
@@ -296,4 +284,3 @@ fi
 
 # Exit with test result code (cleanup trap will run)
 exit $TEST_EXIT_CODE
-

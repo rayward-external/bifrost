@@ -39,7 +39,7 @@ End-to-end API tests for the Bifrost API using Postman collections and [Newman](
 
 ## Prerequisites
 
-- [Newman](https://www.npmjs.com/package/newman): `npm install -g newman`
+- API test dependencies installed from this directory: `npm ci --ignore-scripts`
 - Bifrost server running (e.g. `http://localhost:8080`) with at least one provider configured (API keys, etc.)
 
 ## Test infrastructure setup

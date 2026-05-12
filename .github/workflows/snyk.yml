@@ -9,12 +9,14 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   snyk-open-source:
     name: Snyk Open Source (deps)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
@@ -61,7 +63,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Setup Go workspace
         run: make setup-workspace
@@ -88,6 +90,9 @@ jobs:
   snyk-code:
     name: Snyk Code (SAST)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
@@ -134,7 +139,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Setup Go workspace
         run: make setup-workspace

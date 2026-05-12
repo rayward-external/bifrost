@@ -6,7 +6,7 @@
 		"dev": "vite",
 		"build-enterprise": "vite build",
 		"build": "vite build && npm run copy-build",
-		"copy-build": "rm -rf ../transports/bifrost-http/ui && cp -r out ../transports/bifrost-http/ui",
+		"copy-build": "rm -rf ../transports/bifrost-http/internal/uiassets/ui && mkdir -p ../transports/bifrost-http/internal/uiassets && cp -r out ../transports/bifrost-http/internal/uiassets/ui",
 		"start": "vite preview",
 		"lint": "oxlint",
 		"format": "oxfmt",

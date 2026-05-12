@@ -34,8 +34,7 @@ private
 build/
 target/
 
-# Go workspaces (local only)
-go.work
+# Go workspace checksum (local only)
 go.work.sum
 
 # Generated schema copy (created by go generate)

@@ -381,9 +381,12 @@ func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 
 // TestSemanticCache_AllVectorStores_EmbeddingRequest tests embedding request caching across all vector stores
 func TestSemanticCache_AllVectorStores_EmbeddingRequest(t *testing.T) {
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("OPENAI_API_KEY not set (required for embedding generation)")
+	}
+
 	for _, tc := range getVectorStoreTestCases() {
 		t.Run(tc.Name, func(t *testing.T) {
-			skipIfNoAPIKey(t, tc.StoreType)
 			setup := NewTestSetupWithVectorStore(t, getDefaultTestConfig(), tc.StoreType)
 			defer setup.Cleanup()
 

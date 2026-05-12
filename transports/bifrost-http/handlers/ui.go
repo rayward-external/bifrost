@@ -49,11 +49,11 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 		cleanPath = basePath + "/index.txt"
 	}
 
-	// Remove leading slash and add ui prefix
+	// Remove leading slash. The embedded filesystem is rooted at the UI build directory.
 	if cleanPath == "/" {
-		cleanPath = "ui/index.html"
+		cleanPath = "index.html"
 	} else {
-		cleanPath = "ui" + cleanPath
+		cleanPath = strings.TrimPrefix(cleanPath, "/")
 	}
 
 	// Block hidden directories and files (any path segment starting with .)
@@ -99,13 +99,13 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 				cleanPath = indexPath
 			} else {
 				// If that fails, serve root index.html as fallback
-				data, err = h.uiContent.ReadFile("ui/index.html")
+				data, err = h.uiContent.ReadFile("index.html")
 				if err != nil {
 					ctx.SetStatusCode(fasthttp.StatusNotFound)
 					ctx.SetBodyString("404 - File not found")
 					return
 				}
-				cleanPath = "ui/index.html"
+				cleanPath = "index.html"
 			}
 		} else {
 			ctx.SetStatusCode(fasthttp.StatusNotFound)
@@ -123,7 +123,7 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 	ctx.SetContentType(contentType)
 
 	// Set cache headers for static assets
-	if strings.HasPrefix(cleanPath, "ui/assets/") {
+	if strings.HasPrefix(cleanPath, "assets/") {
 		ctx.Response.Header.Set("Cache-Control", "public, max-age=31536000, immutable")
 	} else if ext == ".html" {
 		ctx.Response.Header.Set("Cache-Control", "no-cache")

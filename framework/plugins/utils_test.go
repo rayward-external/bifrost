@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,14 +13,30 @@ import (
 
 const fakePluginBytes = "fake-plugin-binary-content"
 
+func withPluginDownloadTestServer(t *testing.T, handler http.Handler) string {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	previousClient := *pluginDownloadClient
+	pluginDownloadClient.Dial = func(addr string) (net.Conn, error) {
+		return net.Dial("tcp", server.Listener.Addr().String())
+	}
+
+	t.Cleanup(func() {
+		*pluginDownloadClient = previousClient
+		server.Close()
+	})
+
+	return "http://example.com"
+}
+
 func TestDownloadPlugin_DirectDownload(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	baseURL := withPluginDownloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(fakePluginBytes))
 	}))
-	defer server.Close()
 
-	path, err := DownloadPlugin(server.URL, ".so")
+	path, err := DownloadPlugin(baseURL+"/download", ".so")
 	require.NoError(t, err)
 	defer os.Remove(path)
 
@@ -29,20 +46,19 @@ func TestDownloadPlugin_DirectDownload(t *testing.T) {
 }
 
 func TestDownloadPlugin_FollowsRedirect(t *testing.T) {
-	// Final destination
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fakePluginBytes))
+	baseURL := withPluginDownloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/redirect":
+			http.Redirect(w, r, "http://example.com/final", http.StatusFound)
+		case "/final":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(fakePluginBytes))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
-	defer target.Close()
 
-	// Redirect server (simulates GitHub → S3)
-	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, target.URL, http.StatusFound)
-	}))
-	defer redirector.Close()
-
-	path, err := DownloadPlugin(redirector.URL, ".so")
+	path, err := DownloadPlugin(baseURL+"/redirect", ".so")
 	require.NoError(t, err)
 	defer os.Remove(path)
 
@@ -52,37 +68,32 @@ func TestDownloadPlugin_FollowsRedirect(t *testing.T) {
 }
 
 func TestDownloadPlugin_TooManyRedirects(t *testing.T) {
-	// Server that always redirects to itself
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, server.URL, http.StatusFound)
+	baseURL := withPluginDownloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://example.com/loop", http.StatusFound)
 	}))
-	defer server.Close()
 
-	_, err := DownloadPlugin(server.URL, ".so")
+	_, err := DownloadPlugin(baseURL+"/loop", ".so")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "too many redirects")
 }
 
 func TestDownloadPlugin_NonOKStatus(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	baseURL := withPluginDownloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	defer server.Close()
 
-	_, err := DownloadPlugin(server.URL, ".so")
+	_, err := DownloadPlugin(baseURL+"/missing", ".so")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "404")
 }
 
 func TestDownloadPlugin_FileExtensionPreserved(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	baseURL := withPluginDownloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(fakePluginBytes))
 	}))
-	defer server.Close()
 
-	path, err := DownloadPlugin(server.URL, ".so")
+	path, err := DownloadPlugin(baseURL+"/download", ".so")
 	require.NoError(t, err)
 	defer os.Remove(path)
 

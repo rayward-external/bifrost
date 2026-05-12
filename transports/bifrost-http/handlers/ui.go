@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"embed"
+	"io/fs"
 	"mime"
 	"path"
 	"path/filepath"
@@ -15,11 +15,11 @@ import (
 
 // UIHandler handles UI routes.
 type UIHandler struct {
-	uiContent embed.FS
+	uiContent fs.FS
 }
 
 // NewUIHandler creates a new UIHandler instance.
-func NewUIHandler(uiContent embed.FS) *UIHandler {
+func NewUIHandler(uiContent fs.FS) *UIHandler {
 	return &UIHandler{
 		uiContent: uiContent,
 	}
@@ -81,7 +81,7 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 	hasExtension := strings.Contains(filepath.Base(cleanPath), ".")
 
 	// Try to read the file from embedded filesystem
-	data, err := h.uiContent.ReadFile(cleanPath)
+	data, err := fs.ReadFile(h.uiContent, cleanPath)
 	if err != nil {
 
 		// If it's a static asset (has extension) and not found, return 404
@@ -94,12 +94,12 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 		// For routes without extensions (SPA routing), try {path}/index.html first
 		if !hasExtension {
 			indexPath := cleanPath + "/index.html"
-			data, err = h.uiContent.ReadFile(indexPath)
+			data, err = fs.ReadFile(h.uiContent, indexPath)
 			if err == nil {
 				cleanPath = indexPath
 			} else {
 				// If that fails, serve root index.html as fallback
-				data, err = h.uiContent.ReadFile("index.html")
+				data, err = fs.ReadFile(h.uiContent, "index.html")
 				if err != nil {
 					ctx.SetStatusCode(fasthttp.StatusNotFound)
 					ctx.SetBodyString("404 - File not found")

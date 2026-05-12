@@ -3,9 +3,9 @@ package server
 
 import (
 	"context"
-	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/signal"
@@ -110,7 +110,7 @@ type BifrostHTTPServer struct {
 	cancel context.CancelFunc
 
 	Version   string
-	UIContent embed.FS
+	UIContent fs.FS
 
 	Port   string
 	Host   string
@@ -148,7 +148,7 @@ func SetLogger(l schemas.Logger) {
 }
 
 // NewBifrostHTTPServer creates a new instance of BifrostHTTPServer.
-func NewBifrostHTTPServer(version string, uiContent embed.FS) *BifrostHTTPServer {
+func NewBifrostHTTPServer(version string, uiContent fs.FS) *BifrostHTTPServer {
 	return &BifrostHTTPServer{
 		Version:        version,
 		UIContent:      uiContent,

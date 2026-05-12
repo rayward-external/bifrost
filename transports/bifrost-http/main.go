@@ -55,6 +55,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -64,9 +65,9 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
+	uiassets "github.com/maximhq/bifrost/transports/bifrost-http/internal/uiassets"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bifrostServer "github.com/maximhq/bifrost/transports/bifrost-http/server"
-	uiassets "github.com/maximhq/bifrost/transports/bifrost-http/ui"
 )
 
 var Version string
@@ -96,8 +97,12 @@ func init() {
 	if defaultLogLevel == "" {
 		defaultLogLevel = bifrostServer.DefaultLogLevel
 	}
+	uiContent, err := fs.Sub(uiassets.Content, "ui")
+	if err != nil {
+		panic(fmt.Sprintf("failed to mount embedded UI assets: %v", err))
+	}
 	// Initializing server
-	server = bifrostServer.NewBifrostHTTPServer(Version, uiassets.Content)
+	server = bifrostServer.NewBifrostHTTPServer(Version, uiContent)
 	// Updating server properties from flags
 	flag.StringVar(&server.Port, "port", bifrostServer.DefaultPort, "Port to run the server on")
 	flag.StringVar(&server.Host, "host", defaultHost, "Host to bind the server to (default: localhost, override with BIFROST_HOST env var)")

@@ -3856,7 +3856,6 @@
                     "description": "Azure API version"
                   }
                 },
-                "required": ["endpoint", "api_version"],
                 "additionalProperties": false
               },
               "vertex_key_config": {

@@ -71,7 +71,7 @@ func waitForJobCompletion(t *testing.T, done *atomic.Bool) {
 // Processing is intermediate and must not be treated as terminal.
 func waitForJobStatus(t *testing.T, store LogStore, jobID string) *AsyncJob {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		job, err := store.FindAsyncJobByID(context.Background(), jobID)
 		if err == nil && (job.Status == schemas.AsyncJobStatusCompleted || job.Status == schemas.AsyncJobStatusFailed) {

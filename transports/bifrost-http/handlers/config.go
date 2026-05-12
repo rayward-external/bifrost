@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -38,6 +37,13 @@ var securityHeaders = []string{
 	"x-goog-api-key",
 	"x-bf-api-key",
 	"x-bf-vk",
+}
+
+func validatePricingURL(pricingURL string) error {
+	if pricingURL == modelcatalog.DefaultPricingURL {
+		return nil
+	}
+	return bifrost.ValidateExternalURL(pricingURL)
 }
 
 // ConfigManager is the interface for the config manager
@@ -229,23 +235,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Validating framework config
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
-		// Validate the pricing URL to prevent SSRF attacks
-		if err := bifrost.ValidateExternalURL(*payload.FrameworkConfig.PricingURL); err != nil {
+		if err := validatePricingURL(*payload.FrameworkConfig.PricingURL); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid pricing URL: %v", err))
-			return
-		}
-		// Checking the accessibility of the pricing URL (SSRF-safe: validates redirect targets)
-		pricingClient := bifrost.NewSSRFSafeClient(10 * time.Second)
-		resp, err := pricingClient.Get(*payload.FrameworkConfig.PricingURL)
-		if err != nil {
-			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			logger.Warn("failed to check the accessibility of the pricing URL: %v", resp.StatusCode)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", resp.StatusCode))
 			return
 		}
 	}
@@ -514,23 +505,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != *frameworkConfig.PricingURL {
-		// Validate the pricing URL to prevent SSRF attacks
-		if err := bifrost.ValidateExternalURL(*payload.FrameworkConfig.PricingURL); err != nil {
+		if err := validatePricingURL(*payload.FrameworkConfig.PricingURL); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid pricing URL: %v", err))
-			return
-		}
-		// Checking the accessibility of the pricing URL (SSRF-safe: validates redirect targets)
-		pricingClient := bifrost.NewSSRFSafeClient(10 * time.Second)
-		resp, err := pricingClient.Get(*payload.FrameworkConfig.PricingURL)
-		if err != nil {
-			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			logger.Warn("failed to check the accessibility of the pricing URL: %v", resp.StatusCode)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", resp.StatusCode))
 			return
 		}
 		frameworkConfig.PricingURL = payload.FrameworkConfig.PricingURL

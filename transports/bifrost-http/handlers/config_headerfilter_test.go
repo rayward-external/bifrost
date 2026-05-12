@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
@@ -181,6 +182,60 @@ func TestValidateHeaderFilterConfig_EmptyConfigStillForwardsHeaders(t *testing.T
 		if !m.ShouldAllow(header) {
 			t.Errorf("expected header %q to be allowed with empty config, but it was denied", header)
 		}
+	}
+}
+
+func TestValidatePricingURL(t *testing.T) {
+	tests := []struct {
+		name      string
+		url       string
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "default pricing URL is accepted",
+			url:  modelcatalog.DefaultPricingURL,
+		},
+		{
+			name: "public URL is accepted",
+			url:  "https://8.8.8.8/pricing.json",
+		},
+		{
+			name:      "loopback URL is rejected",
+			url:       "http://127.0.0.1/pricing.json",
+			wantErr:   true,
+			errSubstr: "localhost and loopback",
+		},
+		{
+			name:      "private URL is rejected",
+			url:       "http://192.168.1.10/pricing.json",
+			wantErr:   true,
+			errSubstr: "private IP",
+		},
+		{
+			name:      "empty URL is rejected",
+			url:       "",
+			wantErr:   true,
+			errSubstr: "URL cannot be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePricingURL(tt.url)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errSubstr)
+				}
+				if tt.errSubstr != "" && !contains(err.Error(), tt.errSubstr) {
+					t.Fatalf("expected error containing %q, got %q", tt.errSubstr, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 

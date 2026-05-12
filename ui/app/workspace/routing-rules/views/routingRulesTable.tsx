@@ -163,7 +163,7 @@ export function RoutingRulesTable({
 									<TableCell>
 										<Badge variant="secondary">{getScopeLabel(rule.scope)}</Badge>
 									</TableCell>
-									<TableCell className="text-right">
+									<TableCell className="text-right" data-testid="routing-rule-priority">
 										<div className={`inline-block rounded px-2.5 py-1 text-xs font-medium ${getPriorityBadgeClass()}`}>{rule.priority}</div>
 									</TableCell>
 									<TableCell>

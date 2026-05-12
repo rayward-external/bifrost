@@ -61,7 +61,7 @@ export class LogsPage extends BasePage {
     )
 
     // Table elements - exclude the "Listening for logs" row which is not a data row
-    this.tableRows = this.logsTable.locator('tbody tr').filter({ hasNot: page.locator('text=Listening for logs') }).filter({ hasNot: page.locator('text=Live updates paused') }).filter({ hasNot: page.locator('text=Not connected') }).filter({ hasNot: page.locator('text=No results found') })
+    this.tableRows = this.logsTable.locator('tbody tr').filter({ hasNot: page.locator('text=Listening for logs') }).filter({ hasNot: page.locator('text=Waiting for new logs') }).filter({ hasNot: page.locator('text=Live updates paused') }).filter({ hasNot: page.locator('text=Not connected') }).filter({ hasNot: page.locator('text=No results found') })
     // LLM logs pagination (data-testid added to logsTable.tsx)
     this.paginationControls = page.getByTestId('pagination')
     this.nextPageBtn = page.getByTestId('next-page')
@@ -144,18 +144,9 @@ export class LogsPage extends BasePage {
    */
   async filterByStatus(status: 'success' | 'error' | 'pending'): Promise<void> {
     await this.dismissToasts()
-    await this.filtersButton.first().waitFor({ state: 'visible' })
-    await this.filtersButton.first().click()
-    await this.page.waitForSelector('[role="listbox"], [data-slot="command-list"]', { timeout: 5000 }).catch(() => {})
-
-    const option = this.page.getByRole('option', { name: new RegExp(status, 'i') })
-    if (await option.count() > 0) {
-      await option.first().click()
-    } else {
-      await this.page.keyboard.press('Escape')
-    }
-
-    await this.page.waitForSelector('[role="listbox"]', { state: 'hidden', timeout: 5000 }).catch(() => {})
+    const checkboxRow = this.page.getByTestId(`status-filter-checkbox-${status}`)
+    await checkboxRow.waitFor({ state: 'visible' })
+    await checkboxRow.click()
     await waitForNetworkIdle(this.page)
   }
 

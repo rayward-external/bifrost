@@ -2,10 +2,14 @@ package semanticcache
 
 import (
 	"context"
+	"hash/fnv"
+	"math"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -329,6 +333,180 @@ func getMockRules() []mocker.MockRule {
 	}
 }
 
+type testEmbeddingPlugin struct {
+	dimension int
+}
+
+func (plugin *testEmbeddingPlugin) GetName() string {
+	return "semantic_cache_test_embedding"
+}
+
+func (plugin *testEmbeddingPlugin) Cleanup() error {
+	return nil
+}
+
+func (plugin *testEmbeddingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if req == nil || req.RequestType != schemas.EmbeddingRequest || req.EmbeddingRequest == nil {
+		return req, nil, nil
+	}
+
+	return req, &schemas.LLMPluginShortCircuit{
+		Response: &schemas.BifrostResponse{
+			EmbeddingResponse: createTestEmbeddingResponse(req.EmbeddingRequest, plugin.dimension),
+		},
+	}, nil
+}
+
+func (plugin *testEmbeddingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+func newTestEmbeddingExecutor(dimension int) EmbeddingRequestExecutor {
+	return func(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return createTestEmbeddingResponse(req, dimension), nil
+	}
+}
+
+func createTestEmbeddingResponse(req *schemas.BifrostEmbeddingRequest, dimension int) *schemas.BifrostEmbeddingResponse {
+	texts := extractTestEmbeddingTexts(req)
+	data := make([]schemas.EmbeddingData, len(texts))
+	totalTokens := 0
+
+	for i, text := range texts {
+		data[i] = schemas.EmbeddingData{
+			Index:  i,
+			Object: "embedding",
+			Embedding: schemas.EmbeddingStruct{
+				EmbeddingArray: deterministicTestEmbedding(text, dimension),
+			},
+		}
+		totalTokens += len(strings.Fields(text))
+	}
+
+	model := ""
+	if req != nil {
+		model = req.Model
+	}
+
+	return &schemas.BifrostEmbeddingResponse{
+		Data:   data,
+		Model:  model,
+		Object: "list",
+		Usage:  &schemas.BifrostLLMUsage{PromptTokens: totalTokens, TotalTokens: totalTokens},
+	}
+}
+
+func extractTestEmbeddingTexts(req *schemas.BifrostEmbeddingRequest) []string {
+	if req == nil || req.Input == nil {
+		return []string{""}
+	}
+	if req.Input.Text != nil {
+		return []string{*req.Input.Text}
+	}
+	if len(req.Input.Texts) > 0 {
+		return req.Input.Texts
+	}
+	if len(req.Input.Embedding) > 0 {
+		return []string{"precomputed-embedding"}
+	}
+	if len(req.Input.Embeddings) > 0 {
+		texts := make([]string, len(req.Input.Embeddings))
+		for i := range texts {
+			texts[i] = "precomputed-embedding"
+		}
+		return texts
+	}
+	return []string{""}
+}
+
+func deterministicTestEmbedding(text string, dimension int) []float64 {
+	if dimension <= 0 {
+		dimension = 1536
+	}
+
+	features := testEmbeddingFeatures(text)
+	if len(features) == 0 {
+		features = []string{normalizeTestEmbeddingText(text)}
+	}
+
+	embedding := make([]float64, dimension)
+	for _, feature := range features {
+		index := int(hashTestEmbeddingFeature(feature) % uint64(dimension))
+		embedding[index] += 1
+	}
+
+	var norm float64
+	for _, value := range embedding {
+		norm += value * value
+	}
+	if norm == 0 {
+		return embedding
+	}
+
+	norm = math.Sqrt(norm)
+	for i := range embedding {
+		embedding[i] /= norm
+	}
+	return embedding
+}
+
+func testEmbeddingFeatures(text string) []string {
+	normalized := normalizeTestEmbeddingText(text)
+	tokens := strings.Fields(normalized)
+	features := make([]string, 0, len(tokens)+2)
+
+	if strings.Contains(normalized, "machine learning") || containsTestEmbeddingToken(tokens, "ml") {
+		features = append(features, "concept:machine-learning")
+	}
+	if strings.Contains(normalized, "artificial intelligence") || containsTestEmbeddingToken(tokens, "ai") {
+		features = append(features, "concept:artificial-intelligence", "artificial", "intelligence")
+	}
+
+	for _, token := range tokens {
+		switch token {
+		case "ai":
+			features = append(features, "artificial", "intelligence")
+		case "ml":
+			features = append(features, "machine", "learning")
+		default:
+			if !testEmbeddingStopWords[token] {
+				features = append(features, token)
+			}
+		}
+	}
+
+	return features
+}
+
+func normalizeTestEmbeddingText(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return strings.Join(strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}), " ")
+}
+
+func containsTestEmbeddingToken(tokens []string, token string) bool {
+	for _, candidate := range tokens {
+		if candidate == token {
+			return true
+		}
+	}
+	return false
+}
+
+func hashTestEmbeddingFeature(feature string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(feature))
+	return h.Sum64()
+}
+
+var testEmbeddingStopWords = map[string]bool{
+	"a": true, "an": true, "and": true, "are": true, "briefly": true,
+	"can": true, "could": true, "for": true, "in": true, "is": true,
+	"it": true, "me": true, "of": true, "please": true, "the": true,
+	"to": true, "what": true, "with": true, "you": true,
+}
+
 // getMockedBifrostClient creates a Bifrost client with a mocker plugin for testing
 func getMockedBifrostClient(t *testing.T, ctx *schemas.BifrostContext, logger schemas.Logger, semanticCachePlugin schemas.LLMPlugin) *bifrost.Bifrost {
 	mockerCfg := mocker.MockerConfig{
@@ -341,10 +519,15 @@ func getMockedBifrostClient(t *testing.T, ctx *schemas.BifrostContext, logger sc
 		t.Fatalf("Failed to initialize mocker plugin: %v", err)
 	}
 
+	testEmbeddingPlugin := &testEmbeddingPlugin{dimension: 1536}
+	if pluginImpl, ok := semanticCachePlugin.(*Plugin); ok && pluginImpl.config != nil && pluginImpl.config.Dimension > 0 {
+		testEmbeddingPlugin.dimension = pluginImpl.config.Dimension
+	}
+
 	account := &BaseAccount{}
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
 		Account:    account,
-		LLMPlugins: []schemas.LLMPlugin{semanticCachePlugin, mockerPlugin},
+		LLMPlugins: []schemas.LLMPlugin{semanticCachePlugin, testEmbeddingPlugin, mockerPlugin},
 		Logger:     logger,
 	})
 	if err != nil {
@@ -420,8 +603,9 @@ func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectors
 	// Get a mocked Bifrost client
 	client := getMockedBifrostClient(t, ctx, logger, plugin)
 
-	// Wire the global client as the embedding executor so semantic search works.
-	pluginImpl.SetEmbeddingRequestExecutor(client.EmbeddingRequest)
+	// Semantic cache tests use deterministic embeddings so CI does not depend
+	// on a live OpenAI key and so similarity assertions are stable.
+	pluginImpl.SetEmbeddingRequestExecutor(newTestEmbeddingExecutor(config.Dimension))
 
 	return &TestSetup{
 		Logger: logger,

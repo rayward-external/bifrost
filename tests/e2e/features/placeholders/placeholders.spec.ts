@@ -1,9 +1,9 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
 
 test.describe('Placeholder and Enterprise Pages', () => {
-  test('should load prompt-repo coming soon page', async ({ page }) => {
+  test('should load prompt-repo page', async ({ page }) => {
     await page.goto('/workspace/prompt-repo')
-    await expect(page.getByText(/Prompt repository is coming soon/i)).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: /Build, test, and version your prompts/i })).toBeVisible({ timeout: 10000 })
   })
 
   test('should load alert-channels page', async ({ page }) => {

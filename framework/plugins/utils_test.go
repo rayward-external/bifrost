@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 const fakePluginBytes = "fake-plugin-binary-content"
@@ -17,13 +18,22 @@ func withPluginDownloadTestServer(t *testing.T, handler http.Handler) string {
 	t.Helper()
 
 	server := httptest.NewServer(handler)
-	previousClient := *pluginDownloadClient
-	pluginDownloadClient.Dial = func(addr string) (net.Conn, error) {
-		return net.Dial("tcp", server.Listener.Addr().String())
+	previousClient := pluginDownloadClient
+	testClient := &fasthttp.Client{
+		ReadBufferSize: 64 * 1024,
+		Dial: func(addr string) (net.Conn, error) {
+			return net.Dial("tcp", server.Listener.Addr().String())
+		},
 	}
 
+	pluginDownloadClientMu.Lock()
+	pluginDownloadClient = testClient
+	pluginDownloadClientMu.Unlock()
+
 	t.Cleanup(func() {
-		*pluginDownloadClient = previousClient
+		pluginDownloadClientMu.Lock()
+		pluginDownloadClient = previousClient
+		pluginDownloadClientMu.Unlock()
 		server.Close()
 	})
 

@@ -232,6 +232,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 										className={cn("w-full text-start text-sm", predefinedPeriod === period.value && "bg-primary text-primary-foreground")}
 										variant="ghost"
 										key={period.value}
+										data-testid={`date-range-period-${period.value}`}
 										onClick={(e) => {
 											e.preventDefault();
 											e.stopPropagation();

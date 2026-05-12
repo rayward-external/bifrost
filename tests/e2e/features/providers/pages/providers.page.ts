@@ -579,6 +579,13 @@ export class ProvidersPage extends BasePage {
   // ============================================
 
   /**
+   * Get timeout input
+   */
+  getTimeoutInput(): Locator {
+    return this.page.getByTestId('network-config-timeout-input')
+  }
+
+  /**
    * Set network configuration
    */
   async setNetworkConfig(config: {
@@ -597,7 +604,7 @@ export class ProvidersPage extends BasePage {
     }
 
     if (config.timeout !== undefined) {
-      const input = this.page.getByLabel(/Timeout/i)
+      const input = this.getTimeoutInput()
       await input.clear()
       await input.fill(String(config.timeout))
     }

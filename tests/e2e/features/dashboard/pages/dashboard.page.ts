@@ -106,7 +106,7 @@ export class DashboardPage extends BasePage {
    * Identified by having the calendar icon so we don't match preset buttons inside the popover.
    */
   getDatePickerTrigger(): Locator {
-    return this.page.locator('button').filter({ has: this.page.locator('svg') }).filter({ hasText: /Last|Pick/i }).first()
+    return this.page.getByTestId('dashboard-filter-daterange')
   }
 
   /**
@@ -131,8 +131,7 @@ export class DashboardPage extends BasePage {
     // Wait for dialog to open
     await this.page.waitForSelector('[data-radix-popper-content-wrapper]', { timeout: 5000 }).catch(() => {})
 
-    const label = DashboardPage.PERIOD_LABELS[period]
-    await this.page.getByRole('button', { name: label }).click()
+    await this.page.getByTestId(`date-range-period-${period}`).click()
 
     // Wait for dialog to close
     await this.page.locator('[data-radix-popper-content-wrapper]').waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})

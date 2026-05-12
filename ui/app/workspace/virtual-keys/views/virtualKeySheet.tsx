@@ -525,7 +525,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
 				className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4"
-				data-testid="vk-sheet-content"
+				data-testid="vk-sheet"
 				onInteractOutside={(e) => e.preventDefault()}
 				onEscapeKeyDown={() => handleClose()}
 			>

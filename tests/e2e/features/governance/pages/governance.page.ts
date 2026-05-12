@@ -106,7 +106,10 @@ export class GovernancePage extends BasePage {
     }
 
     if (config.budget?.maxLimit !== undefined) {
-      const budgetInput = this.page.getByTestId('budget-max-limit-input')
+      const budgetInput = this.page.getByTestId('budget-max-limit-input-0')
+      if ((await budgetInput.count()) === 0) {
+        await this.page.getByTestId('team-add-budget-btn').click()
+      }
       await budgetInput.fill(String(config.budget.maxLimit))
     }
 
@@ -196,7 +199,10 @@ export class GovernancePage extends BasePage {
     }
 
     if (updates.budget?.maxLimit !== undefined) {
-      const budgetInput = this.page.getByTestId('budget-max-limit-input')
+      const budgetInput = this.page.getByTestId('budget-max-limit-input-0')
+      if ((await budgetInput.count()) === 0) {
+        await this.page.getByTestId('team-add-budget-btn').click()
+      }
       await budgetInput.clear()
       await budgetInput.fill(String(updates.budget.maxLimit))
     }

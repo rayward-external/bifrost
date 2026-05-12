@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -16,8 +17,18 @@ var (
 
 // pluginDownloadClient is a fasthttp client with a larger read buffer to handle
 // responses with large headers.
-var pluginDownloadClient = &fasthttp.Client{
-	ReadBufferSize: 64 * 1024, // 64KB, matches the bifrost HTTP server setting
+var (
+	pluginDownloadClientMu sync.RWMutex
+	pluginDownloadClient   = &fasthttp.Client{
+		ReadBufferSize: 64 * 1024, // 64KB, matches the bifrost HTTP server setting
+	}
+)
+
+func getPluginDownloadClient() *fasthttp.Client {
+	pluginDownloadClientMu.RLock()
+	defer pluginDownloadClientMu.RUnlock()
+
+	return pluginDownloadClient
 }
 
 // DownloadPlugin downloads a plugin from a URL and returns the local file path
@@ -39,13 +50,14 @@ func DownloadPlugin(pluginURL string, extension string) (string, error) {
 
 	const maxRedirects = 5
 	currentURL := pluginURL
+	client := getPluginDownloadClient()
 	for i := 0; i <= maxRedirects; i++ {
 		req.SetRequestURI(currentURL)
 		if i > 0 {
 			response.Reset()
 		}
 
-		if err := pluginDownloadClient.DoTimeout(req, response, 120*time.Second); err != nil {
+		if err := client.DoTimeout(req, response, 120*time.Second); err != nil {
 			return "", err
 		}
 

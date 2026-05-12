@@ -64,6 +64,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const connectionType = watch("connection_type");
 	const authType = watch("auth_type");
 	const headers = watch("headers");
+	const name = watch("name");
+	const connectionString = watch("connection_string");
+	const stdioCommand = watch("stdio_config.command");
+	const oauthConfig = watch("oauth_config");
 
 	// Inline header validation (shown live as user edits headers)
 	let headersValidationError: string | null = null;
@@ -75,6 +79,21 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			}
 		}
 	}
+
+	const isNameValid = !!name?.trim() && name.length >= 3 && name.length <= 50 && /^[a-zA-Z0-9_]+$/.test(name) && !/^[0-9]/.test(name);
+	const connectionValue = connectionString?.value || "";
+	const isConnectionValid =
+		connectionType !== "http" && connectionType !== "sse"
+			? true
+			: !!connectionValue.trim() && /^((https?:\/\/.+)|(env\.[A-Z_]+))$/.test(connectionValue);
+	const isStdioValid = connectionType !== "stdio" ? true : !!stdioCommand?.trim() && !/[<>|&;]/.test(stdioCommand);
+	const isOAuthConfigValid =
+		authType !== "oauth" && authType !== "per_user_oauth"
+			? true
+			: (!oauthConfig?.authorize_url || /^https?:\/\/.+$/.test(oauthConfig.authorize_url)) &&
+				(!oauthConfig?.token_url || /^https?:\/\/.+$/.test(oauthConfig.token_url)) &&
+				(!oauthConfig?.registration_url || /^https?:\/\/.+$/.test(oauthConfig.registration_url));
+	const isFormSubmittable = isNameValid && isConnectionValid && isStdioValid && isOAuthConfigValid && !headersValidationError;
 
 	// Reset form state when dialog opens
 	useEffect(() => {
@@ -627,7 +646,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											<span className="inline-block">
 												<Button
 													type="submit"
-													disabled={isLoading || !hasCreateMCPClientAccess}
+													disabled={isLoading || !hasCreateMCPClientAccess || !isFormSubmittable}
 													isLoading={isLoading}
 													data-testid="save-client-btn"
 												>

@@ -2385,7 +2385,7 @@
                   "description": "OAuth2 scopes for Entra authentication"
                 }
               },
-              "required": ["endpoint"],
+              "required": ["endpoint", "api_version"],
               "dependentRequired": {
                 "client_id": ["client_secret", "tenant_id"],
                 "client_secret": ["client_id", "tenant_id"],

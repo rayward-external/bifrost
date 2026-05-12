@@ -604,17 +604,19 @@ export class RoutingRulesPage extends BasePage {
   async getRulePriority(name: string): Promise<number | null> {
     const row = this.getRuleRow(name)
 
-    // Table columns: Name(0), Provider(1), Model(2), Scope(3), Priority(4), Expression(5), Status(6), Actions(7)
-    const cells = row.locator('td')
-    const count = await cells.count()
-
-    // Priority is in the 5th column (index 4)
-    if (count > 4) {
-      const text = await cells.nth(4).textContent()
+    const priorityCell = row.getByTestId('routing-rule-priority')
+    if ((await priorityCell.count()) > 0) {
+      const text = await priorityCell.textContent()
       const num = parseInt(text || '', 10)
-      if (!isNaN(num) && num > 0) {
-        return num
-      }
+      if (!isNaN(num) && num >= 0) return num
+    }
+
+    // Table columns: Name(0), Targets(1), Scope(2), Priority(3), Expression(4), Status(5), Actions(6)
+    const cells = row.locator('td')
+    if ((await cells.count()) > 3) {
+      const text = await cells.nth(3).textContent()
+      const num = parseInt(text || '', 10)
+      if (!isNaN(num) && num >= 0) return num
     }
 
     return null

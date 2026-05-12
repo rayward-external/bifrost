@@ -107,7 +107,7 @@ test.describe('MCP Log Detail Hydration', () => {
 
     await mcpLogsPage.goto()
     await expect(mcpLogsPage.logsTable).toBeVisible()
-    await expect(page.getByText('search_docs')).toBeVisible()
+    await expect(mcpLogsPage.logsTable.getByText('search_docs', { exact: true }).first()).toBeVisible()
 
     await mcpLogsPage.viewLogDetails(0)
 

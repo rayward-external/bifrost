@@ -1,0 +1,37 @@
+go 1.26.3
+
+use (
+	./.github/workflows/scripts/schemasync
+	./cli
+	./core
+	./examples/mcps/auth-demo-server
+	./examples/mcps/edge-case-server
+	./examples/mcps/error-test-server
+	./examples/mcps/go-test-server
+	./examples/mcps/http-no-ping-server
+	./examples/mcps/oauth-demo-server
+	./examples/mcps/parallel-test-server
+	./examples/plugins/hello-world
+	./examples/plugins/hello-world-wasm-go
+	./examples/plugins/http-transport-only
+	./examples/plugins/llm-only
+	./examples/plugins/mcp-only
+	./examples/plugins/multi-interface
+	./framework
+	./plugins/compat
+	./plugins/governance
+	./plugins/jsonparser
+	./plugins/logging
+	./plugins/maxim
+	./plugins/mocker
+	./plugins/otel
+	./plugins/prompts
+	./plugins/semanticcache
+	./plugins/telemetry
+	./tests/async
+	./tests/e2e/clis
+	./tests/governance
+	./tests/scripts/1millogs
+	./tests/scripts/migration-checker
+	./transports
+)

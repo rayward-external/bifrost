@@ -262,7 +262,7 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 		// enqueued successfully
 	default:
 		p.droppedRequests.Add(1)
-		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
+		p.logger.Warn("log write queue full, dropping log entry")
 	}
 }
 
@@ -282,7 +282,7 @@ func (p *LoggerPlugin) enqueueMCPToolLogEntry(entry *logstore.MCPToolLog, callba
 	case p.writeQueue <- &writeQueueEntry{mcpLog: entry, mcpCallback: callback}:
 	default:
 		p.droppedRequests.Add(1)
-		p.logger.Warn("log write queue full, dropping MCP tool log entry %s", entry.ID)
+		p.logger.Warn("log write queue full, dropping MCP tool log entry")
 	}
 }
 

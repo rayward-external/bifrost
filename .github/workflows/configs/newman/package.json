@@ -1,0 +1,10 @@
+{
+  "name": "bifrost-ci-newman",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned newman + reporter installer for release-pipeline CI. The lockfile next to this file carries SHA-512 integrity hashes used by `npm ci`, which satisfies Scorecard's pinned-dependencies-by-hash check.",
+  "dependencies": {
+    "newman": "6.2.2",
+    "newman-reporter-htmlextra": "1.23.1"
+  }
+}

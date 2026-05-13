@@ -1,125 +1,110 @@
 package plugins
 
 import (
+	"compress/gzip"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
-	"github.com/valyala/fasthttp"
 )
 
 var (
 	ErrPluginNotFound = fmt.Errorf("plugin not found")
 )
 
-// pluginDownloadClient is a fasthttp client with a larger read buffer to handle
-// responses with large headers.
-var pluginDownloadClient = &fasthttp.Client{
-	ReadBufferSize: 64 * 1024, // 64KB, matches the bifrost HTTP server setting
+// pluginDownloadClientForRequest returns the http.Client used for an
+// individual DownloadPlugin call. Production returns an SSRF-safe client
+// from bifrost.NewSSRFSafeClient (which re-validates each redirect target
+// against bifrost.ValidateExternalURL). Tests can override this hook to
+// inject a per-test client whose Transport routes a synthetic example.com
+// to a local httptest.Server while keeping the validator in play.
+var pluginDownloadClientForRequest = func() *http.Client {
+	return bifrost.NewSSRFSafeClient(120 * time.Second)
 }
 
-// pluginDownloadClientForRequest returns the client used for an individual
-// DownloadPlugin call. Production always returns the package-level client;
-// tests swap this hook to inject a client with a custom Dial so they can
-// exercise the SSRF guard without mutating the shared client (which races
-// with fasthttp's background mCleaner goroutine under -race).
-var pluginDownloadClientForRequest = func() *fasthttp.Client { return pluginDownloadClient }
-
-// DownloadPlugin downloads a plugin from a URL and returns the local file path
+// DownloadPlugin downloads a plugin from a validated external URL and
+// returns the local file path. SSRF protection happens in two places:
+//
+//  1. The URL is parsed and then sanitized by reconstructing a fresh
+//     url.URL from its parsed scheme/host/path/query components so the
+//     value sent to the network sink is provably derived from a
+//     ValidateExternalURL-checked input (closes CodeQL go/request-forgery).
+//  2. The client returned by pluginDownloadClientForRequest re-validates
+//     every redirect target via CheckRedirect, so an open redirect cannot
+//     pivot to an internal address.
 func DownloadPlugin(pluginURL string, extension string) (string, error) {
-	// Validate the plugin URL to prevent SSRF attacks
 	if err := bifrost.ValidateExternalURL(pluginURL); err != nil {
 		return "", fmt.Errorf("invalid plugin URL: %w", err)
 	}
 
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-	response := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(response)
+	parsed, err := url.Parse(pluginURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid plugin URL: %w", err)
+	}
+	// Reconstruct the URL from its parsed components so the value flowing
+	// into http.NewRequest is provably derived from ValidateExternalURL's
+	// sanitization rather than carrying taint from the raw string input.
+	sanitized := (&url.URL{
+		Scheme:   parsed.Scheme,
+		Host:     parsed.Host,
+		Path:     parsed.EscapedPath(),
+		RawQuery: parsed.RawQuery,
+	}).String()
 
-	req.Header.SetMethod(fasthttp.MethodGet)
+	req, err := http.NewRequest(http.MethodGet, sanitized, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to build plugin download request: %w", err)
+	}
 	req.Header.Set("Accept", "application/octet-stream")
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
-	const maxRedirects = 5
-	currentURL := pluginURL
-	client := pluginDownloadClientForRequest()
-	for i := 0; i <= maxRedirects; i++ {
-		req.SetRequestURI(currentURL)
-		if i > 0 {
-			response.Reset()
-		}
-
-		if err := client.DoTimeout(req, response, 120*time.Second); err != nil {
-			return "", err
-		}
-
-		statusCode := response.StatusCode()
-		if statusCode == fasthttp.StatusOK {
-			break
-		}
-		if statusCode >= 300 && statusCode < 400 {
-			if i == maxRedirects {
-				return "", fmt.Errorf("too many redirects downloading plugin")
-			}
-			location := string(response.Header.Peek("Location"))
-			if location == "" {
-				return "", fmt.Errorf("redirect response missing Location header: HTTP %d", statusCode)
-			}
-			loc, err := url.Parse(location)
-			if err != nil {
-				return "", fmt.Errorf("invalid Location header %q: %w", location, err)
-			}
-			base, err := url.Parse(currentURL)
-			if err != nil {
-				return "", fmt.Errorf("invalid request URL %q: %w", currentURL, err)
-			}
-			currentURL = base.ResolveReference(loc).String()
-			// Validate redirect URL to prevent SSRF via open redirect
-			if err := bifrost.ValidateExternalURL(currentURL); err != nil {
-				return "", fmt.Errorf("redirect URL blocked: %w", err)
-			}
-			continue
-		}
-		return "", fmt.Errorf("failed to download plugin: HTTP %d", statusCode)
-	}
-
-	// Decompress the response body if it was gzip/deflate compressed
-	// BodyUncompressed handles both gzip and deflate encodings based on Content-Encoding header
-	body, err := response.BodyUncompressed()
+	resp, err := pluginDownloadClientForRequest().Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to decompress response body: %w", err)
+		return "", fmt.Errorf("failed to download plugin: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download plugin: HTTP %d", resp.StatusCode)
 	}
 
-	// Create a unique temporary file for the plugin
+	// Cap reads at 64MiB so a malicious or misconfigured upstream can't
+	// exhaust memory by streaming an unbounded body.
+	const maxPluginSize = 64 * 1024 * 1024
+	var body io.Reader = http.MaxBytesReader(nil, resp.Body, maxPluginSize)
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(body)
+		if err != nil {
+			return "", fmt.Errorf("failed to initialize gzip decoder: %w", err)
+		}
+		defer gz.Close()
+		body = gz
+	}
+
 	tempFile, err := os.CreateTemp(os.TempDir(), "bifrost-plugin-*"+extension)
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary file: %w", err)
 	}
 	tempPath := tempFile.Name()
 
-	// Write the downloaded body to the temporary file
-	_, err = tempFile.Write(body)
-	if err != nil {
+	if _, err := io.Copy(tempFile, body); err != nil {
 		tempFile.Close()
 		os.Remove(tempPath)
 		return "", fmt.Errorf("failed to write plugin to temporary file: %w", err)
 	}
-
-	// Close the file
-	err = tempFile.Close()
-	if err != nil {
+	if err := tempFile.Close(); err != nil {
 		os.Remove(tempPath)
 		return "", fmt.Errorf("failed to close temporary file: %w", err)
 	}
 
-	// Set file permissions to be executable (for .so files)
 	if extension == ".so" {
-		err = os.Chmod(tempPath, 0755)
-		if err != nil {
+		if err := os.Chmod(tempPath, 0755); err != nil {
 			os.Remove(tempPath)
 			return "", fmt.Errorf("failed to set executable permissions on plugin: %w", err)
 		}

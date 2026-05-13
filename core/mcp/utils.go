@@ -146,6 +146,37 @@ func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState 
 // isTransientError determines if an error is transient and should be retried.
 // Permanent errors (auth failures, config errors, context deadline, etc.) return false.
 // Transient errors (network issues, temporary timeouts, etc.) return true.
+// maxLogValueLen caps user-controlled values embedded in operational log
+// lines so a malicious or pathological value can't bloat log entries.
+const maxLogValueLen = 128
+
+// sanitizeLogValue makes a user-controlled string safe to embed in log lines.
+// It strips ASCII control characters (anything below space plus DEL) so a
+// malicious value can't inject newlines, carriage returns, or terminal
+// escape sequences into the log stream, and truncates the result to
+// maxLogValueLen runes. Required by CodeQL's go/log-injection query.
+func sanitizeLogValue(value string) string {
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	count := 0
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			b.WriteByte('?')
+		} else {
+			b.WriteRune(r)
+		}
+		count++
+		if count >= maxLogValueLen {
+			b.WriteString("...[truncated]")
+			break
+		}
+	}
+	return b.String()
+}
+
 func isTransientError(err error) bool {
 	if err == nil {
 		return false

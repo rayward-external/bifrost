@@ -93,6 +93,10 @@ func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
 		return fmt.Errorf("invalid MCP client configuration: %w", err)
 	}
 
+	// safeName is the config-supplied client name with control characters
+	// stripped and length capped for safe use in operational log messages.
+	safeName := sanitizeLogValue(config.Name)
+
 	// Make a copy of the config to use after unlocking
 	configCopy := config
 
@@ -131,7 +135,7 @@ func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
 		}
 		m.clientMap[config.ID] = clientState
 		m.mu.Unlock()
-		m.logger.Debug("%s MCP client '%s' registered in disabled state", MCPLogPrefix, config.Name)
+		m.logger.Debug("%s MCP client '%s' registered in disabled state", MCPLogPrefix, safeName)
 		return nil
 	}
 
@@ -167,10 +171,10 @@ func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
 				}
 				client.ToolNameMapping = config.DiscoveredToolNameMapping
 				client.State = schemas.MCPConnectionStateConnected
-				m.logger.Debug("%s Per-user OAuth MCP client '%s' restored with %d tools", MCPLogPrefix, config.Name, len(config.DiscoveredTools))
+				m.logger.Debug("%s Per-user OAuth MCP client '%s' restored with %d tools", MCPLogPrefix, safeName, len(config.DiscoveredTools))
 			} else {
 				client.State = schemas.MCPConnectionStatePendingTools
-				m.logger.Debug("%s Per-user OAuth MCP client '%s' registered (connection deferred to runtime)", MCPLogPrefix, config.Name)
+				m.logger.Debug("%s Per-user OAuth MCP client '%s' registered (connection deferred to runtime)", MCPLogPrefix, safeName)
 			}
 		}
 		m.mu.Unlock()
@@ -208,6 +212,10 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
 		return nil, nil, fmt.Errorf("connection URL is required for per-user OAuth verification")
 	}
+
+	// safeName is the config-supplied client name with control characters
+	// stripped and length capped for safe use in operational log messages.
+	safeName := sanitizeLogValue(config.Name)
 
 	// Build prepared inputs for the typed connect plugin gate. PreHooks may mutate
 	// Headers / ConnectionString — the mutated values are passed to the transport below.
@@ -322,7 +330,7 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 		return nil, nil, fmt.Errorf("failed to discover tools during verification: %w", err)
 	}
 
-	m.logger.Info("%s Per-user OAuth verification succeeded for '%s': discovered %d tools", MCPLogPrefix, config.Name, len(tools))
+	m.logger.Info("%s Per-user OAuth verification succeeded for '%s': discovered %d tools", MCPLogPrefix, safeName, len(tools))
 	return tools, toolNameMapping, nil
 }
 
@@ -864,6 +872,11 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 // registers its available tools with the manager. Uses exponential backoff
 // retry logic (5 retries, 1-30 seconds) for connection establishment.
 func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
+	// safeName is the config-supplied client name with control characters
+	// stripped and length capped; used in every operational log message
+	// inside this function to close CodeQL go/log-injection findings.
+	safeName := sanitizeLogValue(config.Name)
+
 	// First lock: Initialize or validate client entry
 	m.mu.Lock()
 
@@ -987,7 +1000,7 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 		}
 
 		// Start the transport (with internal retries). Each retry uses a fresh client.
-		m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
+		m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, safeName)
 		transportRetryConfig := DefaultRetryConfig
 		if startErr := ExecuteWithRetry(
 			m.ctx,
@@ -1023,7 +1036,7 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 					// The subprocess needs the context to stay valid for the entire connection lifetime
 					// Do NOT defer cancel - the context manages the subprocess lifetime.
 					perAttemptCtx = longLivedCtx
-					m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
+					m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, safeName)
 				} else {
 					// HTTP already has timeout
 					perAttemptCtx = ctx
@@ -1035,7 +1048,7 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 		); startErr != nil {
 			return nil, fmt.Errorf("failed to start MCP client transport after %d retries: %v", transportRetryConfig.MaxRetries, startErr)
 		}
-		m.logger.Debug("%s [%s] Transport started successfully", MCPLogPrefix, config.Name)
+		m.logger.Debug("%s [%s] Transport started successfully", MCPLogPrefix, safeName)
 
 		// Initialize with retry. Capture InitializeResult so the gate response can expose
 		// ServerInfo / ProtocolVersion / Capabilities.
@@ -1058,7 +1071,7 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 					var initCancel context.CancelFunc
 					initCtx, initCancel = context.WithTimeout(longLivedCtx, MCPClientConnectionEstablishTimeout)
 					defer initCancel()
-					m.logger.Debug("%s [%s] Initializing client with %v timeout...", MCPLogPrefix, config.Name, MCPClientConnectionEstablishTimeout)
+					m.logger.Debug("%s [%s] Initializing client with %v timeout...", MCPLogPrefix, safeName, MCPClientConnectionEstablishTimeout)
 				} else {
 					initCtx = ctx
 				}
@@ -1071,7 +1084,7 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 		); initErr != nil {
 			return nil, fmt.Errorf("failed to initialize MCP client after %d retries: %v", initRetryConfig.MaxRetries, initErr)
 		}
-		m.logger.Debug("%s [%s] Client initialized successfully", MCPLogPrefix, config.Name)
+		m.logger.Debug("%s [%s] Client initialized successfully", MCPLogPrefix, safeName)
 
 		// Build the gate response from captured initialize result.
 		resp := &schemas.BifrostMCPConnectResponse{
@@ -1115,7 +1128,7 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 		// to query. Register the client as "connected" with an empty tool set — this is
 		// the documented Connect-success-shortcircuit gotcha. Subsequent tool calls will
 		// fail until a real connect happens.
-		m.logger.Warn("%s [%s] Connect plugin short-circuited with success; no live transport — registering with empty tool set", MCPLogPrefix, config.Name)
+		m.logger.Warn("%s [%s] Connect plugin short-circuited with success; no live transport — registering with empty tool set", MCPLogPrefix, safeName)
 		if connectionInfo == nil {
 			connectionInfo = &schemas.MCPClientConnectionInfo{Type: config.ConnectionType}
 		}
@@ -1123,18 +1136,18 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 		// Retrieve tools from the external server through the list_tools plugin gate.
 		// Use a bounded timeout context to prevent indefinite hangs during tool retrieval.
 		// For STDIO/SSE, ctx is longLivedCtx (no timeout), so we create a separate one here.
-		m.logger.Debug("%s [%s] Retrieving tools...", MCPLogPrefix, config.Name)
+		m.logger.Debug("%s [%s] Retrieving tools...", MCPLogPrefix, safeName)
 		toolRetrievalCtx, toolRetrievalCancel := context.WithTimeout(m.ctx, MCPClientConnectionEstablishTimeout)
 		defer toolRetrievalCancel()
 		t, mapping, err := m.runListToolsWithHooks(toolRetrievalCtx, externalClient, config.Name)
 		if err != nil {
-			m.logger.Warn("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err)
+			m.logger.Warn("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, safeName, err)
 			// Continue with connection even if tool retrieval fails
 		} else {
 			tools = t
 			toolNameMapping = mapping
 		}
-		m.logger.Debug("%s [%s] Retrieved %d tools", MCPLogPrefix, config.Name, len(tools))
+		m.logger.Debug("%s [%s] Retrieved %d tools", MCPLogPrefix, safeName, len(tools))
 	}
 
 	// Second lock: Update client with final connection details and tools
@@ -1155,7 +1168,7 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 					m.logger.Warn("%s Failed to close external client during disable rollback: %v", MCPLogPrefix, closeErr)
 				}
 			}
-			m.logger.Debug("%s [%s] Client was disabled during connection setup; rolling back", MCPLogPrefix, config.Name)
+			m.logger.Debug("%s [%s] Client was disabled during connection setup; rolling back", MCPLogPrefix, safeName)
 			return fmt.Errorf("client %s was disabled during connection setup", config.Name)
 		}
 
@@ -1177,8 +1190,8 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 		// Store tool name mapping for execution (sanitized_name -> original_mcp_name)
 		client.ToolNameMapping = toolNameMapping
 
-		m.logger.Debug("%s [%s] Registering %d tools. Client config - ID: %s, Name: %s, IsCodeModeClient: %v", MCPLogPrefix, config.Name, len(tools), config.ID, config.Name, config.IsCodeModeClient)
-		m.logger.Info("%s Connected to MCP server '%s'", MCPLogPrefix, config.Name)
+		m.logger.Debug("%s [%s] Registering %d tools. Client config - ID: %s, Name: %s, IsCodeModeClient: %v", MCPLogPrefix, safeName, len(tools), config.ID, safeName, config.IsCodeModeClient)
+		m.logger.Info("%s Connected to MCP server '%s'", MCPLogPrefix, safeName)
 	} else {
 		// Release lock before cleanup and return
 		m.mu.Unlock()
@@ -1203,7 +1216,7 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 	// Register OnConnectionLost hook for SSE connections to detect idle timeouts
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE && externalClient != nil {
 		externalClient.OnConnectionLost(func(err error) {
-			m.logger.Warn("%s SSE connection lost for MCP server '%s': %v", MCPLogPrefix, config.Name, err)
+			m.logger.Warn("%s SSE connection lost for MCP server '%s': %v", MCPLogPrefix, safeName, err)
 			// Update state to disconnected, but never overwrite a disabled state.
 			// DisableClient calls Conn.Close() while holding m.mu; the SSE library
 			// fires OnConnectionLost after the lock is released, by which point

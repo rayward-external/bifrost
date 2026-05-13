@@ -277,6 +277,7 @@ func TestChatCompletionContentBlocksNormalization(t *testing.T) {
 
 // TestNormalizationWithSemanticCache tests that normalization works with semantic cache as well
 func TestNormalizationWithSemanticCache(t *testing.T) {
+	requireOpenAIKey(t)
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 

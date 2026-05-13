@@ -32,8 +32,10 @@
   COPY plugins/ ./plugins/
   COPY transports/ ./transports/
 
-  # Copy the built UI into the custom cmd dir for //go:embed all:ui
-  COPY --from=ui-builder /app/out ./transports/bifrost-http/cmd/custom/ui
+  # Copy the built UI into the shared uiassets package. Both
+  # transports/bifrost-http/main.go and cmd/custom/main.go embed it via
+  # //go:embed ui in transports/bifrost-http/internal/uiassets/embed.go.
+  COPY --from=ui-builder /app/out ./transports/bifrost-http/internal/uiassets/ui
 
   # Set up go workspace to resolve local module dependencies.
   RUN go work init && \

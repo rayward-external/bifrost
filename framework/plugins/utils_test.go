@@ -9,21 +9,32 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 const fakePluginBytes = "fake-plugin-binary-content"
 
+// withPluginDownloadTestServer spins up an httptest.Server and swaps the
+// package-private pluginDownloadClientForRequest hook so DownloadPlugin uses
+// a per-test fasthttp client whose Dial routes "http://example.com" to the
+// test server. The global pluginDownloadClient is never mutated — that would
+// race with fasthttp's background mCleaner under -race.
 func withPluginDownloadTestServer(t *testing.T, handler http.Handler) string {
 	t.Helper()
 
 	server := httptest.NewServer(handler)
-	previousClient := *pluginDownloadClient
-	pluginDownloadClient.Dial = func(addr string) (net.Conn, error) {
-		return net.Dial("tcp", server.Listener.Addr().String())
+	testClient := &fasthttp.Client{
+		ReadBufferSize: 64 * 1024,
+		Dial: func(addr string) (net.Conn, error) {
+			return net.Dial("tcp", server.Listener.Addr().String())
+		},
 	}
 
+	previous := pluginDownloadClientForRequest
+	pluginDownloadClientForRequest = func() *fasthttp.Client { return testClient }
+
 	t.Cleanup(func() {
-		*pluginDownloadClient = previousClient
+		pluginDownloadClientForRequest = previous
 		server.Close()
 	})
 

@@ -20,6 +20,13 @@ var pluginDownloadClient = &fasthttp.Client{
 	ReadBufferSize: 64 * 1024, // 64KB, matches the bifrost HTTP server setting
 }
 
+// pluginDownloadClientForRequest returns the client used for an individual
+// DownloadPlugin call. Production always returns the package-level client;
+// tests swap this hook to inject a client with a custom Dial so they can
+// exercise the SSRF guard without mutating the shared client (which races
+// with fasthttp's background mCleaner goroutine under -race).
+var pluginDownloadClientForRequest = func() *fasthttp.Client { return pluginDownloadClient }
+
 // DownloadPlugin downloads a plugin from a URL and returns the local file path
 func DownloadPlugin(pluginURL string, extension string) (string, error) {
 	// Validate the plugin URL to prevent SSRF attacks
@@ -39,13 +46,14 @@ func DownloadPlugin(pluginURL string, extension string) (string, error) {
 
 	const maxRedirects = 5
 	currentURL := pluginURL
+	client := pluginDownloadClientForRequest()
 	for i := 0; i <= maxRedirects; i++ {
 		req.SetRequestURI(currentURL)
 		if i > 0 {
 			response.Reset()
 		}
 
-		if err := pluginDownloadClient.DoTimeout(req, response, 120*time.Second); err != nil {
+		if err := client.DoTimeout(req, response, 120*time.Second); err != nil {
 			return "", err
 		}
 

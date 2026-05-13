@@ -168,6 +168,7 @@ func TestResponsesAPIDifferentParameters(t *testing.T) {
 
 // TestResponsesAPISemanticMatching tests semantic similarity matching with Responses API
 func TestResponsesAPISemanticMatching(t *testing.T) {
+	requireOpenAIKey(t)
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 

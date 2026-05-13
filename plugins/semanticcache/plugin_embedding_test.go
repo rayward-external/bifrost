@@ -76,6 +76,7 @@ func TestEmbeddingRequestsCaching(t *testing.T) {
 
 // TestEmbeddingRequestsNoCacheWithoutCacheKey tests that embedding requests without cache key are not cached
 func TestEmbeddingRequestsNoCacheWithoutCacheKey(t *testing.T) {
+	requireOpenAIKey(t)
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 

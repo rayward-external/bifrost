@@ -106,6 +106,7 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 
 // TestSemanticSearch tests the semantic similarity search functionality
 func TestSemanticSearch(t *testing.T) {
+	requireOpenAIKey(t)
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
@@ -246,6 +247,7 @@ func TestFlattenToFloat32Embedding(t *testing.T) {
 
 // TestDirectVsSemanticSearch tests the difference between direct hash matching and semantic search
 func TestDirectVsSemanticSearch(t *testing.T) {
+	requireOpenAIKey(t)
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 

@@ -1,37 +1,48 @@
 package plugins
 
 import (
-	"net"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/valyala/fasthttp"
 )
 
 const fakePluginBytes = "fake-plugin-binary-content"
 
 // withPluginDownloadTestServer spins up an httptest.Server and swaps the
 // package-private pluginDownloadClientForRequest hook so DownloadPlugin uses
-// a per-test fasthttp client whose Dial routes "http://example.com" to the
-// test server. The global pluginDownloadClient is never mutated — that would
-// race with fasthttp's background mCleaner under -race.
+// a per-test http.Client whose Transport routes the synthetic
+// "http://example.com" host (which passes ValidateExternalURL) to the local
+// test server. The production client is never mutated.
 func withPluginDownloadTestServer(t *testing.T, handler http.Handler) string {
 	t.Helper()
 
 	server := httptest.NewServer(handler)
-	testClient := &fasthttp.Client{
-		ReadBufferSize: 64 * 1024,
-		Dial: func(addr string) (net.Conn, error) {
-			return net.Dial("tcp", server.Listener.Addr().String())
+	testClient := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &rewriteTransport{
+			target: server.Listener.Addr().String(),
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects")
+			}
+			if err := bifrost.ValidateExternalURL(req.URL.String()); err != nil {
+				return err
+			}
+			return nil
 		},
 	}
 
 	previous := pluginDownloadClientForRequest
-	pluginDownloadClientForRequest = func() *fasthttp.Client { return testClient }
+	pluginDownloadClientForRequest = func() *http.Client { return testClient }
 
 	t.Cleanup(func() {
 		pluginDownloadClientForRequest = previous
@@ -39,6 +50,22 @@ func withPluginDownloadTestServer(t *testing.T, handler http.Handler) string {
 	})
 
 	return "http://example.com"
+}
+
+// rewriteTransport rewrites the Host of every outbound request to the local
+// httptest server's listener address so requests for the synthetic
+// "example.com" host (which passes ValidateExternalURL) reach the test
+// server. The original host header is preserved so handlers see "example.com".
+type rewriteTransport struct {
+	target string
+}
+
+func (rt *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	cloned := req.Clone(req.Context())
+	cloned.URL.Host = rt.target
+	cloned.URL.Scheme = "http"
+	cloned.Host = req.URL.Host
+	return http.DefaultTransport.RoundTrip(cloned)
 }
 
 func TestDownloadPlugin_DirectDownload(t *testing.T) {
@@ -85,7 +112,12 @@ func TestDownloadPlugin_TooManyRedirects(t *testing.T) {
 
 	_, err := DownloadPlugin(baseURL+"/loop", ".so")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "too many redirects")
+	// net/http reports "stopped after N redirects" when the per-client
+	// redirect cap is exceeded.
+	msg := strings.ToLower(err.Error())
+	assert.True(t,
+		strings.Contains(msg, "stopped after") || strings.Contains(msg, "too many redirects"),
+		"expected redirect-cap error, got: %v", err)
 }
 
 func TestDownloadPlugin_NonOKStatus(t *testing.T) {

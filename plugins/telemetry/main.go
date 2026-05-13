@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -103,13 +104,45 @@ type PrometheusPlugin struct {
 	pushWg     sync.WaitGroup
 	pushMu     sync.RWMutex
 	pushActive bool
+
+	// MetricsEnabled gates the /metrics scrape endpoint.
+	metricsEnabled atomic.Bool
 }
 
 type Config struct {
 	CustomLabels []string `json:"custom_labels"`
 	Registry     *prometheus.Registry
 	PushGateway  *PushGatewayConfig `json:"push_gateway"`
+	// MetricsEnabled controls whether the /metrics scrape endpoint is served.
+	MetricsEnabled *bool `json:"metrics_enabled,omitempty"`
 }
+
+// Keep in sync with plugins/otel/metrics.go's identical arrays so the Prometheus
+// and OTel exporters report the same quantile estimates for the same metric.
+var (
+	// upstreamLatencyBuckets: end-to-end / upstream LLM call latency. Top end (900s)
+	// covers reasoning-model and long-context outliers; without these buckets p99
+	// collapses to the highest finite bucket boundary.
+	upstreamLatencyBuckets = []float64{
+		.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5,
+		10, 15, 30, 45, 60, 90, 120, 180, 300, 600, 900,
+	}
+
+	// firstTokenLatencyBuckets: TTFT. Bimodal - sub-second for fast streaming
+	// providers, tens to hundreds of seconds for reasoning models. Purely additive
+	// over prometheus.DefBuckets so historical le-label queries remain valid.
+	firstTokenLatencyBuckets = []float64{
+		.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5,
+		10, 20, 30, 60, 120, 300,
+	}
+
+	// interTokenLatencyBuckets: inter-token latency. Typically single-digit ms to ~1s.
+	// Adds .001 below DefBuckets for fast models (Haiku) and keeps 10 at the top so
+	// the array is purely additive over the previous DefBuckets fallback.
+	interTokenLatencyBuckets = []float64{
+		.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10,
+	}
+)
 
 // Init creates a new PrometheusPlugin with initialized metrics.
 func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
@@ -173,9 +206,6 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 
 	factory := promauto.With(registry)
 
-	// Upstream LLM latency buckets - extended range for AI model inference times
-	upstreamLatencyBuckets := []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 15, 30, 45, 60, 90} // in seconds
-
 	httpRequestsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "http_requests_total",
@@ -189,7 +219,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
 			Help:    "Duration of HTTP requests.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: upstreamLatencyBuckets,
 		},
 		append(defaultHTTPLabels, filteredCustomLabels...),
 	)
@@ -282,16 +312,18 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 
 	bifrostStreamInterTokenLatencySeconds := factory.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name: "bifrost_stream_inter_token_latency_seconds",
-			Help: "Latency of the intermediate tokens of a stream response.",
+			Name:    "bifrost_stream_inter_token_latency_seconds",
+			Help:    "Latency of the intermediate tokens of a stream response.",
+			Buckets: interTokenLatencyBuckets,
 		},
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
 	bifrostStreamFirstTokenLatencySeconds := factory.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name: "bifrost_stream_first_token_latency_seconds",
-			Help: "Latency of the first token of a stream response.",
+			Name:    "bifrost_stream_first_token_latency_seconds",
+			Help:    "Latency of the first token of a stream response.",
+			Buckets: firstTokenLatencyBuckets,
 		},
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
@@ -362,6 +394,14 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		defaultBifrostLabels:           defaultBifrostLabels,
 	}
 
+	// Default /metrics scraping to on when the config omits the field — preserves
+	// behavior for existing connectors written before metrics_enabled existed.
+	metricsEnabled := true
+	if config.MetricsEnabled != nil {
+		metricsEnabled = *config.MetricsEnabled
+	}
+	plugin.metricsEnabled.Store(metricsEnabled)
+
 	// Start push gateway if configured
 	if config.PushGateway != nil && config.PushGateway.Enabled && config.PushGateway.PushGatewayURL != "" {
 		if err := plugin.EnablePushGateway(config.PushGateway); err != nil {
@@ -370,6 +410,12 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	}
 
 	return plugin, nil
+}
+
+// IsMetricsEnabled reports whether the /metrics scrape endpoint should serve
+// metrics on this instance. Safe to call from request-handling goroutines.
+func (p *PrometheusPlugin) IsMetricsEnabled() bool {
+	return p.metricsEnabled.Load()
 }
 
 func (p *PrometheusPlugin) GetRegistry() *prometheus.Registry {

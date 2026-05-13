@@ -14,6 +14,10 @@ permissions:
 
 jobs:
   release:
+    # Helm chart releases (publishes to maximhq.github.io/helm-charts) only
+    # make sense on the upstream repo, which has the GH_TOKEN secret. The
+    # fork doesn't publish helm charts; skip the job here.
+    if: github.repository == 'maximhq/bifrost'
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner

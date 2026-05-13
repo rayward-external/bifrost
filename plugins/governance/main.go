@@ -129,6 +129,34 @@ type GovernancePlugin struct {
 // Alternative entry point:
 //   - Use InitFromStore to inject a custom GovernanceStore implementation instead
 //     of constructing a LocalGovernanceStore internally.
+
+// sanitizeLogValue makes a caller-controlled string safe to embed in log
+// lines. It strips ASCII control characters (<0x20 plus DEL) so a value
+// containing newlines or terminal escape sequences can't inject fake log
+// entries, and truncates to 128 runes. Closes CodeQL go/log-injection.
+func sanitizeLogValue(value string) string {
+	if value == "" {
+		return ""
+	}
+	const maxLen = 128
+	var b strings.Builder
+	b.Grow(len(value))
+	count := 0
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			b.WriteByte('?')
+		} else {
+			b.WriteRune(r)
+		}
+		count++
+		if count >= maxLen {
+			b.WriteString("...[truncated]")
+			break
+		}
+	}
+	return b.String()
+}
+
 func Init(
 	ctx context.Context,
 	config *Config,
@@ -1548,7 +1576,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		// Use separate client name and tool name fields
 		if pricingEntry, ok := p.mcpCatalog.GetPricingData(resp.ExtraFields.ClientName, resp.ExtraFields.ToolName); ok {
 			toolCost = pricingEntry.CostPerExecution
-			p.logger.Debug("MCP tool cost for %s.%s: $%.6f", resp.ExtraFields.ClientName, resp.ExtraFields.ToolName, toolCost)
+			p.logger.Debug("MCP tool cost for %s.%s: $%.6f", sanitizeLogValue(resp.ExtraFields.ClientName), sanitizeLogValue(resp.ExtraFields.ToolName), toolCost)
 		}
 	}
 

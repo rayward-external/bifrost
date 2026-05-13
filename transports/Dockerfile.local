@@ -49,7 +49,7 @@
     go work use ./transports
 
   # Copy UI build output into transports
-  COPY --from=ui-builder /app/out ./transports/bifrost-http/ui
+  COPY --from=ui-builder /app/out ./transports/bifrost-http/internal/uiassets/ui
 
   # Build the binary with CGO enabled and static SQLite linking
   ARG VERSION=unknown

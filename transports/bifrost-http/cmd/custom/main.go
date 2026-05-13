@@ -7,8 +7,8 @@ package main
 
 import (
 	"context"
-	"embed"
 	"flag"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -18,12 +18,10 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
+	uiassets "github.com/maximhq/bifrost/transports/bifrost-http/internal/uiassets"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bifrostServer "github.com/maximhq/bifrost/transports/bifrost-http/server"
 )
-
-//go:embed all:ui
-var uiContent embed.FS
 
 var Version string
 
@@ -41,6 +39,10 @@ func init() {
 	defaultLogLevel := strings.ToLower(os.Getenv("LOG_LEVEL"))
 	if defaultLogLevel == "" {
 		defaultLogLevel = bifrostServer.DefaultLogLevel
+	}
+	uiContent, err := fs.Sub(uiassets.Content, "ui")
+	if err != nil {
+		panic(err)
 	}
 	server = bifrostServer.NewBifrostHTTPServer(Version, uiContent)
 	flag.StringVar(&server.Port, "port", bifrostServer.DefaultPort, "Port to run the server on")

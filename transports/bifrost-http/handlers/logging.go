@@ -1376,11 +1376,6 @@ func (h *LoggingHandler) deleteLogs(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if len(req.IDs) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "No log IDs provided")
-		return
-	}
-
 	if err := h.logManager.DeleteLogs(ctx, req.IDs); err != nil {
 		logger.Error("failed to delete logs: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete logs")

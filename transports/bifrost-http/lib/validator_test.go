@@ -1379,8 +1379,10 @@ func TestValidateConfigSchema_AzureKeyConfig_MissingEndpoint(t *testing.T) {
 }
 
 func TestValidateConfigSchema_AzureKeyConfig_MissingApiVersion(t *testing.T) {
-	// Missing required field: api_version in azure_key_config
-	invalidConfig := `{
+	// api_version is optional at the schema level: the Azure provider falls
+	// back to AzureAPIVersionDefault at runtime when the key config omits it
+	// (see core/providers/azure/azure.go). Only `endpoint` is required.
+	configWithoutAPIVersion := `{
 		"providers": {
 			"azure": {
 				"keys": [
@@ -1397,9 +1399,8 @@ func TestValidateConfigSchema_AzureKeyConfig_MissingApiVersion(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
-	if err == nil {
-		t.Error("expected config missing 'api_version' in Azure key config to fail validation")
+	if err := ValidateConfigSchema([]byte(configWithoutAPIVersion), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected config without api_version to pass validation (runtime supplies a default), got: %v", err)
 	}
 }
 

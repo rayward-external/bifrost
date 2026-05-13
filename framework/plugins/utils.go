@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,33 +29,26 @@ var pluginDownloadClientForRequest = func() *http.Client {
 }
 
 // DownloadPlugin downloads a plugin from a validated external URL and
-// returns the local file path. SSRF protection happens in two places:
+// returns the local file path. SSRF protection has three layers:
 //
-//  1. The URL is parsed and then sanitized by reconstructing a fresh
-//     url.URL from its parsed scheme/host/path/query components so the
-//     value sent to the network sink is provably derived from a
-//     ValidateExternalURL-checked input (closes CodeQL go/request-forgery).
-//  2. The client returned by pluginDownloadClientForRequest re-validates
-//     every redirect target via CheckRedirect, so an open redirect cannot
-//     pivot to an internal address.
+//  1. bifrost.ValidateExternalURL performs the project-wide scheme +
+//     hostname + IP-range check on the original URL string.
+//  2. validatePluginURL (below) repeats the IP-resolution + private-range
+//     rejection inline so CodeQL's intra-procedural taint tracker can see
+//     the sanitization on the path to the http.NewRequest sink (closes
+//     CodeQL go/request-forgery).
+//  3. The client returned by pluginDownloadClientForRequest re-runs
+//     ValidateExternalURL on every redirect via CheckRedirect, so an open
+//     redirect cannot pivot to an internal address mid-download.
 func DownloadPlugin(pluginURL string, extension string) (string, error) {
 	if err := bifrost.ValidateExternalURL(pluginURL); err != nil {
 		return "", fmt.Errorf("invalid plugin URL: %w", err)
 	}
 
-	parsed, err := url.Parse(pluginURL)
+	sanitized, err := validatePluginURL(pluginURL)
 	if err != nil {
-		return "", fmt.Errorf("invalid plugin URL: %w", err)
+		return "", err
 	}
-	// Reconstruct the URL from its parsed components so the value flowing
-	// into http.NewRequest is provably derived from ValidateExternalURL's
-	// sanitization rather than carrying taint from the raw string input.
-	sanitized := (&url.URL{
-		Scheme:   parsed.Scheme,
-		Host:     parsed.Host,
-		Path:     parsed.EscapedPath(),
-		RawQuery: parsed.RawQuery,
-	}).String()
 
 	req, err := http.NewRequest(http.MethodGet, sanitized, nil)
 	if err != nil {
@@ -111,4 +105,64 @@ func DownloadPlugin(pluginURL string, extension string) (string, error) {
 	}
 
 	return tempPath, nil
+}
+
+// validatePluginURL performs the SSRF-relevant checks on the plugin URL
+// inline, so CodeQL's intra-procedural go/request-forgery analyzer can see
+// the sanitization on the path from the caller-supplied URL to the
+// downstream http.NewRequest sink. This mirrors bifrost.ValidateExternalURL
+// (which DownloadPlugin already calls), but the cross-package check isn't
+// recognized by CodeQL's default taint model.
+//
+// The returned URL is reconstructed from the parsed components (literal
+// allowlisted scheme + verified non-private host) so the value flowing
+// out of this function is provably derived from the validated inputs
+// rather than carrying the raw caller-supplied string forward.
+func validatePluginURL(pluginURL string) (string, error) {
+	parsed, err := url.Parse(pluginURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid plugin URL: %w", err)
+	}
+
+	// Allowlist: only http/https. Comparison-with-literal severs taint.
+	var scheme string
+	switch parsed.Scheme {
+	case "http":
+		scheme = "http"
+	case "https":
+		scheme = "https"
+	default:
+		return "", fmt.Errorf("plugin URL scheme not allowed: %q", parsed.Scheme)
+	}
+
+	hostname := parsed.Hostname()
+	if hostname == "" {
+		return "", fmt.Errorf("plugin URL must include a hostname")
+	}
+
+	// Resolve the hostname and reject if any returned address is
+	// loopback, private, link-local, multicast, or unspecified.
+	// net.IP.IsPrivate/IsLoopback comparisons are CodeQL-recognized
+	// SSRF sanitizers that break the request-forgery taint chain.
+	ips, err := net.LookupIP(hostname)
+	if err != nil {
+		return "", fmt.Errorf("plugin URL host resolution failed: %w", err)
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
+			ip.IsMulticast() || ip.IsUnspecified() {
+			return "", fmt.Errorf("plugin URL resolves to disallowed address: %s", ip)
+		}
+	}
+
+	// Rebuild the URL from the verified scheme + parsed host/path/query.
+	// scheme is a literal here, parsed.Host has been resolved + checked.
+	out := &url.URL{
+		Scheme:   scheme,
+		Host:     parsed.Host,
+		Path:     parsed.EscapedPath(),
+		RawQuery: parsed.RawQuery,
+	}
+	return out.String(), nil
 }

@@ -376,6 +376,7 @@ type LargePayloadMetadata struct {
 type Fallback struct {
 	Provider ModelProvider `json:"provider"`
 	Model    string        `json:"model"`
+	KeyID    string        `json:"key_id,omitempty"`
 }
 
 // BifrostRequest is the request struct for all bifrost requests.

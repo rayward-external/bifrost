@@ -108,6 +108,18 @@ func IsAllDigitsASCII(s string) bool {
 	return true
 }
 
+// FormatFallback formats a fallback as provider/model with an optional key_id query parameter.
+func FormatFallback(provider ModelProvider, model string, keyID string) string {
+	fallback := strings.TrimSpace(string(provider)) + "/" + strings.TrimSpace(model)
+	keyID = strings.TrimSpace(keyID)
+	if keyID == "" {
+		return fallback
+	}
+	values := url.Values{}
+	values.Set("key_id", keyID)
+	return fallback + "?" + values.Encode()
+}
+
 // ParseFallbacks parses a slice of strings into a slice of Fallback structs
 func ParseFallbacks(fallbacks []string) []Fallback {
 	if len(fallbacks) == 0 {
@@ -115,15 +127,35 @@ func ParseFallbacks(fallbacks []string) []Fallback {
 	}
 	parsedFallbacks := make([]Fallback, 0, len(fallbacks))
 	for _, fallback := range fallbacks {
+		fallback = strings.TrimSpace(fallback)
 		if fallback == "" {
 			continue
 		}
 		fallbackProvider, fallbackModel := ParseModelString(fallback, "")
+		fallbackModel, keyID := parseFallbackOptions(fallbackModel)
 		if fallbackProvider != "" && fallbackModel != "" {
-			parsedFallbacks = append(parsedFallbacks, Fallback{Provider: fallbackProvider, Model: fallbackModel})
+			parsedFallbacks = append(parsedFallbacks, Fallback{Provider: fallbackProvider, Model: fallbackModel, KeyID: keyID})
 		}
 	}
 	return parsedFallbacks
+}
+
+func parseFallbackOptions(modelSpec string) (string, string) {
+	modelSpec = strings.TrimSpace(modelSpec)
+	model, rawQuery, ok := strings.Cut(modelSpec, "?")
+	if !ok {
+		return modelSpec, ""
+	}
+
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return modelSpec, ""
+	}
+	keyID := strings.TrimSpace(values.Get("key_id"))
+	if keyID == "" {
+		keyID = strings.TrimSpace(values.Get("keyID"))
+	}
+	return strings.TrimSpace(model), keyID
 }
 
 //* IMAGE UTILS *//

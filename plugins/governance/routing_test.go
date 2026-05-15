@@ -343,6 +343,85 @@ func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T
 	assert.Equal(t, pinnedKeyID, ctxKeyID)
 }
 
+func TestEvaluateRoutingRules_AddsOtherWeightedTargetsAsKeyAwareFallbacks(t *testing.T) {
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
+	require.NoError(t, err)
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID:              "geo-failover",
+		Name:            "Geo Failover",
+		CelExpression:   "model == 'gpt-4o'",
+		ParsedFallbacks: []string{"azure/"},
+		Targets: []configstoreTables.TableRoutingTarget{
+			{
+				Provider: bifrost.Ptr("azure"),
+				Model:    bifrost.Ptr("gpt-4o"),
+				KeyID:    bifrost.Ptr("azure-east"),
+				Weight:   0.70,
+			},
+			{
+				Provider: bifrost.Ptr("azure"),
+				Model:    bifrost.Ptr("gpt-4o"),
+				KeyID:    bifrost.Ptr("azure-south-central"),
+				Weight:   0.30,
+			},
+		},
+		Enabled:  bifrost.Ptr(true),
+		Scope:    "global",
+		Priority: 0,
+	}
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), rule))
+
+	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), &RoutingContext{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o",
+		Headers:     map[string]string{},
+		QueryParams: map[string]string{},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.NotEmpty(t, decision.KeyID)
+
+	var peerKeyID string
+	switch decision.KeyID {
+	case "azure-east":
+		peerKeyID = "azure-south-central"
+	case "azure-south-central":
+		peerKeyID = "azure-east"
+	default:
+		t.Fatalf("unexpected selected key id: %s", decision.KeyID)
+	}
+
+	assert.Contains(t, decision.Fallbacks, schemas.FormatFallback(schemas.Azure, "gpt-4o", peerKeyID))
+	assert.NotContains(t, decision.Fallbacks, schemas.FormatFallback(schemas.Azure, "gpt-4o", decision.KeyID))
+	assert.Equal(t, "azure/", decision.Fallbacks[len(decision.Fallbacks)-1])
+}
+
+func TestBuildRoutingTargetFallbacksIncludesZeroWeightStandby(t *testing.T) {
+	selected := configstoreTables.TableRoutingTarget{
+		Provider: bifrost.Ptr("azure"),
+		Model:    bifrost.Ptr("gpt-4o"),
+		KeyID:    bifrost.Ptr("primary-key"),
+		Weight:   1,
+	}
+	targets := []configstoreTables.TableRoutingTarget{
+		selected,
+		{
+			Provider: bifrost.Ptr("azure"),
+			Model:    bifrost.Ptr("gpt-4o"),
+			KeyID:    bifrost.Ptr("standby-key"),
+			Weight:   0,
+		},
+	}
+
+	fallbacks := buildRoutingTargetFallbacks(targets, selected, schemas.OpenAI, "gpt-4o")
+
+	assert.Equal(t, []string{schemas.FormatFallback(schemas.Azure, "gpt-4o", "standby-key")}, fallbacks)
+}
+
 // TestEvaluateRoutingRules_ScopePrecedence tests virtual_key scope takes precedence over global
 func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)

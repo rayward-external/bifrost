@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -228,7 +229,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					Provider:        provider,
 					Model:           model,
 					KeyID:           keyID,
-					Fallbacks:       rule.ParsedFallbacks,
+					Fallbacks:       buildRuleFallbacks(rule, target, currentProvider, currentModel),
 					MatchedRuleID:   rule.ID,
 					MatchedRuleName: rule.Name,
 				}
@@ -321,6 +322,100 @@ func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (confi
 		}
 	}
 	return valid[len(valid)-1], true
+}
+
+func routingTargetSortKey(target configstoreTables.TableRoutingTarget) string {
+	return strings.Join([]string{
+		routingTargetValue(target.Provider),
+		routingTargetValue(target.Model),
+		routingTargetValue(target.KeyID),
+		fmt.Sprintf("%020.10f", target.Weight),
+	}, "\x00")
+}
+
+func buildRuleFallbacks(rule *configstoreTables.TableRoutingRule, selected configstoreTables.TableRoutingTarget, currentProvider schemas.ModelProvider, currentModel string) []string {
+	targetFallbacks := buildRoutingTargetFallbacks(rule.Targets, selected, currentProvider, currentModel)
+	return appendUniqueFallbacks(targetFallbacks, rule.ParsedFallbacks...)
+}
+
+func buildRoutingTargetFallbacks(targets []configstoreTables.TableRoutingTarget, selected configstoreTables.TableRoutingTarget, currentProvider schemas.ModelProvider, currentModel string) []string {
+	candidates := fallbackCandidateTargets(targets)
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Weight != candidates[j].Weight {
+			return candidates[i].Weight > candidates[j].Weight
+		}
+		return routingTargetSortKey(candidates[i]) < routingTargetSortKey(candidates[j])
+	})
+
+	fallbacks := make([]string, 0, len(candidates))
+	for _, target := range candidates {
+		if sameRoutingTarget(selected, target, currentProvider, currentModel) {
+			continue
+		}
+		provider, model, keyID := resolvedRoutingTarget(target, currentProvider, currentModel)
+		if provider == "" || model == "" {
+			continue
+		}
+		fallbacks = append(fallbacks, schemas.FormatFallback(schemas.ModelProvider(provider), model, keyID))
+	}
+	return fallbacks
+}
+
+func fallbackCandidateTargets(targets []configstoreTables.TableRoutingTarget) []configstoreTables.TableRoutingTarget {
+	candidates := make([]configstoreTables.TableRoutingTarget, 0, len(targets))
+	for _, target := range targets {
+		if target.Weight < 0 {
+			continue
+		}
+		candidates = append(candidates, target)
+	}
+	return candidates
+}
+
+func sameRoutingTarget(left configstoreTables.TableRoutingTarget, right configstoreTables.TableRoutingTarget, currentProvider schemas.ModelProvider, currentModel string) bool {
+	leftProvider, leftModel, leftKeyID := resolvedRoutingTarget(left, currentProvider, currentModel)
+	rightProvider, rightModel, rightKeyID := resolvedRoutingTarget(right, currentProvider, currentModel)
+	return leftProvider == rightProvider && leftModel == rightModel && leftKeyID == rightKeyID
+}
+
+func resolvedRoutingTarget(target configstoreTables.TableRoutingTarget, currentProvider schemas.ModelProvider, currentModel string) (string, string, string) {
+	provider := strings.TrimSpace(string(currentProvider))
+	if target.Provider != nil && strings.TrimSpace(*target.Provider) != "" {
+		provider = strings.TrimSpace(*target.Provider)
+	}
+	model := strings.TrimSpace(currentModel)
+	if target.Model != nil && strings.TrimSpace(*target.Model) != "" {
+		model = strings.TrimSpace(*target.Model)
+	}
+	keyID := routingTargetValue(target.KeyID)
+	return provider, model, keyID
+}
+
+func appendUniqueFallbacks(primary []string, secondary ...string) []string {
+	seen := make(map[string]struct{}, len(primary)+len(secondary))
+	merged := make([]string, 0, len(primary)+len(secondary))
+	for _, fallback := range append(primary, secondary...) {
+		fallback = strings.TrimSpace(fallback)
+		if fallback == "" {
+			continue
+		}
+		if _, ok := seen[fallback]; ok {
+			continue
+		}
+		seen[fallback] = struct{}{}
+		merged = append(merged, fallback)
+	}
+	return merged
+}
+
+func routingTargetValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
 }
 
 // buildScopeChain builds the scope evaluation chain based on organizational hierarchy

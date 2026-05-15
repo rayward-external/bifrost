@@ -4478,6 +4478,17 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 	return &fallbackReq
 }
 
+func applyFallbackKeyToContext(ctx *schemas.BifrostContext, fallback schemas.Fallback) {
+	if ctx == nil {
+		return
+	}
+	keyID := strings.TrimSpace(fallback.KeyID)
+	if keyID == "" {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
+}
+
 // shouldContinueWithFallbacks processes errors from fallback attempts
 // Returns true if we should continue with more fallbacks, false if we should stop
 func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, fallbackErr *schemas.BifrostError) bool {
@@ -4544,6 +4555,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		bifrost.logger.Debug(fmt.Sprintf("trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		applyFallbackKeyToContext(ctx, fallback)
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
@@ -4625,6 +4637,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		applyFallbackKeyToContext(ctx, fallback)
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()

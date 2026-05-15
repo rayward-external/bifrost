@@ -818,6 +818,23 @@ func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 	}
 }
 
+func TestApplyFallbackKeyToContextPinsKeyID(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "primary-key")
+
+	clearCtxForFallback(ctx)
+	applyFallbackKeyToContext(ctx, schemas.Fallback{
+		Provider: schemas.Azure,
+		Model:    "gpt-4o",
+		KeyID:    "secondary-key",
+	})
+
+	keyID, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string)
+	if keyID != "secondary-key" {
+		t.Fatalf("expected fallback key pin %q, got %q", "secondary-key", keyID)
+	}
+}
+
 // mockKVStore implements schemas.KVStore for session stickiness tests.
 type mockKVStore struct {
 	mu   sync.RWMutex

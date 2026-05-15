@@ -53,9 +53,10 @@ func newTestAsyncExecutor(t *testing.T) *AsyncJobExecutor {
 }
 
 // waitForJobCompletion polls until the operation callback has been invoked.
+// Deadline is generous to tolerate CI runners under -race + coverage load.
 func waitForJobCompletion(t *testing.T, done *atomic.Bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if done.Load() {
 			return
@@ -69,9 +70,10 @@ func waitForJobCompletion(t *testing.T, done *atomic.Bool) {
 // status (completed or failed), or times out. This avoids a fragile time.Sleep
 // between the operation callback completing and the DB update finishing.
 // Processing is intermediate and must not be treated as terminal.
+// Deadline is generous to tolerate CI runners under -race + coverage load.
 func waitForJobStatus(t *testing.T, store LogStore, jobID string) *AsyncJob {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		job, err := store.FindAsyncJobByID(context.Background(), jobID)
 		if err == nil && (job.Status == schemas.AsyncJobStatusCompleted || job.Status == schemas.AsyncJobStatusFailed) {

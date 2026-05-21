@@ -1975,7 +1975,10 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 				},
 			},
 			expected: &bedrock.BedrockConverseResponse{
-				StopReason: "tool_use",
+				// The toolUse is already resolved by a matching toolResult in
+				// the same message (self-resolving / server-managed tool), so
+				// the stop reason is "end_turn", not "tool_use".
+				StopReason: "end_turn",
 				Output: &bedrock.BedrockConverseOutput{
 					Message: &bedrock.BedrockMessage{
 						Role: bedrock.BedrockMessageRoleAssistant,

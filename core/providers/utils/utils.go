@@ -419,6 +419,11 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
+	// Fall back to the package noop logger when callers pass a nil logger,
+	// mirroring ConfigureProxy and preventing a nil-pointer dereference.
+	if logger == nil {
+		logger = getLogger()
+	}
 	if networkConfig.CACertPEM != nil && networkConfig.CACertPEM.IsFromEnv() && networkConfig.CACertPEM.GetValue() == "" {
 		errMsg := fmt.Sprintf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", networkConfig.CACertPEM.EnvVar)
 		logger.Error(errMsg)

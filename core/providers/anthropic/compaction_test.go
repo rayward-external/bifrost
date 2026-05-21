@@ -425,6 +425,10 @@ func TestToAnthropicResponsesStreamResponse_TextOutputItemAdded_NotAffectedByCom
 func TestToBifrostResponsesResponse_PreservesStopReason(t *testing.T) {
 	t.Parallel()
 
+	// ToBifrostResponsesResponse normalizes the native Anthropic stop reason
+	// to the canonical Bifrost finish reason via ConvertAnthropicFinishReasonToBifrost,
+	// consistent with the Chat path and the reverse converter ToAnthropicResponsesResponse.
+	// Anthropic-only reasons without a Bifrost equivalent (e.g. "compaction") pass through.
 	tests := []struct {
 		name               string
 		stopReason         AnthropicStopReason
@@ -438,17 +442,17 @@ func TestToBifrostResponsesResponse_PreservesStopReason(t *testing.T) {
 		{
 			name:               "end_turn stop reason",
 			stopReason:         AnthropicStopReasonEndTurn,
-			expectedStopReason: "end_turn",
+			expectedStopReason: "stop",
 		},
 		{
 			name:               "tool_use stop reason",
 			stopReason:         AnthropicStopReasonToolUse,
-			expectedStopReason: "tool_use",
+			expectedStopReason: "tool_calls",
 		},
 		{
 			name:               "max_tokens stop reason",
 			stopReason:         AnthropicStopReasonMaxTokens,
-			expectedStopReason: "max_tokens",
+			expectedStopReason: "length",
 		},
 	}
 

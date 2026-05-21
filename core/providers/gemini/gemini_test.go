@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -433,6 +434,97 @@ func TestThoughtSignatureBypassSentinelRoundTripsThroughJSON(t *testing.T) {
 }
 
 // TestBifrostToGeminiToolConversion tests the conversion of tools from Bifrost to Gemini format
+// geminiParamsJSONSchema unmarshals a FunctionDeclaration's ParametersJSONSchema
+// (raw JSON Schema, introduced in #3444 — gemini tool conversion now emits
+// parametersJsonSchema instead of the structured *Schema in Parameters) into a
+// generic map so tests can assert against the JSON Schema wire format.
+func geminiParamsJSONSchema(t *testing.T, fd *gemini.FunctionDeclaration) map[string]interface{} {
+	t.Helper()
+	require.NotNil(t, fd.ParametersJSONSchema, "ParametersJSONSchema must be set")
+	raw, ok := fd.ParametersJSONSchema.(json.RawMessage)
+	require.True(t, ok, "ParametersJSONSchema should be json.RawMessage, got %T", fd.ParametersJSONSchema)
+	var m map[string]interface{}
+	require.NoError(t, json.Unmarshal(raw, &m), "ParametersJSONSchema should be a valid JSON object")
+	return m
+}
+
+// jsonSchemaProp extracts a named property schema from a JSON Schema object's
+// "properties" map.
+func jsonSchemaProp(t *testing.T, schema map[string]interface{}, name string) map[string]interface{} {
+	t.Helper()
+	props, ok := schema["properties"].(map[string]interface{})
+	require.True(t, ok, "schema should have a properties object")
+	prop, ok := props[name].(map[string]interface{})
+	require.True(t, ok, "property %q should be present", name)
+	return prop
+}
+
+// jsonObjectKeyOrder returns the keys of the JSON object encoded in raw, in the
+// order they appear on the wire. json.Unmarshal into a map loses ordering, so a
+// token stream is used to verify property ordering is preserved (#3444 — the
+// raw parametersJsonSchema must keep the client's intended field order).
+func jsonObjectKeyOrder(t *testing.T, raw []byte) []string {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	require.NoError(t, err)
+	require.Equal(t, json.Delim('{'), tok, "expected a JSON object")
+	var keys []string
+	depth := 0
+	for dec.More() || depth > 0 {
+		tok, err := dec.Token()
+		require.NoError(t, err)
+		switch v := tok.(type) {
+		case json.Delim:
+			if v == '{' || v == '[' {
+				depth++
+			} else {
+				depth--
+			}
+		case string:
+			if depth == 0 {
+				keys = append(keys, v)
+				// Skip the value associated with this key.
+				skipJSONValue(t, dec)
+			}
+		}
+	}
+	return keys
+}
+
+// skipJSONValue consumes exactly one JSON value (the value following an object
+// key) from the decoder, descending into nested objects/arrays.
+func skipJSONValue(t *testing.T, dec *json.Decoder) {
+	t.Helper()
+	tok, err := dec.Token()
+	require.NoError(t, err)
+	if d, ok := tok.(json.Delim); ok && (d == '{' || d == '[') {
+		depth := 1
+		for depth > 0 {
+			tok, err := dec.Token()
+			require.NoError(t, err)
+			if d, ok := tok.(json.Delim); ok {
+				if d == '{' || d == '[' {
+					depth++
+				} else {
+					depth--
+				}
+			}
+		}
+	}
+}
+
+// jsonSchemaPropertyOrder returns the property names of a JSON Schema object's
+// "properties" sub-object, in wire order.
+func jsonSchemaPropertyOrder(t *testing.T, raw json.RawMessage) []string {
+	t.Helper()
+	var top map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw, &top))
+	props, ok := top["properties"]
+	require.True(t, ok, "schema should have a properties object")
+	return jsonObjectKeyOrder(t, props)
+}
+
 func TestBifrostToGeminiToolConversion(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -493,22 +585,28 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 				// Basic validation
 				assert.Equal(t, "search_products", fd.Name)
 				assert.Equal(t, "Search for products with filters", fd.Description)
-				assert.Equal(t, []string{"query"}, fd.Parameters.Required)
+
+				// Tool parameters are now emitted as raw JSON Schema in
+				// ParametersJSONSchema (#3444), not the structured Parameters.
+				schema := geminiParamsJSONSchema(t, fd)
+				assert.Equal(t, "object", schema["type"])
+				assert.Equal(t, []interface{}{"query"}, schema["required"])
 
 				// String property
-				queryProp := fd.Parameters.Properties["query"]
-				assert.Equal(t, gemini.Type("string"), queryProp.Type)
+				queryProp := jsonSchemaProp(t, schema, "query")
+				assert.Equal(t, "string", queryProp["type"])
 
 				// Enum property
-				categoryProp := fd.Parameters.Properties["category"]
-				assert.Equal(t, gemini.Type("string"), categoryProp.Type)
-				assert.Equal(t, []string{"electronics", "books", "clothing"}, categoryProp.Enum)
+				categoryProp := jsonSchemaProp(t, schema, "category")
+				assert.Equal(t, "string", categoryProp["type"])
+				assert.Equal(t, []interface{}{"electronics", "books", "clothing"}, categoryProp["enum"])
 
 				// Array with items (the critical bug fix)
-				tagsProp := fd.Parameters.Properties["tags"]
-				assert.Equal(t, gemini.Type("array"), tagsProp.Type)
-				require.NotNil(t, tagsProp.Items, "items field must be present - this was the bug")
-				assert.Equal(t, gemini.Type("string"), tagsProp.Items.Type)
+				tagsProp := jsonSchemaProp(t, schema, "tags")
+				assert.Equal(t, "array", tagsProp["type"])
+				tagsItems, ok := tagsProp["items"].(map[string]interface{})
+				require.True(t, ok, "items field must be present - this was the bug")
+				assert.Equal(t, "string", tagsItems["type"])
 			},
 		},
 		{
@@ -572,21 +670,28 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 				require.Len(t, result.Tools, 1)
 				fd := result.Tools[0].FunctionDeclarations[0]
 
+				schema := geminiParamsJSONSchema(t, fd)
+
 				// Nested object
-				customerProp := fd.Parameters.Properties["customer"]
-				assert.Equal(t, gemini.Type("object"), customerProp.Type)
-				assert.Contains(t, customerProp.Properties, "name")
-				assert.Contains(t, customerProp.Properties, "email")
-				assert.Equal(t, []string{"name", "email"}, customerProp.Required)
+				customerProp := jsonSchemaProp(t, schema, "customer")
+				assert.Equal(t, "object", customerProp["type"])
+				customerProps, ok := customerProp["properties"].(map[string]interface{})
+				require.True(t, ok, "customer should have properties")
+				assert.Contains(t, customerProps, "name")
+				assert.Contains(t, customerProps, "email")
+				assert.Equal(t, []interface{}{"name", "email"}, customerProp["required"])
 
 				// Array of objects
-				itemsProp := fd.Parameters.Properties["items"]
-				assert.Equal(t, gemini.Type("array"), itemsProp.Type)
-				require.NotNil(t, itemsProp.Items, "array items must be present")
-				assert.Equal(t, gemini.Type("object"), itemsProp.Items.Type)
-				assert.Contains(t, itemsProp.Items.Properties, "product_id")
-				assert.Contains(t, itemsProp.Items.Properties, "quantity")
-				assert.Equal(t, []string{"product_id", "quantity"}, itemsProp.Items.Required)
+				itemsProp := jsonSchemaProp(t, schema, "items")
+				assert.Equal(t, "array", itemsProp["type"])
+				itemsItems, ok := itemsProp["items"].(map[string]interface{})
+				require.True(t, ok, "array items must be present")
+				assert.Equal(t, "object", itemsItems["type"])
+				itemsItemsProps, ok := itemsItems["properties"].(map[string]interface{})
+				require.True(t, ok, "array items should have properties")
+				assert.Contains(t, itemsItemsProps, "product_id")
+				assert.Contains(t, itemsItemsProps, "quantity")
+				assert.Equal(t, []interface{}{"product_id", "quantity"}, itemsItems["required"])
 			},
 		},
 		{
@@ -653,18 +758,21 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 				fd := result.Tools[0].FunctionDeclarations[0]
 				assert.Equal(t, "browser_fill_form", fd.Name)
 
-				fieldsProp := fd.Parameters.Properties["fields"]
-				assert.Equal(t, gemini.Type("array"), fieldsProp.Type)
-				require.NotNil(t, fieldsProp.Items, "array items must be present")
-				assert.Equal(t, gemini.Type("object"), fieldsProp.Items.Type)
+				schema := geminiParamsJSONSchema(t, fd)
+				fieldsProp := jsonSchemaProp(t, schema, "fields")
+				assert.Equal(t, "array", fieldsProp["type"])
+				fieldsItems, ok := fieldsProp["items"].(map[string]interface{})
+				require.True(t, ok, "array items must be present")
+				assert.Equal(t, "object", fieldsItems["type"])
 
 				// This is the critical assertion: nested properties inside items must
 				// be preserved even when they come as *OrderedMap from JSON deserialization.
-				require.NotNil(t, fieldsProp.Items.Properties, "nested properties must not be nil - this was the bug")
-				assert.Contains(t, fieldsProp.Items.Properties, "name")
-				assert.Contains(t, fieldsProp.Items.Properties, "ref")
-				assert.Contains(t, fieldsProp.Items.Properties, "value")
-				assert.Equal(t, []string{"name", "ref", "value"}, fieldsProp.Items.Required)
+				fieldsItemsProps, ok := fieldsItems["properties"].(map[string]interface{})
+				require.True(t, ok, "nested properties must not be nil - this was the bug")
+				assert.Contains(t, fieldsItemsProps, "name")
+				assert.Contains(t, fieldsItemsProps, "ref")
+				assert.Contains(t, fieldsItemsProps, "value")
+				assert.Equal(t, []interface{}{"name", "ref", "value"}, fieldsItems["required"])
 			},
 		},
 		{
@@ -701,10 +809,13 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 			},
 			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
 				fd := result.Tools[0].FunctionDeclarations[0]
-				dataProp := fd.Parameters.Properties["data"]
+				schema := geminiParamsJSONSchema(t, fd)
+				dataProp := jsonSchemaProp(t, schema, "data")
 
-				// Even empty items should be converted (not nil)
-				assert.NotNil(t, dataProp.Items, "empty items object should still be present")
+				// Even empty items should be present in the JSON Schema
+				dataItems, ok := dataProp["items"]
+				require.True(t, ok, "empty items object should still be present")
+				assert.NotNil(t, dataItems, "empty items object should still be present")
 			},
 		},
 		{
@@ -761,30 +872,26 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 				require.Len(t, result.Tools, 1)
 				fd := result.Tools[0].FunctionDeclarations[0]
 
+				schema := geminiParamsJSONSchema(t, fd)
+
 				// Validate string constraints
-				usernameProp := fd.Parameters.Properties["username"]
-				assert.Equal(t, gemini.Type("string"), usernameProp.Type)
-				require.NotNil(t, usernameProp.MinLength, "minLength should be set")
-				assert.Equal(t, int64(3), *usernameProp.MinLength)
-				require.NotNil(t, usernameProp.MaxLength, "maxLength should be set")
-				assert.Equal(t, int64(20), *usernameProp.MaxLength)
-				assert.Equal(t, "^[a-zA-Z0-9_]+$", usernameProp.Pattern)
+				usernameProp := jsonSchemaProp(t, schema, "username")
+				assert.Equal(t, "string", usernameProp["type"])
+				assert.Equal(t, float64(3), usernameProp["minLength"])
+				assert.Equal(t, float64(20), usernameProp["maxLength"])
+				assert.Equal(t, "^[a-zA-Z0-9_]+$", usernameProp["pattern"])
 
 				// Validate number constraints
-				ageProp := fd.Parameters.Properties["age"]
-				assert.Equal(t, gemini.Type("integer"), ageProp.Type)
-				require.NotNil(t, ageProp.Minimum, "minimum should be set")
-				assert.Equal(t, float64(0), *ageProp.Minimum)
-				require.NotNil(t, ageProp.Maximum, "maximum should be set")
-				assert.Equal(t, float64(150), *ageProp.Maximum)
+				ageProp := jsonSchemaProp(t, schema, "age")
+				assert.Equal(t, "integer", ageProp["type"])
+				assert.Equal(t, float64(0), ageProp["minimum"])
+				assert.Equal(t, float64(150), ageProp["maximum"])
 
 				// Validate array constraints
-				tagsProp := fd.Parameters.Properties["tags"]
-				assert.Equal(t, gemini.Type("array"), tagsProp.Type)
-				require.NotNil(t, tagsProp.MinItems, "minItems should be set")
-				assert.Equal(t, int64(1), *tagsProp.MinItems)
-				require.NotNil(t, tagsProp.MaxItems, "maxItems should be set")
-				assert.Equal(t, int64(5), *tagsProp.MaxItems)
+				tagsProp := jsonSchemaProp(t, schema, "tags")
+				assert.Equal(t, "array", tagsProp["type"])
+				assert.Equal(t, float64(1), tagsProp["minItems"])
+				assert.Equal(t, float64(5), tagsProp["maxItems"])
 			},
 		},
 		{
@@ -828,15 +935,21 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 				require.Len(t, result.Tools, 1)
 				fd := result.Tools[0].FunctionDeclarations[0]
 
-				// Validate anyOf is preserved
-				idProp := fd.Parameters.Properties["id"]
-				require.NotNil(t, idProp.AnyOf, "anyOf should be set")
-				require.Len(t, idProp.AnyOf, 2, "anyOf should have 2 options")
-				assert.Equal(t, gemini.Type("string"), idProp.AnyOf[0].Type)
-				assert.Equal(t, gemini.Type("integer"), idProp.AnyOf[1].Type)
-
-				// Validate that sibling fields are stripped because Gemini rejects them
-				assert.Empty(t, idProp.Description, "description should be stripped from anyOf per Gemini validation rules")
+				// Validate anyOf is preserved in the raw JSON Schema. Tool
+				// parameters are now emitted verbatim as a JSON Schema document
+				// (#3444) — no Gemini-specific Schema transformation — so anyOf
+				// and any sibling fields pass through unmodified.
+				schema := geminiParamsJSONSchema(t, fd)
+				idProp := jsonSchemaProp(t, schema, "id")
+				anyOf, ok := idProp["anyOf"].([]interface{})
+				require.True(t, ok, "anyOf should be set")
+				require.Len(t, anyOf, 2, "anyOf should have 2 options")
+				opt0, ok := anyOf[0].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "string", opt0["type"])
+				opt1, ok := anyOf[1].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "integer", opt1["type"])
 			},
 		},
 		{
@@ -877,13 +990,13 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 				fd := result.Tools[0].FunctionDeclarations[0]
 
 				// Validate top-level array schema
-				assert.Equal(t, gemini.Type("array"), fd.Parameters.Type)
-				require.NotNil(t, fd.Parameters.Items, "items should be set on top-level array")
-				assert.Equal(t, gemini.Type("string"), fd.Parameters.Items.Type)
-				require.NotNil(t, fd.Parameters.MinItems, "minItems should be set")
-				assert.Equal(t, int64(1), *fd.Parameters.MinItems)
-				require.NotNil(t, fd.Parameters.MaxItems, "maxItems should be set")
-				assert.Equal(t, int64(10), *fd.Parameters.MaxItems)
+				schema := geminiParamsJSONSchema(t, fd)
+				assert.Equal(t, "array", schema["type"])
+				items, ok := schema["items"].(map[string]interface{})
+				require.True(t, ok, "items should be set on top-level array")
+				assert.Equal(t, "string", items["type"])
+				assert.Equal(t, float64(1), schema["minItems"])
+				assert.Equal(t, float64(10), schema["maxItems"])
 			},
 		},
 		{
@@ -930,18 +1043,19 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 				require.Len(t, result.Tools, 1)
 				fd := result.Tools[0].FunctionDeclarations[0]
 
+				schema := geminiParamsJSONSchema(t, fd)
+
 				// Validate title at top level
-				assert.Equal(t, "ConfigParameters", fd.Parameters.Title)
+				assert.Equal(t, "ConfigParameters", schema["title"])
 
 				// Validate misc fields on properties
-				enabledProp := fd.Parameters.Properties["enabled"]
-				assert.Equal(t, true, enabledProp.Default)
-				require.NotNil(t, enabledProp.Nullable, "nullable should be set")
-				assert.True(t, *enabledProp.Nullable)
-				assert.Equal(t, "Enabled Flag", enabledProp.Title)
+				enabledProp := jsonSchemaProp(t, schema, "enabled")
+				assert.Equal(t, true, enabledProp["default"])
+				assert.Equal(t, true, enabledProp["nullable"])
+				assert.Equal(t, "Enabled Flag", enabledProp["title"])
 
-				formatTypeProp := fd.Parameters.Properties["format_type"]
-				assert.Equal(t, "email", formatTypeProp.Format)
+				formatTypeProp := jsonSchemaProp(t, schema, "format_type")
+				assert.Equal(t, "email", formatTypeProp["format"])
 			},
 		},
 	}
@@ -989,15 +1103,23 @@ func TestBifrostToGeminiToolConversion_PropertyOrdering(t *testing.T) {
 	require.Len(t, result.Tools, 1)
 	fd := result.Tools[0].FunctionDeclarations[0]
 
-	// CoT: PropertyOrdering preserves client's intended field order
-	assert.Equal(t, []string{"chain_of_thought", "answer", "citations"}, fd.Parameters.PropertyOrdering,
-		"PropertyOrdering should preserve original property order")
+	// Tool parameters are emitted as raw JSON Schema in ParametersJSONSchema
+	// (#3444). The wire-level property order must preserve the client's
+	// intended field order.
+	rawSchema, ok := fd.ParametersJSONSchema.(json.RawMessage)
+	require.True(t, ok, "ParametersJSONSchema should be json.RawMessage, got %T", fd.ParametersJSONSchema)
+	order := jsonSchemaPropertyOrder(t, rawSchema)
+	assert.Equal(t, []string{"chain_of_thought", "answer", "citations"}, order,
+		"properties should preserve original property order on the wire")
 
-	// All properties present in map
-	assert.Len(t, fd.Parameters.Properties, 3)
-	assert.Contains(t, fd.Parameters.Properties, "chain_of_thought")
-	assert.Contains(t, fd.Parameters.Properties, "answer")
-	assert.Contains(t, fd.Parameters.Properties, "citations")
+	// All properties present
+	schema := geminiParamsJSONSchema(t, fd)
+	props, ok := schema["properties"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Len(t, props, 3)
+	assert.Contains(t, props, "chain_of_thought")
+	assert.Contains(t, props, "answer")
+	assert.Contains(t, props, "citations")
 }
 
 func TestBifrostToGeminiToolConversion_NestedPropertyOrdering(t *testing.T) {
@@ -1037,14 +1159,22 @@ func TestBifrostToGeminiToolConversion_NestedPropertyOrdering(t *testing.T) {
 	require.Len(t, result.Tools, 1)
 	fd := result.Tools[0].FunctionDeclarations[0]
 
-	// Top-level property ordering
-	assert.Equal(t, []string{"output", "reasoning"}, fd.Parameters.PropertyOrdering)
+	rawSchema, ok := fd.ParametersJSONSchema.(json.RawMessage)
+	require.True(t, ok, "ParametersJSONSchema should be json.RawMessage, got %T", fd.ParametersJSONSchema)
 
-	// Nested property ordering
-	outputSchema := fd.Parameters.Properties["output"]
-	require.NotNil(t, outputSchema)
-	assert.Equal(t, []string{"verdict", "score", "explanation"}, outputSchema.PropertyOrdering,
-		"nested PropertyOrdering should preserve original order")
+	// Top-level property ordering on the wire
+	assert.Equal(t, []string{"output", "reasoning"}, jsonSchemaPropertyOrder(t, rawSchema))
+
+	// Nested property ordering — "output" is itself an object schema, its
+	// nested "properties" must keep the client's order too.
+	var top map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rawSchema, &top))
+	var props map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(top["properties"], &props))
+	outputRaw, ok := props["output"]
+	require.True(t, ok, "output property should be present")
+	assert.Equal(t, []string{"verdict", "score", "explanation"}, jsonSchemaPropertyOrder(t, outputRaw),
+		"nested properties should preserve original order")
 }
 
 // TestStructuredOutputConversion tests that response_format with json_schema is properly converted to Gemini's responseJsonSchema
@@ -1750,7 +1880,7 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 
 				// Validate tool response content (last Content)
 				toolResponseContent := result.Contents[2]
-				assert.Equal(t, "model", toolResponseContent.Role, "Tool responses use 'model' role in Gemini")
+				assert.Equal(t, "user", toolResponseContent.Role, "Gemini requires function responses under the 'user' role")
 				require.Len(t, toolResponseContent.Parts, 1, "Should have exactly 1 part for single tool response")
 
 				// Verify ONLY functionResponse part (no text part)
@@ -1821,7 +1951,7 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 
 				// Validate grouped tool responses (last Content)
 				toolResponseContent := result.Contents[2]
-				assert.Equal(t, "model", toolResponseContent.Role, "Grouped tool responses use 'model' role")
+				assert.Equal(t, "user", toolResponseContent.Role, "Gemini requires grouped function responses under the 'user' role")
 				require.Len(t, toolResponseContent.Parts, 2, "Should have exactly 2 parts for 2 tool responses (parallel calling)")
 
 				// Verify first tool response - ONLY functionResponse
@@ -1881,7 +2011,7 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 				require.Len(t, result.Contents, 3, "Should have 3 Contents: user, assistant with tool calls, grouped tool responses")
 
 				toolResponseContent := result.Contents[2]
-				assert.Equal(t, "model", toolResponseContent.Role)
+				assert.Equal(t, "user", toolResponseContent.Role)
 				require.Len(t, toolResponseContent.Parts, 3, "Should have exactly 3 parts for 3 tool responses")
 
 				// Verify all are functionResponse only (no text)
@@ -1940,7 +2070,7 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 
 				// Grouped tool responses
 				toolContent := result.Contents[2]
-				assert.Equal(t, "model", toolContent.Role)
+				assert.Equal(t, "user", toolContent.Role)
 				require.Len(t, toolContent.Parts, 2, "Tool responses should be grouped")
 				for _, part := range toolContent.Parts {
 					assert.NotNil(t, part.FunctionResponse)
@@ -1989,7 +2119,7 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 
 				// Grouped tool responses at the end should still be flushed
 				toolContent := result.Contents[2]
-				assert.Equal(t, "model", toolContent.Role)
+				assert.Equal(t, "user", toolContent.Role)
 				require.Len(t, toolContent.Parts, 2, "Tool responses at end should be grouped and flushed")
 				for _, part := range toolContent.Parts {
 					assert.NotNil(t, part.FunctionResponse)
@@ -2081,7 +2211,7 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 				}
 
 				require.NotNil(t, toolResponseContent, "Should have a Content with function responses")
-				assert.Equal(t, "model", toolResponseContent.Role, "Function responses use 'model' role")
+				assert.Equal(t, "user", toolResponseContent.Role, "Gemini requires function responses under the 'user' role")
 				require.Len(t, toolResponseContent.Parts, 2, "Should have exactly 2 parts for 2 function outputs (parallel calling)")
 
 				// Verify first function response - ONLY functionResponse
@@ -2144,7 +2274,7 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 				}
 
 				require.NotNil(t, toolResponseContent)
-				assert.Equal(t, "model", toolResponseContent.Role)
+				assert.Equal(t, "user", toolResponseContent.Role)
 				require.Len(t, toolResponseContent.Parts, 1, "Single function output should have 1 part")
 
 				// Verify ONLY functionResponse part (no text/content)
@@ -2221,7 +2351,7 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 				}
 
 				require.NotNil(t, groupedToolContent, "Should have grouped function responses")
-				assert.Equal(t, "model", groupedToolContent.Role)
+				assert.Equal(t, "user", groupedToolContent.Role)
 				require.Len(t, groupedToolContent.Parts, 2, "Function outputs should be grouped before user message")
 
 				// Verify both are functionResponse only
@@ -2365,16 +2495,21 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 				assert.Equal(t, "filter_data", fd.Name)
 				assert.Equal(t, "Filter data with criteria", fd.Description)
 
+				// Tool parameters are emitted as raw JSON Schema in
+				// ParametersJSONSchema (#3444).
+				schema := geminiParamsJSONSchema(t, fd)
+
 				// Array with items - critical test
-				filtersProp := fd.Parameters.Properties["filters"]
-				assert.Equal(t, gemini.Type("array"), filtersProp.Type)
-				require.NotNil(t, filtersProp.Items, "items field must be present in Responses API conversion")
-				assert.Equal(t, gemini.Type("string"), filtersProp.Items.Type)
-				assert.Equal(t, "Filter criterion", filtersProp.Items.Description)
+				filtersProp := jsonSchemaProp(t, schema, "filters")
+				assert.Equal(t, "array", filtersProp["type"])
+				filtersItems, ok := filtersProp["items"].(map[string]interface{})
+				require.True(t, ok, "items field must be present in Responses API conversion")
+				assert.Equal(t, "string", filtersItems["type"])
+				assert.Equal(t, "Filter criterion", filtersItems["description"])
 
 				// Enum validation
-				sortProp := fd.Parameters.Properties["sort_order"]
-				assert.Equal(t, []string{"asc", "desc"}, sortProp.Enum)
+				sortProp := jsonSchemaProp(t, schema, "sort_order")
+				assert.Equal(t, []interface{}{"asc", "desc"}, sortProp["enum"])
 			},
 		},
 		{
@@ -2422,16 +2557,24 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
 				require.Len(t, result.Tools, 1)
 				fd := result.Tools[0].FunctionDeclarations[0]
-				require.NotNil(t, fd.Parameters)
 
-				timeoutProp := fd.Parameters.Properties["timeout_secs"]
-				require.NotNil(t, timeoutProp, "timeout_secs should be converted")
-				require.Len(t, timeoutProp.AnyOf, 2, "anyOf should be preserved")
-				assert.Equal(t, gemini.Type("integer"), timeoutProp.AnyOf[0].Type)
-				assert.Equal(t, gemini.Type("null"), timeoutProp.AnyOf[1].Type)
-				assert.Empty(t, timeoutProp.Description, "Gemini rejects sibling fields alongside anyOf")
-				assert.Empty(t, timeoutProp.Type, "Gemini rejects type alongside anyOf")
+				// Tool parameters are emitted verbatim as a JSON Schema document
+				// in ParametersJSONSchema (#3444) — no Gemini-specific Schema
+				// transformation — so anyOf and its sibling fields pass through
+				// unmodified.
+				schema := geminiParamsJSONSchema(t, fd)
+				timeoutProp := jsonSchemaProp(t, schema, "timeout_secs")
+				anyOf, ok := timeoutProp["anyOf"].([]interface{})
+				require.True(t, ok, "anyOf should be preserved")
+				require.Len(t, anyOf, 2, "anyOf should be preserved")
+				opt0, ok := anyOf[0].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "integer", opt0["type"])
+				opt1, ok := anyOf[1].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "null", opt1["type"])
 
+				// The full request marshals with the parametersJsonSchema key.
 				payload, err := json.Marshal(result)
 				require.NoError(t, err)
 
@@ -2445,16 +2588,14 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 				require.True(t, ok)
 				functionDeclaration, ok := functionDeclarations[0].(map[string]interface{})
 				require.True(t, ok)
-				parameters, ok := functionDeclaration["parameters"].(map[string]interface{})
-				require.True(t, ok)
+				parameters, ok := functionDeclaration["parametersJsonSchema"].(map[string]interface{})
+				require.True(t, ok, "function declaration should carry parametersJsonSchema")
 				properties, ok := parameters["properties"].(map[string]interface{})
 				require.True(t, ok)
 				timeoutSchema, ok := properties["timeout_secs"].(map[string]interface{})
 				require.True(t, ok)
 
 				assert.Contains(t, timeoutSchema, "anyOf")
-				assert.NotContains(t, timeoutSchema, "description")
-				assert.NotContains(t, timeoutSchema, "type")
 			},
 		},
 		{
@@ -2517,25 +2658,33 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 				require.Len(t, result.Tools, 1)
 				fd := result.Tools[0].FunctionDeclarations[0]
 
-				updatesProp := fd.Parameters.Properties["updates"]
-				assert.Equal(t, gemini.Type("array"), updatesProp.Type)
+				schema := geminiParamsJSONSchema(t, fd)
+				updatesProp := jsonSchemaProp(t, schema, "updates")
+				assert.Equal(t, "array", updatesProp["type"])
 
 				// Nested object in array items
-				require.NotNil(t, updatesProp.Items)
-				assert.Equal(t, gemini.Type("object"), updatesProp.Items.Type)
-				assert.Contains(t, updatesProp.Items.Properties, "id")
-				assert.Contains(t, updatesProp.Items.Properties, "fields")
-				assert.Equal(t, []string{"id", "fields"}, updatesProp.Items.Required)
+				updatesItems, ok := updatesProp["items"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "object", updatesItems["type"])
+				updatesItemsProps, ok := updatesItems["properties"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Contains(t, updatesItemsProps, "id")
+				assert.Contains(t, updatesItemsProps, "fields")
+				assert.Equal(t, []interface{}{"id", "fields"}, updatesItems["required"])
 
 				// Deeply nested object
-				fieldsProp := updatesProp.Items.Properties["fields"]
-				assert.Equal(t, gemini.Type("object"), fieldsProp.Type)
-				assert.Contains(t, fieldsProp.Properties, "name")
-				assert.Contains(t, fieldsProp.Properties, "status")
+				fieldsProp, ok := updatesItemsProps["fields"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "object", fieldsProp["type"])
+				fieldsProps, ok := fieldsProp["properties"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Contains(t, fieldsProps, "name")
+				assert.Contains(t, fieldsProps, "status")
 
 				// Nested enum
-				statusProp := fieldsProp.Properties["status"]
-				assert.Equal(t, []string{"active", "inactive"}, statusProp.Enum)
+				statusProp, ok := fieldsProps["status"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, []interface{}{"active", "inactive"}, statusProp["enum"])
 			},
 		},
 		{
@@ -2574,10 +2723,13 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 			},
 			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
 				fd := result.Tools[0].FunctionDeclarations[0]
-				arrayProp := fd.Parameters.Properties["any_array"]
+				schema := geminiParamsJSONSchema(t, fd)
+				arrayProp := jsonSchemaProp(t, schema, "any_array")
 
-				// Empty items should still be converted
-				assert.NotNil(t, arrayProp.Items, "empty items must be present in Responses API")
+				// Empty items should still be present in the JSON Schema
+				arrayItems, ok := arrayProp["items"]
+				require.True(t, ok, "empty items must be present in Responses API")
+				assert.NotNil(t, arrayItems, "empty items must be present in Responses API")
 			},
 		},
 	}

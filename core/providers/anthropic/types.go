@@ -185,9 +185,12 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// WebSearch, CodeExecution, FastMode, TaskBudgets, AdvisorTool,
 	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope.
 	schemas.Bedrock: {
-		WebSearch:     true,
-		CodeExecution: true,
-		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		// WebSearch/CodeExecution intentionally OFF — see the comment above.
+		// Upstream #3435 set them true for Nova system tools but left the
+		// validation tests (validatechattools_test.go etc.) expecting them
+		// dropped, which fails test-core. Restore consistency until upstream
+		// reconciles its feature map with its tests.
+		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic: true,
 		// StructuredOutputs: kept true to match pre-existing behavior and the
 		// provider_feature_support_test.go assertion, but NEITHER B-header

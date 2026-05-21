@@ -9,6 +9,7 @@ import (
 // TestTextNormalizationDirectCache tests that text normalization works correctly
 // for direct cache (hash-based) matching across all input types
 func TestTextNormalizationDirectCache(t *testing.T) {
+	requireOpenAIKey(t)
 	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()

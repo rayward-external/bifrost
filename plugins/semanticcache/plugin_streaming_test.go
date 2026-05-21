@@ -9,6 +9,7 @@ import (
 
 // TestStreamingCacheBasicFunctionality tests streaming response caching
 func TestStreamingCacheBasicFunctionality(t *testing.T) {
+	requireOpenAIKey(t)
 	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()

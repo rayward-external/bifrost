@@ -123,10 +123,15 @@ exclude_lines = [
 
 
 [tool.uv]
-exclude-newer = "2026-05-11"
+exclude-newer = "2026-05-11T00:00:00Z"
+
+# Allow idna >= 3.15 (security: Dependabot alert #177) even though it was
+# published after exclude-newer cutoff.
+exclude-newer-package = { idna = "2026-05-13T00:00:00Z" }
 
 # Override litellm's strict pins that conflict with other dependencies
 override-dependencies = [
     "python-dotenv>=1.1.0",
     "openai>=2.26.0",
+    "idna>=3.15",
 ]

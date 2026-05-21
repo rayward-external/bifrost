@@ -1068,17 +1068,26 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		if len(decision.Fallbacks) > 0 {
 			resolvedFallbacks := make([]string, 0, len(decision.Fallbacks))
 			for _, fb := range decision.Fallbacks {
-				fbProvider, fbModel := schemas.ParseModelString(fb, "")
+				// Split off any "?key_id=" option before ParseModelString —
+				// it strips query suffixes, so the option must be captured
+				// here and re-appended, or a key-pinned fallback target
+				// silently loses its key pin.
+				spec, query, hasQuery := strings.Cut(fb, "?")
+				fbProvider, fbModel := schemas.ParseModelString(spec, "")
 				trimmedFbProvider := strings.TrimSpace(string(fbProvider))
 				trimmedFbModel := strings.TrimSpace(fbModel)
 				if trimmedFbProvider == "" {
 					continue
 				}
-				if trimmedFbModel == "" && model != "" {
-					resolvedFallbacks = append(resolvedFallbacks, trimmedFbProvider+"/"+model)
-				} else {
-					resolvedFallbacks = append(resolvedFallbacks, trimmedFbProvider+"/"+trimmedFbModel)
+				chosenModel := trimmedFbModel
+				if chosenModel == "" && model != "" {
+					chosenModel = model
 				}
+				rebuilt := trimmedFbProvider + "/" + chosenModel
+				if hasQuery {
+					rebuilt += "?" + query
+				}
+				resolvedFallbacks = append(resolvedFallbacks, rebuilt)
 			}
 			body["fallbacks"] = resolvedFallbacks
 		}

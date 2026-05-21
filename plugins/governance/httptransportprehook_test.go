@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -366,4 +367,95 @@ func TestHTTPTransportPreHook_BedrockNoRoutingRuleStillLoadBalances(t *testing.T
 	ctxModelID, ok := bfCtx.Value("modelId").(string)
 	require.True(t, ok, "context modelId should be set by governance LB")
 	require.Equal(t, "repro-openai-b/probe-bedrock-model", ctxModelID)
+}
+
+// TestHTTPTransportPreHook_RoutingRuleFallbackPreservesKeyID is a regression test:
+// when a routing rule produces a key-pinned fallback target, the "?key_id=" option
+// must survive the governance fallback re-emit into body["fallbacks"]. ParseModelString
+// strips query suffixes, so the re-emit must capture and re-append the option — otherwise
+// the fallback attempt silently loses its key pin (tenant/cost/key isolation drift).
+func TestHTTPTransportPreHook_RoutingRuleFallbackPreservesKeyID(t *testing.T) {
+	logger := NewMockLogger()
+
+	routingRule := configstoreTables.TableRoutingRule{
+		ID:            "rule-fb-key-1",
+		Name:          "fallback-keyid-rule",
+		Enabled:       bifrost.Ptr(true),
+		CelExpression: `model == "probe-fallback-model" && provider == ""`,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{
+				RuleID:   "rule-fb-key-1",
+				Provider: bifrost.Ptr("openai"),
+				Model:    bifrost.Ptr("gpt-4o"),
+				Weight:   1.0,
+			},
+			{
+				// Zero-weight standby → always a fallback, never selected.
+				RuleID:   "rule-fb-key-1",
+				Provider: bifrost.Ptr("azure"),
+				Model:    bifrost.Ptr("gpt-4o"),
+				Weight:   0,
+				KeyID:    bifrost.Ptr("standby-key-xyz"),
+			},
+		},
+		Scope:    "global",
+		Priority: 1,
+	}
+
+	virtualKey := buildVirtualKeyWithProviders(
+		"vk-fb-key",
+		"sk-bf-fb-key-test",
+		"fallback-keyid-vk",
+		[]configstoreTables.TableVirtualKeyProviderConfig{
+			buildProviderConfig("openai", []string{"*"}),
+		},
+	)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*virtualKey},
+		RoutingRules: []configstoreTables.TableRoutingRule{routingRule},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, plugin.Cleanup())
+	}()
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	req.Method = "POST"
+	req.Path = "/v1/chat/completions"
+	req.Headers["Authorization"] = "Bearer sk-bf-fb-key-test"
+	req.Headers["Content-Type"] = "application/json"
+	req.Body = []byte(`{"model":"probe-fallback-model","messages":[{"role":"user","content":"hi"}]}`)
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, err := plugin.HTTPTransportPreHook(bfCtx, req)
+	require.NoError(t, err)
+	require.Nil(t, resp)
+
+	var payload struct {
+		Fallbacks []string `json:"fallbacks"`
+	}
+	require.NoError(t, json.Unmarshal(req.Body, &payload))
+	require.NotEmpty(t, payload.Fallbacks, "routing rule should emit a fallback")
+
+	var keyPinned bool
+	for _, fb := range payload.Fallbacks {
+		if strings.Contains(fb, "key_id=standby-key-xyz") {
+			keyPinned = true
+		}
+	}
+	require.Truef(t, keyPinned, "fallback for the zero-weight standby target must keep its ?key_id= pin; got %v", payload.Fallbacks)
+
+	// And it must round-trip back to a Fallback with KeyID populated.
+	var found bool
+	for _, f := range schemas.ParseFallbacks(payload.Fallbacks) {
+		if f.KeyID == "standby-key-xyz" {
+			found = true
+		}
+	}
+	require.Truef(t, found, "ParseFallbacks must recover KeyID from the re-emitted fallback; got %v", payload.Fallbacks)
 }

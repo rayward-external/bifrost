@@ -1594,7 +1594,7 @@ func (h *GovernanceHandler) rotateVirtualKeys(ctx *fasthttp.RequestCtx) {
 			} else {
 				failures[id] = err.Error()
 			}
-			logger.Error("failed to rotate virtual key %s: %v", id, err)
+			logger.Error("failed to rotate virtual key %s: %v", sanitizeLogValue(id), err)
 			continue
 		}
 		rotated = append(rotated, vk)

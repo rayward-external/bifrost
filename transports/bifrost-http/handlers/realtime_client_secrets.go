@@ -87,7 +87,7 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 	}
 
 	logger.Info("[realtime-client-secrets] request: path=%s provider=%s model=%s endpoint_type=%s",
-		string(ctx.Path()), providerKey, model, route.EndpointType)
+		sanitizeLogValue(string(ctx.Path())), sanitizeLogValue(string(providerKey)), sanitizeLogValue(model), route.EndpointType)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	defer cancel()

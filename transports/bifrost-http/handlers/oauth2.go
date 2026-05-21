@@ -130,7 +130,7 @@ func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, erro
 		}
 	}
 	// Don't log state (CSRF token, replayable while flow is alive).
-	logger.Warn("[oauth] upstream callback error: error=%s description=%s", errorParam, errorDescription)
+	logger.Warn("[oauth] upstream callback error: error=%s description=%s", sanitizeLogValue(errorParam), sanitizeLogValue(errorDescription))
 	const userMsg = "Authentication was denied or failed. Please try again."
 	if isAdminTestFlow {
 		ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape(userMsg), fasthttp.StatusFound)

@@ -472,7 +472,7 @@ func (plugin *Plugin) resolveCacheTypes(ctx *schemas.BifrostContext) (direct boo
 	cacheTypeVal, ok := ctxVal.(CacheType)
 	if !ok {
 		msg := fmt.Sprintf("CacheTypeKey is not a CacheType (got %T), using all available cache types", ctxVal)
-		plugin.logger.Warn(msg)
+		plugin.logger.Warn("%s", sanitizeLogValue(msg))
 		ctx.Log(schemas.LogLevelWarn, msg)
 		return
 	}
@@ -607,11 +607,11 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		unifiedMetadata := plugin.buildUnifiedMetadata(provider, model, paramsHash, cacheKey, cacheTTL)
 		if isStream {
 			if err := plugin.addStreamingResponse(cacheCtx, requestID, storageID, res, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk); err != nil {
-				plugin.logger.Warn("Failed to cache streaming response (namespace=%s, id=%s): %s. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, sanitizeLogErr(err))
+				plugin.logger.Warn("Failed to cache streaming response (namespace=%s, id=%s): %s. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, sanitizeLogValue(storageID), sanitizeLogErr(err))
 			}
 		} else {
 			if err := plugin.addNonStreamingResponse(cacheCtx, storageID, res, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
-				plugin.logger.Warn("Failed to cache single response (namespace=%s, id=%s): %s. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, sanitizeLogErr(err))
+				plugin.logger.Warn("Failed to cache single response (namespace=%s, id=%s): %s. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, sanitizeLogValue(storageID), sanitizeLogErr(err))
 			}
 		}
 	}()
@@ -702,7 +702,7 @@ func (plugin *Plugin) resolveTTL(ctx *schemas.BifrostContext) time.Duration {
 			if ttl > 0 {
 				return ttl
 			}
-			plugin.logger.Debug("ignoring non-positive per-request TTL override %v, falling back to plugin default", ttl)
+			plugin.logger.Debug("ignoring non-positive per-request TTL override %s, falling back to plugin default", sanitizeLogValue(ttl.String()))
 		} else {
 			plugin.logger.Warn("TTL is not a time.Duration, using default TTL")
 		}

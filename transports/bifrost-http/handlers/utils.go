@@ -14,6 +14,30 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// sanitizeLogValue strips control characters and caps length to prevent log injection (CWE-117).
+func sanitizeLogValue(value string) string {
+	if value == "" {
+		return ""
+	}
+	const maxLen = 256
+	var b strings.Builder
+	b.Grow(len(value))
+	count := 0
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			b.WriteByte('?')
+		} else {
+			b.WriteRune(r)
+		}
+		count++
+		if count >= maxLen {
+			b.WriteString("...[truncated]")
+			break
+		}
+	}
+	return b.String()
+}
+
 // resolvePeriod converts a relative period string ("1h","6h","24h","7d","30d") to concrete
 // start/end time pointers computed from the current server time. Returns nil, nil for
 // unrecognised values. When used in filter parsing, period takes precedence over any explicit

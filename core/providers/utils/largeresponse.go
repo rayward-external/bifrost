@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"math"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -120,8 +121,9 @@ func MaterializeStreamErrorBody(ctx *schemas.BifrostContext, resp *fasthttp.Resp
 			return
 		}
 		// Ensure the Content-Type is not text/html to prevent reflected XSS
-		// when error bodies are echoed back from upstream providers.
-		if ct := resp.Header.ContentType(); len(ct) == 0 {
+		// when error bodies are echoed back from upstream providers. Override
+		// both an empty header and any HTML content type the upstream set.
+		if ct := resp.Header.ContentType(); len(ct) == 0 || strings.Contains(strings.ToLower(string(ct)), "html") {
 			resp.Header.SetContentType("application/json")
 		}
 		resp.SetBody(bodyBytes)

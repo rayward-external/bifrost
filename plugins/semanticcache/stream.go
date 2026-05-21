@@ -114,7 +114,7 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 	}
 
 	if len(streamResponses) == 0 {
-		plugin.logger.Warn("Stream for request %s has no valid response chunks, skipping cache storage", requestID)
+		plugin.logger.Warn("Stream for request %s has no valid response chunks, skipping cache storage", sanitizeLogValue(requestID))
 		return nil
 	}
 

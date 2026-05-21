@@ -141,3 +141,22 @@ func TestFormatFallback_KeyAwareRoundTrip(t *testing.T) {
 	assert.Equal(t, "gpt-4o", parsed[0].Model)
 	assert.Equal(t, "azure-east/prod", parsed[0].KeyID)
 }
+
+func TestParseModelString_StripsQuerySuffix(t *testing.T) {
+	// A primary model field carrying a routing-hint query (e.g. a caller that
+	// appends "?key_id=") must resolve to the clean model identity — otherwise
+	// it pollutes the logs "Models" filter and breaks provider catalog lookups.
+	provider, model := ParseModelString("gpt-4.1-mini?key_id=5ca02987-3cf9", "")
+	assert.Empty(t, provider)
+	assert.Equal(t, "gpt-4.1-mini", model)
+
+	// Provider prefix and query together.
+	provider, model = ParseModelString("openai/gpt-4o?key_id=abc", "")
+	assert.Equal(t, OpenAI, provider)
+	assert.Equal(t, "gpt-4o", model)
+
+	// No query suffix — model is returned unchanged.
+	provider, model = ParseModelString("anthropic/claude-3.5-sonnet", "")
+	assert.Equal(t, Anthropic, provider)
+	assert.Equal(t, "claude-3.5-sonnet", model)
+}

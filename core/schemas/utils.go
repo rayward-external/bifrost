@@ -94,6 +94,13 @@ func IsKnownProvider(provider string) bool {
 // Only splits on "/" when the prefix is a known Bifrost provider, so model
 // namespaces like "meta-llama/Llama-3.1-8B" are preserved as-is.
 func ParseModelString(model string, defaultProvider ModelProvider) (ModelProvider, string) {
+	// Strip any query-string suffix (e.g. "?key_id=...") — routing hints are not
+	// part of the model identity. Leaving them in pollutes logs/the model filter
+	// and breaks provider catalog lookups. Fallback specs extract key_id via
+	// parseFallbackOptions BEFORE calling this, so their option is not lost.
+	if i := strings.IndexByte(model, '?'); i >= 0 {
+		model = model[:i]
+	}
 	// Check if model contains a provider prefix (only split on first "/" to preserve model names with "/")
 	if strings.Contains(model, "/") {
 		parts := strings.SplitN(model, "/", 2)
@@ -142,8 +149,10 @@ func ParseFallbacks(fallbacks []string) []Fallback {
 		if fallback == "" {
 			continue
 		}
-		fallbackProvider, fallbackModel := ParseModelString(fallback, "")
-		fallbackModel, keyID := parseFallbackOptions(fallbackModel)
+		// Extract the ?key_id= option BEFORE provider/model splitting so it
+		// survives ParseModelString's query-suffix stripping.
+		fallbackSpec, keyID := parseFallbackOptions(fallback)
+		fallbackProvider, fallbackModel := ParseModelString(fallbackSpec, "")
 		if fallbackProvider != "" && fallbackModel != "" {
 			parsedFallbacks = append(parsedFallbacks, Fallback{Provider: fallbackProvider, Model: fallbackModel, KeyID: keyID})
 		}

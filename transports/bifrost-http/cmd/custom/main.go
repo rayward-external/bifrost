@@ -69,6 +69,17 @@ func main() {
 	}
 	logger.Info("Time spent in Bifrost server bootstrap %d ms", time.Since(t).Milliseconds())
 
+	// Enforce the Cloudflare origin trust boundary as an outer wrapper around
+	// the fully-built handler, so it covers the admin UI as well as the API
+	// (PrepareCommonMiddlewares does not run for UI routes).
+	originSecret := os.Getenv("CF_ORIGIN_SECRET")
+	if originSecret == "" {
+		logger.Warn("CF_ORIGIN_SECRET not set — origin-secret enforcement is DISABLED")
+	} else {
+		logger.Info("origin-secret enforcement enabled")
+	}
+	server.Server.Handler = requireOriginSecret(originSecret)(server.Server.Handler)
+
 	if err := server.Start(); err != nil {
 		logger.Error("failed to start server: %v", err)
 		os.Exit(1)

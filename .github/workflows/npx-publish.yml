@@ -47,7 +47,10 @@ jobs:
 
   publish-bifrost:
     needs: [check-skip]
-    if: needs.check-skip.outputs.should-skip != 'true'
+    # Fork guard: npm publish + GitHub release are upstream-only (need
+    # secrets.GH_TOKEN / NPM_TOKEN that don't exist on the fork). The upstream
+    # sync bumps npx/*/package.json, which triggers this workflow.
+    if: github.repository == 'maximhq/bifrost' && needs.check-skip.outputs.should-skip != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -171,7 +174,10 @@ jobs:
 
   publish-bifrost-cli:
     needs: [check-skip]
-    if: needs.check-skip.outputs.should-skip != 'true'
+    # Fork guard: npm publish + GitHub release are upstream-only (need
+    # secrets.GH_TOKEN / NPM_TOKEN that don't exist on the fork). The upstream
+    # sync bumps npx/*/package.json, which triggers this workflow.
+    if: github.repository == 'maximhq/bifrost' && needs.check-skip.outputs.should-skip != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

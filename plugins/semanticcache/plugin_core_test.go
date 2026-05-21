@@ -17,6 +17,7 @@ import (
 // least 1.5× speedup). Running this in parallel with other integration tests
 // causes CPU/network contention that flakes those ratios.
 func TestSemanticCacheBasicFunctionality(t *testing.T) {
+	requireOpenAIKey(t)
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 

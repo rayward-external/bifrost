@@ -46,6 +46,13 @@ func validatePricingURL(pricingURL string) error {
 	return bifrost.ValidateExternalURL(pricingURL)
 }
 
+func validateModelParametersURL(modelParametersURL string) error {
+	if modelParametersURL == modelcatalog.DefaultModelParametersURL {
+		return nil
+	}
+	return bifrost.ValidateExternalURL(modelParametersURL)
+}
+
 // ConfigManager is the interface for the config manager
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
@@ -276,17 +283,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != "" && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL {
-		urlCheckClient := &http.Client{Timeout: 60 * time.Second}
-		resp, err := urlCheckClient.Get(*payload.FrameworkConfig.ModelParametersURL)
-		if err != nil {
-			logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			logger.Warn("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode))
+		if err := validateModelParametersURL(*payload.FrameworkConfig.ModelParametersURL); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid model parameters URL: %v", err))
 			return
 		}
 	}
@@ -578,20 +576,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			effectiveModelParamsURL = modelcatalog.DefaultModelParametersURL
 		}
 		if effectiveModelParamsURL != *frameworkConfig.ModelParametersURL {
-			if effectiveModelParamsURL != modelcatalog.DefaultModelParametersURL {
-				urlCheckClient := &http.Client{Timeout: 60 * time.Second}
-				resp, err := urlCheckClient.Get(effectiveModelParamsURL)
-				if err != nil {
-					logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
-					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
-					return
-				}
-				defer resp.Body.Close()
-				if resp.StatusCode != http.StatusOK {
-					logger.Warn("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode)
-					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode))
-					return
-				}
+			if err := validateModelParametersURL(effectiveModelParamsURL); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid model parameters URL: %v", err))
+				return
 			}
 			frameworkConfig.ModelParametersURL = &effectiveModelParamsURL
 			shouldReloadFrameworkConfig = true

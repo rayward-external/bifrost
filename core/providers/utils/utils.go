@@ -2239,9 +2239,13 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 		}
 	}()
 
-	// Checking if stream is already closed
+	// Checking if stream is already closed. Return the same error the
+	// panic-recovery path above produces (ErrStreamClosed, or
+	// ErrStreamIdleTimeout once the idle timer has fired) so both
+	// close-detection paths are consistent — a bare nil here looks to the
+	// caller like a clean zero-byte read rather than a closed stream.
 	if r.connectionClosed() {
-		return 0, nil
+		return 0, r.closedReadError()
 	}
 	n, err = r.reader.Read(p)
 	if n > 0 {

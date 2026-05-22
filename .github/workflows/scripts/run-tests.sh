@@ -91,19 +91,25 @@ fi
 cd ..
 
 # 4. Governance Tests
+# These are e2e tests: they POST to a live Bifrost server on :8080. A bare
+# `go test` here only ever got "connection refused" because nothing started a
+# server. run-governance-e2e-tests.sh builds Bifrost, boots it, runs the suite
+# and tears it down. That script requires real provider keys, so skip cleanly
+# when they are absent (e.g. fork CI without upstream secrets).
 echo ""
 echo "🛡️  4/5 - Running Governance Tests..."
 echo "-----------------------------------"
-if [ -f "tests/governance/go.mod" ]; then
-  cd tests/governance
-  if GOWORK=off go test -v ./...; then
+if [ ! -f "tests/governance/go.mod" ]; then
+  echo -e "${YELLOW}⚠️  Governance tests directory not found, skipping...${NC}"
+elif [ -z "${OPENAI_API_KEY:-}" ] || [ -z "${ANTHROPIC_API_KEY:-}" ] || [ -z "${OPENROUTER_API_KEY:-}" ]; then
+  echo -e "${YELLOW}⚠️  Governance e2e tests need OPENAI_API_KEY, ANTHROPIC_API_KEY"
+  echo -e "    and OPENROUTER_API_KEY; one or more is unset — skipping.${NC}"
+else
+  if ./.github/workflows/scripts/run-governance-e2e-tests.sh; then
     report_result "Governance Tests" 0
   else
     report_result "Governance Tests" 1
   fi
-  cd ../..
-else
-  echo -e "${YELLOW}⚠️  Governance tests directory not found, skipping...${NC}"
 fi
 
 # 5. Integration Tests

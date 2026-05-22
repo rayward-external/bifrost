@@ -123,11 +123,13 @@ exclude_lines = [
 
 
 [tool.uv]
-exclude-newer = "2026-05-11T00:00:00Z"
+exclude-newer = "2026-05-20T12:00:00Z"
 
-# Allow idna >= 3.15 (security: Dependabot alert #177) even though it was
-# published after exclude-newer cutoff.
-exclude-newer-package = { idna = "2026-05-13T00:00:00Z" }
+# Cutoff bumped to pick up pydantic-ai >= 1.99.0, which fixes the SSRF
+# cloud-metadata blocklist bypass (Dependabot alerts #178/#179,
+# GHSA-cqp8-fcvh-x7r3). The patched release and its coordinated dependency
+# tree (pydantic-ai-slim, pydantic-graph, pydantic-evals, fastmcp) all landed
+# on 2026-05-20, so a single per-package override is not sufficient.
 
 # Override litellm's strict pins that conflict with other dependencies
 override-dependencies = [

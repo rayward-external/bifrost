@@ -1,9 +1,12 @@
 name: PR Test Notifier
 
 on:
-  push:
-    branches:
-      - main
+  # PR-scoped: the notify job comments on a pull request, so it must run on a
+  # pull_request event. It previously triggered on `push` to main, where
+  # github.event.pull_request is null — so `gh pr comment` got an empty PR
+  # number and failed on every push to main.
+  pull_request:
+    types: [opened, reopened]
 
 permissions:
   pull-requests: write

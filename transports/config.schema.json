@@ -1907,6 +1907,13 @@
             "type": "string"
           }
         },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Blacklisted models for this provider config. Use [\"*\"] to block all models; empty array blocks none.",
+          "items": {
+            "type": "string"
+          }
+        },
         "rate_limit_id": {
           "type": "string",
           "description": "Associated rate limit ID"

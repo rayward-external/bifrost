@@ -795,8 +795,22 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	p.logger.Debug("[Governance] Virtual key has %d provider configs: %v", len(providerConfigs), configuredProviders)
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Load balancing model %s across %d configured providers: %v", modelStr, len(providerConfigs), configuredProviders))
 
+	// Pre-pass: if any config for a provider blacklists the model, that provider is fully blocked.
+	blacklistedProviders := make(map[string]bool)
+	for _, config := range providerConfigs {
+		if config.BlacklistedModels.IsBlocked(modelStr) {
+			blacklistedProviders[config.Provider] = true
+		}
+	}
+
 	allowedProviderConfigs := make([]configstoreTables.TableVirtualKeyProviderConfig, 0)
 	for _, config := range providerConfigs {
+		// Blacklist check wins over allowlist (same as provider-key enforcement)
+		if blacklistedProviders[config.Provider] {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: model %s is blacklisted", config.Provider, modelStr))
+			continue
+		}
+
 		// Delegate model allowance check to model catalog
 		// This handles all cross-provider logic (OpenRouter, Vertex, Groq, Bedrock)
 		// and provider-prefixed allowed_models entries
@@ -1350,6 +1364,13 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	// Handle decision
 	switch result.Decision {
 	case DecisionAllow:
+		// Clear any prior rejection flag (e.g. from a failed primary attempt
+		// before a fallback retry). Without this, PostLLMHook would see the
+		// stale flag and skip budget/rate-limit ID collection for the
+		// successful fallback attempt.
+		if ctx != nil {
+			ctx.ClearValue(governanceRejectedContextKey)
+		}
 		return result, nil
 
 	case DecisionVirtualKeyNotFound, DecisionVirtualKeyBlocked, DecisionModelBlocked, DecisionProviderBlocked:

@@ -24,10 +24,13 @@ report_result() {
   
   if [ "$result" -eq 0 ]; then
     echo -e "${GREEN}✅ $test_name passed${NC}"
-    ((TESTS_PASSED++))
+    # Assignment form, not ((TESTS_PASSED++)): under `set -e` the post-increment
+    # arithmetic returns the pre-value, so ((var++)) exits 1 when var is 0 and
+    # aborts the whole script after the first passing test.
+    TESTS_PASSED=$((TESTS_PASSED + 1))
   else
     echo -e "${RED}❌ $test_name failed${NC}"
-    ((TESTS_FAILED++))
+    TESTS_FAILED=$((TESTS_FAILED + 1))
   fi
 }
 

@@ -62,7 +62,7 @@ require (
 	go.starlark.net v0.0.0-20260102030733-3fee463870c9 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/net v0.54.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect

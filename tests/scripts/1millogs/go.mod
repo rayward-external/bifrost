@@ -109,7 +109,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.starlark.net v0.0.0-20260102030733-3fee463870c9 // indirect
 	golang.org/x/arch v0.23.0 // indirect
-	golang.org/x/net v0.54.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect

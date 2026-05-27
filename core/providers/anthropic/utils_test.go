@@ -758,10 +758,9 @@ func TestValidateToolsForProvider(t *testing.T) {
 			expectErr: true,
 		},
 		{
-			name:      "Bedrock rejects web_search",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
-			provider:  schemas.Bedrock,
-			expectErr: true,
+			name:     "Bedrock allows web_search (nova_grounding via Responses path)",
+			tools:    []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
+			provider: schemas.Bedrock,
 		},
 		{
 			name:      "Bedrock rejects web_fetch",
@@ -2621,9 +2620,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			},
 		},
 		{
-			// Sonnet 4.5 keeps old-gen computer but requires new-gen text_editor,
-			// per TextEditorGeneration's per-tool support matrix.
-			name:  "sonnet-4-5 with old-gen tools auto-upgrades text_editor only",
+			name:  "sonnet-4-5 with old-gen tools upgrades text_editor to new-gen",
 			model: "claude-sonnet-4-5",
 			inputBody: `{"model":"claude-sonnet-4-5","tools":[
 				{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768},
@@ -2651,9 +2648,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			},
 		},
 		{
-			// Sonnet 4.5 downgrades only computer_*: text_editor stays new-gen,
-			// matching the per-tool support matrix.
-			name:  "sonnet-4-5 with new-gen tools downgrades computer only",
+			name:  "sonnet-4-5 with new-gen tools downgrades computer but keeps new-gen text_editor",
 			model: "claude-sonnet-4-5",
 			inputBody: `{"model":"claude-sonnet-4-5","tools":[
 				{"type":"computer_20251124","name":"computer","display_width_px":1024,"display_height_px":768},

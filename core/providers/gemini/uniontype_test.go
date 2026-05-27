@@ -277,12 +277,11 @@ func TestConvertPropertyToSchema_StringSlice(t *testing.T) {
 	assert.True(t, *schema.Nullable)
 }
 
-// TestConvertBifrostToolsToGemini_WirePayload verifies the final serialized
-// JSON bytes sent to Gemini/Vertex for tool parameters. Chat tools now emit
-// the raw Bifrost JSON Schema unchanged via the spec-compliant
-// `parametersJsonSchema` field (see #3444 / #3520), so JSON Schema union
-// `type` arrays are preserved verbatim rather than normalized into Gemini's
-// native `type`/`nullable`/`anyOf` representation.
+// TestConvertBifrostToolsToGemini_WirePayload verifies that the final
+// serialized JSON bytes sent to Gemini/Vertex are correct for union-typed
+// tool parameters. The original bug manifested at the serialization level
+// (empty "type" field rejected by Vertex), so struct-level checks alone
+// are not sufficient.
 func TestConvertBifrostToolsToGemini_WirePayload(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -292,12 +291,12 @@ func TestConvertBifrostToolsToGemini_WirePayload(t *testing.T) {
 		wantAbsent   []string // substrings that must NOT appear in the wire JSON
 	}{
 		{
-			name:         "nullable union type preserved as JSON Schema array in parametersJsonSchema",
+			name:         "nullable union array is passed through unchanged",
 			propertyJSON: `"timeout_secs":{"type":["integer","null"],"description":"Timeout"}`,
 			propertyName: "timeout_secs",
-			// parametersJsonSchema accepts standard JSON Schema; union arrays pass through.
-			wantContains: []string{`"parametersJsonSchema"`, `"type":["integer","null"]`},
-			wantAbsent:   []string{`"nullable":true`, `"anyOf"`},
+			// parametersJsonSchema passthrough: array form is preserved as-is
+			wantContains: []string{`"type":["integer","null"]`},
+			wantAbsent:   []string{`"nullable"`, `"anyOf"`},
 		},
 		{
 			name:         "plain string type passes through unchanged",
@@ -307,18 +306,18 @@ func TestConvertBifrostToolsToGemini_WirePayload(t *testing.T) {
 			wantAbsent:   []string{`"nullable"`, `"anyOf"`},
 		},
 		{
-			name:         "multi-type union preserved as JSON Schema array in parametersJsonSchema",
+			name:         "multi-type union array is passed through unchanged",
 			propertyJSON: `"value":{"type":["integer","string"]}`,
 			propertyName: "value",
-			wantContains: []string{`"parametersJsonSchema"`, `"type":["integer","string"]`},
+			wantContains: []string{`"type":["integer","string"]`},
 			wantAbsent:   []string{`"anyOf"`, `"nullable"`},
 		},
 		{
-			name:         "multi-type nullable union preserved as JSON Schema array in parametersJsonSchema",
+			name:         "multi-type nullable union array is passed through unchanged",
 			propertyJSON: `"value":{"type":["integer","string","null"]}`,
 			propertyName: "value",
-			wantContains: []string{`"parametersJsonSchema"`, `"type":["integer","string","null"]`},
-			wantAbsent:   []string{`"anyOf"`, `"nullable":true`},
+			wantContains: []string{`"type":["integer","string","null"]`},
+			wantAbsent:   []string{`"anyOf"`, `"nullable"`},
 		},
 	}
 

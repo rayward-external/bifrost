@@ -2059,15 +2059,15 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 			}
 			// Context cancelled or deadline exceeded - close the body stream to unblock reads
 			if closer, ok := bodyStream.(io.Closer); ok {
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				if err := closer.Close(); err != nil {
 					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 				}
-				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 			} else if wce, ok := bodyStream.(streamCloserWithError); ok {
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				if err := wce.CloseWithError(ctx.Err()); err != nil {
 					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 				}
-				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 			}
 		case <-done:
 			// Race between done and ctx.Done: the streaming goroutine has reached its defer
@@ -2082,15 +2082,15 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 					return
 				}
 				if closer, ok := bodyStream.(io.Closer); ok {
+					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					if err := closer.Close(); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
 					}
-					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				} else if wce, ok := bodyStream.(streamCloserWithError); ok {
+					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					if err := wce.CloseWithError(ctx.Err()); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
 					}
-					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				}
 			}
 		}

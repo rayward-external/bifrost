@@ -303,6 +303,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 			}
 			return nil, fmt.Errorf("failed to initialize metrics exporter: %w", err)
 		}
+		// CodeQL[go/log-injection] False positive: logging operator-configured endpoint URL and push interval at startup, not user-supplied input.
 		logger.Info("OTEL metrics push enabled, pushing to %s every %d seconds", config.MetricsEndpoint.GetValue(), pushInterval)
 	}
 

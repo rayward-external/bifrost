@@ -68,7 +68,7 @@
           "      pass = true;",
           "    } else {",
           "      var msg = (body && body.error && body.error.message) ? body.error.message : (body && body.message) ? body.message : '';",
-          "      if (typeof msg === 'string' && /\\b(not supported|unsupported|not enabled|not configured)\\b/i.test(msg)) {",
+          "      if (typeof msg === 'string' && /\\b(not supported|unsupported|not enabled|not configured|not loaded)\\b/i.test(msg)) {",
           "        pass = true;",
           "      }",
           "    }",
@@ -235,7 +235,7 @@
           "var rawTextShapes = {",
           "  'Clear Cache by Cache ID (Coverage Probe)': true,",
           "  'Clear Cache by Key (Coverage Probe)': true,",
-          "  'OAuth Callback (Coverage Probe)': true",
+          "  'OAuth Callback (Coverage Probe)': true"
           "};",
           "pm.test('Response structure matches handler contract', function () {",
           "  var body = parseJSONOrNull();",

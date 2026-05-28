@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	cloud.google.com/go/storage v1.61.3
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.97.3
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.99.0
 	github.com/google/uuid v1.6.0
 	github.com/maximhq/bifrost/core v1.5.13
 	github.com/pinecone-io/go-pinecone/v5 v5.3.0
@@ -12,8 +12,8 @@ require (
 	github.com/redis/go-redis/v9 v9.17.2
 	github.com/stretchr/testify v1.11.1
 	github.com/tidwall/gjson v1.18.0
-	github.com/weaviate/weaviate v1.36.5
-	github.com/weaviate/weaviate-go-client/v5 v5.7.1
+	github.com/weaviate/weaviate v1.37.6
+	github.com/weaviate/weaviate-go-client/v5 v5.7.3
 	golang.org/x/crypto v0.52.0
 	golang.org/x/sync v0.20.0
 	google.golang.org/api v0.274.0
@@ -63,7 +63,7 @@ require (
 	github.com/go-openapi/swag/typeutils v0.25.4 // indirect
 	github.com/go-openapi/swag/yamlutils v0.25.4 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
-	github.com/golang-jwt/jwt/v5 v5.3.0 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.14 // indirect
 	github.com/googleapis/gax-go/v2 v2.19.0 // indirect
@@ -76,6 +76,7 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
+	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
@@ -99,12 +100,12 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.41.7
-	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/config v1.32.14
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.21 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.23 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.23 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.5 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.7 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.21 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.15 // indirect
@@ -123,7 +124,7 @@ require (
 	github.com/go-openapi/jsonreference v0.21.4 // indirect
 	github.com/go-openapi/loads v0.23.2 // indirect
 	github.com/go-openapi/runtime v0.29.2 // indirect
-	github.com/go-openapi/spec v0.22.2 // indirect
+	github.com/go-openapi/spec v0.22.3 // indirect
 	github.com/go-openapi/strfmt v0.25.0 // indirect
 	github.com/go-openapi/swag v0.25.4 // indirect
 	github.com/go-openapi/validate v0.25.1 // indirect

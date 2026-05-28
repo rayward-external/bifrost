@@ -1,0 +1,10 @@
+# Fork-maintained patches for rayward-external/bifrost
+#
+# These are CodeQL false-positive suppressions on operator-configured log lines.
+# Upstream (maximhq/bifrost) does not carry inline CodeQL annotations.
+# If upstream rewrites these plugin files, the suppressions may be lost.
+#
+# Format: <file> | <grep_pattern_that_proves_patch_is_present> | <human_description>
+
+plugins/otel/main.go      | CodeQL\[go/log-injection\]    | FP suppression: OTEL endpoint is operator config, not user input
+plugins/telemetry/main.go | CodeQL\[go/log-injection\]    | FP suppression: Prometheus pushgateway URL is operator config, not user input

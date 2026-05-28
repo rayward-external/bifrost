@@ -1430,10 +1430,6 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 		return nil, nil
 	}
 
-	if event == nil {
-		return nil, nil
-	}
-
 	eventBytes, err := providerUtils.MarshalSorted(event)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal invoke stream event: %w", err)

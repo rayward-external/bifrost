@@ -7,3 +7,4 @@ paths-ignore:
   - "examples/**"
   - "tests/**"
   - "**/*_test.go"
+  - "core/internal/llmtests/**"

@@ -2263,10 +2263,6 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 							"type": "disabled",
 						})
-					} else if schemas.IsNovaModel(bifrostReq.Model) {
-						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
-							"type": "disabled",
-						})
 					} else {
 						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 							"type": "disabled",

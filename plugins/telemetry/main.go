@@ -919,6 +919,7 @@ func (p *PrometheusPlugin) EnablePushGateway(config *PushGatewayConfig) error {
 
 	go p.pushLoop()
 
+	// CodeQL[go/log-injection] False positive: logging operator-configured push gateway URL and interval at startup, not user-supplied input.
 	p.logger.Info("push gateway started, pushing to %s every %d seconds",
 		config.PushGatewayURL.GetValue(), config.PushInterval)
 

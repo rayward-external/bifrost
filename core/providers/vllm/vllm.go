@@ -369,7 +369,7 @@ func (provider *VLLMProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Ke
 	responsePayload, rawRequest, rawResponse, responseBody, statusCode, latency, bifrostErr := provider.callVLLMRerankEndpoint(ctx, key, request, resolvedPath, jsonData)
 	if bifrostErr != nil && !hasPathOverride && isRerankFallbackStatus(statusCode) {
 		var fallbackLatency time.Duration
-		responsePayload, rawRequest, rawResponse, responseBody, statusCode, fallbackLatency, bifrostErr = provider.callVLLMRerankEndpoint(ctx, key, request, "/rerank", jsonData)
+		responsePayload, rawRequest, rawResponse, responseBody, _, fallbackLatency, bifrostErr = provider.callVLLMRerankEndpoint(ctx, key, request, "/rerank", jsonData)
 		latency += fallbackLatency
 	}
 	if bifrostErr != nil {

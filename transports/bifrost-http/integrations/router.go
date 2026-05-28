@@ -1160,6 +1160,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		}
 
 		bifrostExtraFields = speechResponse.ExtraFields
+		applyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 
 		if g.tryStreamLargeResponse(ctx, bifrostCtx) {
 			return

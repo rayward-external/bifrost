@@ -8,10 +8,10 @@ import (
 
 const originSecretHeader = "x-rayward-cf-secret"
 
-// healthProbePaths are exempt from origin-secret enforcement. The Azure
-// Container Apps liveness/readiness probes hit these endpoints directly on the
-// replica (not through Cloudflare), so they never carry the origin-secret
-// header — gating them 403s every probe and the revision never goes healthy.
+// healthProbePaths are exempt from origin-secret enforcement. Cloud Run
+// liveness/readiness probes hit these endpoints directly on the replica (not
+// through Cloudflare), so they never carry the origin-secret header — gating
+// them 403s every probe and the revision never goes healthy.
 // These endpoints expose no sensitive data (only liveness/dependency status).
 var healthProbePaths = map[string]bool{
 	"/health": true,

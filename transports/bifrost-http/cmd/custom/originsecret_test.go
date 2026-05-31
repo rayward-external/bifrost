@@ -90,9 +90,9 @@ func TestOriginSecret_EmptySecretDisablesEnforcement(t *testing.T) {
 }
 
 // TestOriginSecret_HealthPathsExempt verifies the platform health-probe
-// endpoints bypass origin-secret enforcement. ACA liveness/readiness probes
-// hit these directly on the replica with no Cloudflare header; gating them
-// 403s every probe and the revision never becomes healthy.
+// endpoints bypass origin-secret enforcement. Cloud Run liveness/readiness
+// probes hit these directly on the replica with no Cloudflare header; gating
+// them 403s every probe and the revision never becomes healthy.
 func TestOriginSecret_HealthPathsExempt(t *testing.T) {
 	for _, path := range []string{"/health", "/livez", "/readyz"} {
 		nextCalled := false
@@ -105,7 +105,7 @@ func TestOriginSecret_HealthPathsExempt(t *testing.T) {
 
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.SetRequestURI(path)
-		// No x-rayward-cf-secret header — mirrors an internal ACA probe.
+		// No x-rayward-cf-secret header — mirrors a Cloud Run liveness probe.
 		handler(ctx)
 
 		if !nextCalled {

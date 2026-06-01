@@ -51,7 +51,7 @@
   RUN test -f /app/main || (echo "Build failed" && exit 1)
   
   # --- Runtime Stage: Minimal runtime image ---
-  FROM alpine:3.21.7@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+  FROM alpine:3.23.4@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
   WORKDIR /app
   
   # Install runtime dependencies for CGO-enabled binary
@@ -59,7 +59,7 @@
   # libgcc: GCC runtime library
   # ca-certificates: For HTTPS connections
   RUN apk upgrade --no-cache && \
-    apk add --no-cache musl libgcc ca-certificates wget zlib
+    apk add --no-cache musl libgcc ca-certificates zlib
   
   # Create data directory and set up user
   COPY --from=builder /app/main .
@@ -103,8 +103,10 @@
   EXPOSE $APP_PORT
   
   # Health check for container status monitoring
+  # Uses busybox wget (built into alpine) instead of the standalone wget package
+  # to avoid CVE-2025-69194; busybox wget supports -q/-O but not --no-verbose/--tries.
   HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 -O /dev/null http://127.0.0.1:${APP_PORT}/health || exit 1
+    CMD wget -q -O /dev/null http://127.0.0.1:${APP_PORT}/health || exit 1
   
   # Use entrypoint script that handles volume permissions and argument processing
   ENTRYPOINT ["/app/docker-entrypoint.sh"]

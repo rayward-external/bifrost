@@ -1,28 +1,26 @@
-name: Bifrost Main Dispatch
+name: Dispatch Infra Build
 
 on:
-  push:
+  pull_request:
+    types: [closed]
     branches:
       - main
 
 permissions:
   contents: read
 
-concurrency:
-  group: bifrost-main-dispatch-${{ github.sha }}
-  cancel-in-progress: false
-
 jobs:
-  dispatch-private-infra:
+  dispatch:
     name: Dispatch Private Infra Build
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     env:
       TARGET_REPO: rayward-internal/llm-gateway-infra
       EVENT_TYPE: bifrost-main-merged
+      SOURCE_REF: refs/heads/main
+      SOURCE_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
       SOURCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       SOURCE_REPO: ${{ github.repository }}
-      SOURCE_REF: ${{ github.ref }}
-      SOURCE_SHA: ${{ github.sha }}
       SOURCE_ACTOR: ${{ github.actor }}
       SOURCE_RUN_ID: ${{ github.run_id }}
     steps:
@@ -71,7 +69,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Bifrost Main Dispatch"
+            echo "## Bifrost Infra Dispatch"
             echo
             echo "- Target repo: \`$TARGET_REPO\`"
             echo "- Event type: \`$EVENT_TYPE\`"

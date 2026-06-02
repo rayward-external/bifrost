@@ -2,9 +2,7 @@ module github.com/maximhq/bifrost/examples/plugins/mcp-only
 
 go 1.26.3
 
-replace github.com/maximhq/bifrost/core => ../../../core
-
-require github.com/maximhq/bifrost/core v0.0.0-00010101000000-000000000000
+require github.com/maximhq/bifrost/core v1.5.12
 
 require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
@@ -31,6 +29,6 @@ require (
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/arch v0.23.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

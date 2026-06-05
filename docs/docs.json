@@ -509,6 +509,7 @@
               "deployment-guides/how-to/install-make",
               "deployment-guides/how-to/multinode",
               "deployment-guides/how-to/nginx-reverse-proxy",
+              "deployment-guides/how-to/airgapped",
               "deployment-guides/docker-tuning"
             ]
           }
@@ -583,15 +584,21 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v1.5.7",
-              "changelogs/v1.5.6",
-              "changelogs/v1.5.5",
-              "changelogs/v1.5.4",
-              "changelogs/v1.5.3",
-              "changelogs/v1.5.2",
-              "changelogs/v1.5.1",
-              "changelogs/v1.5.0",
-              "changelogs/v1.5.0-prerelease8",
+              "changelogs/v1.5.8",
+              {
+                "group": "May 2026",
+                "pages": [
+                  "changelogs/v1.5.7",
+                  "changelogs/v1.5.6",
+                  "changelogs/v1.5.5",
+                  "changelogs/v1.5.4",
+                  "changelogs/v1.5.3",
+                  "changelogs/v1.5.2",
+                  "changelogs/v1.5.1",
+                  "changelogs/v1.5.0",
+                  "changelogs/v1.5.0-prerelease8"
+                ]
+              },
               {
                 "group": "April 2026",
                 "pages": [
@@ -753,6 +760,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.4.7-rc1",
               "changelogs/ent-v1.4.6",
               "changelogs/ent-v1.4.5",
               "changelogs/ent-v1.4.4",

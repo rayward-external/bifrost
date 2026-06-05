@@ -1010,6 +1010,7 @@ func checkURLAccessibility(rawURL string) error {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 	if parsed.Scheme == "file" {
+		// CodeQL[go/path-injection] False positive: rawURL is operator-supplied via the authenticated admin config API, not untrusted user input; admins have filesystem access by design.
 		info, err := os.Stat(parsed.Path)
 		if err != nil {
 			return fmt.Errorf("file not accessible: %w", err)
@@ -1022,6 +1023,7 @@ func checkURLAccessibility(rawURL string) error {
 	if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
 		return fmt.Errorf("URL validation failed: %w", err)
 	}
+	// CodeQL[go/ssrf] False positive: rawURL is validated by bifrost.ValidateExternalURL (SSRF guard) immediately above; this call only reaches operator-configured URLs that passed the allowlist check.
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Get(rawURL)
 	if err != nil {

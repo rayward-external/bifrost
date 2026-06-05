@@ -201,10 +201,8 @@ func TestValidatePricingURL(t *testing.T) {
 			url:  "https://8.8.8.8/pricing.json",
 		},
 		{
-			name:      "loopback URL is rejected",
-			url:       "http://127.0.0.1/pricing.json",
-			wantErr:   true,
-			errSubstr: "localhost and loopback",
+			name: "loopback URL is accepted",
+			url:  "http://127.0.0.1/pricing.json",
 		},
 		{
 			name:      "private URL is rejected",

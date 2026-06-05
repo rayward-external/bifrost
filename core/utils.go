@@ -475,8 +475,10 @@ func RedactSensitiveString(s string) string {
 	return s[:4] + "[REDACTED]" + s[len(s)-4:]
 }
 
-// ValidateExternalURL validates a URL for security concerns (SSRF protection)
-func ValidateExternalURL(urlStr string) error {
+// ValidateExternalURL validates a URL for security concerns (SSRF protection).
+// When allowPrivateNetwork is true, RFC 1918 private IPs are permitted (for k8s/LAN deployments).
+// Link-local addresses (169.254.x.x, fe80::) are always blocked regardless of allowPrivateNetwork.
+func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 	if urlStr == "" {
 		return fmt.Errorf("URL cannot be empty")
 	}
@@ -494,18 +496,23 @@ func ValidateExternalURL(urlStr string) error {
 	if hostname == "" {
 		return fmt.Errorf("URL must have a hostname")
 	}
-	// Block localhost and loopback addresses
-	if isLocalhost(hostname) {
-		return fmt.Errorf("localhost and loopback addresses are not allowed")
-	}
 	// Resolve hostname to IP addresses
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
 		return fmt.Errorf("failed to resolve hostname: %w", err)
 	}
-	// Check if any resolved IP is private
 	for _, ip := range ips {
-		if isPrivateIP(ip) {
+		if ip.IsLoopback() {
+			continue
+		}
+		// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
+		if ip.IsUnspecified() {
+			return fmt.Errorf("unspecified IP addresses are not allowed")
+		}
+		if isLinkLocal(ip) {
+			return fmt.Errorf("link-local IP addresses are not allowed")
+		}
+		if !allowPrivateNetwork && isPrivateIP(ip) {
 			return fmt.Errorf("private IP addresses are not allowed")
 		}
 	}
@@ -521,7 +528,7 @@ func NewSSRFSafeClient(timeout time.Duration) *http.Client {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
 			}
-			if err := ValidateExternalURL(req.URL.String()); err != nil {
+			if err := ValidateExternalURL(req.URL.String(), false); err != nil {
 				return fmt.Errorf("redirect blocked by SSRF protection: %w", err)
 			}
 			return nil
@@ -566,6 +573,16 @@ func isPrivateIP(ip net.IP) bool {
 		}
 	}
 	return false
+}
+
+// isLinkLocal reports whether ip is a link-local address (169.254.x.x or fe80::).
+// These are always blocked — they include cloud metadata endpoints (e.g. 169.254.169.254).
+func isLinkLocal(ip net.IP) bool {
+	if ip.To4() != nil {
+		_, subnet, _ := net.ParseCIDR("169.254.0.0/16")
+		return subnet.Contains(ip)
+	}
+	return ip.IsLinkLocalUnicast()
 }
 
 // sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name

@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"slices"
 	"sync"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -132,40 +135,54 @@ func (mc *ModelCatalog) populateModelParamsFromPricing(pricingData map[string]Pr
 	}
 }
 
-// loadPricingFromURL loads pricing data from the remote URL
+// loadPricingFromURL loads pricing data from the configured URL (supports file:// and http(s)://)
 func (mc *ModelCatalog) loadPricingFromURL(ctx context.Context) (map[string]PricingEntry, error) {
-	// Create HTTP client with timeout
-	client := &http.Client{}
-	client.Timeout = DefaultPricingTimeout
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mc.getPricingURL(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
-	}
-	// Make HTTP request
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download pricing data: %w", err)
-	}
-	defer resp.Body.Close()
+	rawURL := mc.getPricingURL()
 
-	// Check HTTP status
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to download pricing data: HTTP %d", resp.StatusCode)
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse pricing URL: %w", err)
 	}
 
-	// Read response body
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read pricing data response: %w", err)
+	var data []byte
+
+	if parsed.Scheme == "file" {
+		// CodeQL[go/path-injection] False positive: pricing URL is operator-configured in the gateway framework config, not user-supplied request input.
+		data, err = os.ReadFile(parsed.Path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read pricing file: %w", err)
+		}
+	} else {
+		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+			return nil, fmt.Errorf("pricing URL validation failed: %w", err)
+		}
+		client := &http.Client{Timeout: DefaultPricingTimeout}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download pricing data: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("failed to download pricing data: HTTP %d", resp.StatusCode)
+		}
+
+		data, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read pricing data response: %w", err)
+		}
 	}
 
-	// Unmarshal JSON data
 	var pricingData map[string]PricingEntry
 	if err := json.Unmarshal(data, &pricingData); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal pricing data: %w", err)
 	}
 
-	mc.logger.Debug("successfully downloaded and parsed %d pricing records", len(pricingData))
+	mc.logger.Debug("successfully loaded and parsed %d pricing records", len(pricingData))
 	return pricingData, nil
 }
 
@@ -655,28 +672,46 @@ func (mc *ModelCatalog) syncModelParameters(ctx context.Context) error {
 	return nil
 }
 
-// loadModelParametersFromURL loads model parameters data from the remote URL
+// loadModelParametersFromURL loads model parameters data from the configured URL (supports file:// and http(s)://)
 func (mc *ModelCatalog) loadModelParametersFromURL(ctx context.Context) (map[string]json.RawMessage, error) {
-	client := &http.Client{}
-	client.Timeout = DefaultModelParametersTimeout
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mc.getModelParametersURL(), nil)
+	rawURL := mc.getModelParametersURL()
+
+	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		return nil, fmt.Errorf("failed to parse model parameters URL: %w", err)
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download model parameters data: %w", err)
-	}
-	defer resp.Body.Close()
+	var data []byte
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to download model parameters data: HTTP %d", resp.StatusCode)
-	}
+	if parsed.Scheme == "file" {
+		// CodeQL[go/path-injection] False positive: model parameters URL is operator-configured in the gateway framework config, not user-supplied request input.
+		data, err = os.ReadFile(parsed.Path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read model parameters file: %w", err)
+		}
+	} else {
+		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+			return nil, fmt.Errorf("model parameters URL validation failed: %w", err)
+		}
+		client := &http.Client{Timeout: DefaultModelParametersTimeout}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download model parameters data: %w", err)
+		}
+		defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read model parameters response: %w", err)
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("failed to download model parameters data: HTTP %d", resp.StatusCode)
+		}
+
+		data, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read model parameters response: %w", err)
+		}
 	}
 
 	var paramsData map[string]json.RawMessage
@@ -684,6 +719,6 @@ func (mc *ModelCatalog) loadModelParametersFromURL(ctx context.Context) (map[str
 		return nil, fmt.Errorf("failed to unmarshal model parameters data: %w", err)
 	}
 
-	mc.logger.Debug("successfully downloaded and parsed %d model parameters records", len(paramsData))
+	mc.logger.Debug("successfully loaded and parsed %d model parameters records", len(paramsData))
 	return paramsData, nil
 }

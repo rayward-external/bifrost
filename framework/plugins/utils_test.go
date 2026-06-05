@@ -34,7 +34,7 @@ func withPluginDownloadTestServer(t *testing.T, handler http.Handler) string {
 			if len(via) >= 5 {
 				return fmt.Errorf("too many redirects")
 			}
-			if err := bifrost.ValidateExternalURL(req.URL.String()); err != nil {
+			if err := bifrost.ValidateExternalURL(req.URL.String(), false); err != nil {
 				return err
 			}
 			return nil

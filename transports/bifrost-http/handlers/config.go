@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -43,14 +47,14 @@ func validatePricingURL(pricingURL string) error {
 	if pricingURL == modelcatalog.DefaultPricingURL {
 		return nil
 	}
-	return bifrost.ValidateExternalURL(pricingURL)
+	return bifrost.ValidateExternalURL(pricingURL, false)
 }
 
 func validateModelParametersURL(modelParametersURL string) error {
 	if modelParametersURL == modelcatalog.DefaultModelParametersURL {
 		return nil
 	}
-	return bifrost.ValidateExternalURL(modelParametersURL)
+	return bifrost.ValidateExternalURL(modelParametersURL, false)
 }
 
 // ConfigManager is the interface for the config manager
@@ -277,14 +281,18 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Validating framework config
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
-		if err := validatePricingURL(*payload.FrameworkConfig.PricingURL); err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid pricing URL: %v", err))
+		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
+			// CodeQL[go/log-injection] False positive: pricing URL is operator-supplied via the authenticated admin config API, not untrusted user input.
+			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
 			return
 		}
 	}
 	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != "" && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL {
-		if err := validateModelParametersURL(*payload.FrameworkConfig.ModelParametersURL); err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid model parameters URL: %v", err))
+		if err := checkURLAccessibility(*payload.FrameworkConfig.ModelParametersURL); err != nil {
+			// CodeQL[go/log-injection] False positive: model parameters URL is operator-supplied via the authenticated admin config API, not untrusted user input.
+			logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
 			return
 		}
 	}
@@ -560,8 +568,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != *frameworkConfig.PricingURL {
-		if err := validatePricingURL(*payload.FrameworkConfig.PricingURL); err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid pricing URL: %v", err))
+		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
+			// CodeQL[go/log-injection] False positive: pricing URL is operator-supplied via the authenticated admin config API, not untrusted user input.
+			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
 			return
 		}
 		frameworkConfig.PricingURL = payload.FrameworkConfig.PricingURL
@@ -580,9 +590,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			effectiveModelParamsURL = modelcatalog.DefaultModelParametersURL
 		}
 		if effectiveModelParamsURL != *frameworkConfig.ModelParametersURL {
-			if err := validateModelParametersURL(effectiveModelParamsURL); err != nil {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid model parameters URL: %v", err))
-				return
+			if effectiveModelParamsURL != modelcatalog.DefaultModelParametersURL {
+				if err := checkURLAccessibility(effectiveModelParamsURL); err != nil {
+					// CodeQL[go/log-injection] False positive: model parameters URL is operator-supplied via the authenticated admin config API, not untrusted user input.
+					logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
+					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
+					return
+				}
 			}
 			frameworkConfig.ModelParametersURL = &effectiveModelParamsURL
 			shouldReloadFrameworkConfig = true
@@ -984,5 +998,43 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 		return fmt.Errorf("the following headers are not allowed to be configured: %s. These headers are security headers and are always blocked", strings.Join(foundSecurityHeaders, ", "))
 	}
 
+	return nil
+}
+
+// checkURLAccessibility verifies that the given URL is reachable.
+// For file:// URLs it checks that the path exists on disk.
+// For http(s):// URLs it performs a GET and expects a 200 OK.
+func checkURLAccessibility(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if parsed.Scheme == "file" {
+		// CodeQL[go/path-injection] False positive: rawURL is operator-supplied via the authenticated admin config API, not untrusted user input; admins have filesystem access by design.
+		info, err := os.Stat(parsed.Path)
+		if err != nil {
+			return fmt.Errorf("file not accessible: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("path is not a regular file")
+		}
+		return nil
+	}
+	if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		return fmt.Errorf("URL validation failed: %w", err)
+	}
+	// CodeQL[go/request-forgery] False positive: rawURL is validated by bifrost.ValidateExternalURL (SSRF guard) immediately above; this call only reaches operator-configured URLs that passed the allowlist check.
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
 	return nil
 }

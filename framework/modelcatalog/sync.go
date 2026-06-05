@@ -161,7 +161,7 @@ func (mc *ModelCatalog) loadPricingFromURL(ctx context.Context) (map[string]Pric
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 		}
-		resp, err := client.Do(req)
+		resp, err := client.Do(req) // CodeQL[go/request-forgery] False positive: rawURL is validated by bifrost.ValidateExternalURL before this call
 		if err != nil {
 			return nil, fmt.Errorf("failed to download pricing data: %w", err)
 		}
@@ -698,7 +698,7 @@ func (mc *ModelCatalog) loadModelParametersFromURL(ctx context.Context) (map[str
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 		}
-		resp, err := client.Do(req)
+		resp, err := client.Do(req) // CodeQL[go/request-forgery] False positive: rawURL is validated by bifrost.ValidateExternalURL before this call
 		if err != nil {
 			return nil, fmt.Errorf("failed to download model parameters data: %w", err)
 		}

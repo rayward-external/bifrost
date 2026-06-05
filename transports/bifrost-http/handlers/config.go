@@ -1023,9 +1023,8 @@ func checkURLAccessibility(rawURL string) error {
 	if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
 		return fmt.Errorf("URL validation failed: %w", err)
 	}
-	// CodeQL[go/request-forgery] False positive: rawURL is validated by bifrost.ValidateExternalURL (SSRF guard) immediately above; this call only reaches operator-configured URLs that passed the allowlist check.
 	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Get(rawURL)
+	resp, err := client.Get(rawURL) // CodeQL[go/request-forgery] False positive: rawURL is validated by bifrost.ValidateExternalURL (SSRF guard) immediately above; this call only reaches operator-configured URLs that passed the allowlist check.
 	if err != nil {
 		return err
 	}

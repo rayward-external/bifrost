@@ -41,7 +41,7 @@ var pluginDownloadClientForRequest = func() *http.Client {
 //     ValidateExternalURL on every redirect via CheckRedirect, so an open
 //     redirect cannot pivot to an internal address mid-download.
 func DownloadPlugin(pluginURL string, extension string) (string, error) {
-	if err := bifrost.ValidateExternalURL(pluginURL); err != nil {
+	if err := bifrost.ValidateExternalURL(pluginURL, false); err != nil {
 		return "", fmt.Errorf("invalid plugin URL: %w", err)
 	}
 

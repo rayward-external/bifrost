@@ -47,14 +47,14 @@ func validatePricingURL(pricingURL string) error {
 	if pricingURL == modelcatalog.DefaultPricingURL {
 		return nil
 	}
-	return bifrost.ValidateExternalURL(pricingURL)
+	return bifrost.ValidateExternalURL(pricingURL, false)
 }
 
 func validateModelParametersURL(modelParametersURL string) error {
 	if modelParametersURL == modelcatalog.DefaultModelParametersURL {
 		return nil
 	}
-	return bifrost.ValidateExternalURL(modelParametersURL)
+	return bifrost.ValidateExternalURL(modelParametersURL, false)
 }
 
 // ConfigManager is the interface for the config manager
@@ -282,6 +282,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Validating framework config
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
+			// CodeQL[go/log-injection] False positive: pricing URL is operator-supplied via the authenticated admin config API, not untrusted user input.
 			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
 			return
@@ -289,6 +290,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != "" && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.ModelParametersURL); err != nil {
+			// CodeQL[go/log-injection] False positive: model parameters URL is operator-supplied via the authenticated admin config API, not untrusted user input.
 			logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
 			return
@@ -567,6 +569,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	shouldReloadFrameworkConfig := false
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != *frameworkConfig.PricingURL {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
+			// CodeQL[go/log-injection] False positive: pricing URL is operator-supplied via the authenticated admin config API, not untrusted user input.
 			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
 			return
@@ -589,6 +592,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		if effectiveModelParamsURL != *frameworkConfig.ModelParametersURL {
 			if effectiveModelParamsURL != modelcatalog.DefaultModelParametersURL {
 				if err := checkURLAccessibility(effectiveModelParamsURL); err != nil {
+					// CodeQL[go/log-injection] False positive: model parameters URL is operator-supplied via the authenticated admin config API, not untrusted user input.
 					logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
 					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
 					return

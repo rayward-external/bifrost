@@ -528,7 +528,7 @@ func NewSSRFSafeClient(timeout time.Duration) *http.Client {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
 			}
-			if err := ValidateExternalURL(req.URL.String()); err != nil {
+			if err := ValidateExternalURL(req.URL.String(), false); err != nil {
 				return fmt.Errorf("redirect blocked by SSRF protection: %w", err)
 			}
 			return nil

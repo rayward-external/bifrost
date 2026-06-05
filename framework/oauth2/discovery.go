@@ -61,7 +61,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	client := bifrost.NewSSRFSafeClient(10 * time.Second)
 
 	// Validate the server URL to prevent SSRF attacks
-	if err := bifrost.ValidateExternalURL(serverURL); err != nil {
+	if err := bifrost.ValidateExternalURL(serverURL, false); err != nil {
 		return nil, fmt.Errorf("invalid server URL: %w", err)
 	}
 
@@ -171,7 +171,7 @@ func parseWWWAuthenticateHeader(header string) (resourceMetadataURL string, scop
 // fetchResourceMetadata fetches OAuth metadata from resource metadata endpoint (RFC 9728)
 func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, []string, error) {
 	// Validate the metadata URL to prevent SSRF attacks
-	if err := bifrost.ValidateExternalURL(metadataURL); err != nil {
+	if err := bifrost.ValidateExternalURL(metadataURL, false); err != nil {
 		return nil, nil, fmt.Errorf("invalid metadata URL: %w", err)
 	}
 
@@ -279,7 +279,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", candidateURL))
 		// Validate the candidate URL to prevent SSRF attacks
-		if err := bifrost.ValidateExternalURL(candidateURL); err != nil {
+		if err := bifrost.ValidateExternalURL(candidateURL, false); err != nil {
 			continue
 		}
 		req, err := http.NewRequestWithContext(ctx, "GET", candidateURL, nil)
@@ -406,7 +406,7 @@ type DynamicClientRegistrationResponse struct {
 // Returns client_id and optional client_secret that can be used for OAuth flows.
 func RegisterDynamicClient(ctx context.Context, registrationURL string, req *DynamicClientRegistrationRequest) (*DynamicClientRegistrationResponse, error) {
 	// Validate the registration URL to prevent SSRF attacks
-	if err := bifrost.ValidateExternalURL(registrationURL); err != nil {
+	if err := bifrost.ValidateExternalURL(registrationURL, false); err != nil {
 		return nil, fmt.Errorf("invalid registration URL: %w", err)
 	}
 

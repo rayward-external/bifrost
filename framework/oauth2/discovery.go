@@ -89,7 +89,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Found resource_metadata URL: %s", resourceMetadataURL))
 	}
 	if len(scopesFromHeader) > 0 {
-		logger.Debug(fmt.Sprintf("[OAuth Discovery] Found scopes in header: %v", scopesFromHeader))
+		logger.Debug(fmt.Sprintf("[OAuth Discovery] Found %d scope(s) in header", len(scopesFromHeader)))
 	}
 
 	// Step 3: Fetch resource metadata if available
@@ -411,7 +411,7 @@ func RegisterDynamicClient(ctx context.Context, registrationURL string, req *Dyn
 	}
 
 	logger.Debug(fmt.Sprintf("[Dynamic Registration] Registering client at: %s", registrationURL))
-	logger.Debug(fmt.Sprintf("[Dynamic Registration] Client name: %s, Redirect URIs: %v", req.ClientName, req.RedirectURIs))
+	logger.Debug(fmt.Sprintf("[Dynamic Registration] Client name len: %d, Redirect URI count: %d", len(req.ClientName), len(req.RedirectURIs)))
 
 	// Serialize request
 	reqBody, err := json.Marshal(req)

@@ -3,7 +3,7 @@ package mocker
 import (
 	"fmt"
 	"maps"
-	"math/rand"
+	"math/rand/v2"
 	"regexp"
 	"slices"
 	"sort"

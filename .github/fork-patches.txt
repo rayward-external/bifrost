@@ -6,6 +6,10 @@
 #
 # Format: <file> | <grep_pattern_that_proves_patch_is_present> | <human_description>
 
+.github/codeql/codeql-config.yml           | go/incorrect-integer-conversion | FP suppression: protobuf int32 casts in core/providers/** are by-design; token counts are internal and in range
+framework/oauth2/discovery.go              | Client name len:              | security fix: replaced client-controlled ClientName/RedirectURIs in debug log with counts only
+plugins/mocker/main.go                     | math/rand/v2                  | security fix: upgraded from math/rand v1 to v2 for probability/weight routing
+framework/logstore/cleaner.go              | math/rand/v2                  | security fix: upgraded from math/rand v1 to v2 for jitter timer
 plugins/otel/main.go                       | CodeQL\[go/log-injection\]    | FP suppression: OTEL endpoint is operator config, not user input
 plugins/telemetry/main.go                  | CodeQL\[go/log-injection\]    | FP suppression: Prometheus pushgateway URL is operator config, not user input
 transports/bifrost-http/handlers/config.go | CodeQL\[go/log-injection\]    | FP suppression: pricing/model-params URLs come from the authenticated admin config API, not untrusted user input

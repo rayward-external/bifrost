@@ -12,3 +12,6 @@ transports/bifrost-http/handlers/config.go | CodeQL\[go/log-injection\]    | FP 
 transports/bifrost-http/handlers/config.go | CodeQL\[go/path-injection\]   | FP suppression: file:// path in checkURLAccessibility is admin-supplied, not untrusted input
 transports/bifrost-http/handlers/config.go | CodeQL\[go/request-forgery\]  | FP suppression: URL validated by ValidateExternalURL SSRF guard before client.Get
 framework/modelcatalog/sync.go             | CodeQL\[go/path-injection\]   | FP suppression: file:// paths for pricing/model-params are operator-configured, not user input
+
+# Sync log
+# 2026-06-07: upstream/main tip 7832fa061 (2026-06-04) already merged into fork main; no new upstream commits.

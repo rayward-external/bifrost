@@ -77,7 +77,12 @@ jobs:
       - name: Snyk test (all projects)
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk test --all-projects --detection-depth=4 --exclude=examples,tests --sarif-file-output=snyk.sarif || true
+        run: |
+          if [ -z "$SNYK_TOKEN" ]; then
+            echo "SNYK_TOKEN not configured; skipping Snyk Open Source scan"
+            exit 0
+          fi
+          snyk test --all-projects --detection-depth=4 --exclude=examples,tests --sarif-file-output=snyk.sarif
 
       - name: Upload SARIF
         if: always() && hashFiles('snyk.sarif') != ''
@@ -153,7 +158,12 @@ jobs:
       - name: Snyk Code test
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk code test --sarif-file-output=snyk-code.sarif || true
+        run: |
+          if [ -z "$SNYK_TOKEN" ]; then
+            echo "SNYK_TOKEN not configured; skipping Snyk Code scan"
+            exit 0
+          fi
+          snyk code test --sarif-file-output=snyk-code.sarif
 
       - name: Upload SARIF
         if: always() && hashFiles('snyk-code.sarif') != ''

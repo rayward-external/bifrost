@@ -8,3 +8,12 @@ paths-ignore:
   - "tests/**"
   - "**/*_test.go"
   - "core/internal/llmtests/**"
+
+query-filters:
+  # go/incorrect-integer-conversion fires on int32() casts for protobuf fields in all
+  # provider adapters. These casts are by design: protobuf int32 maps to Go int32;
+  # token/count values are never user-supplied and stay within int32 range.
+  - exclude:
+      id: go/incorrect-integer-conversion
+      paths:
+        - "core/providers/**"

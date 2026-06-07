@@ -7,6 +7,7 @@ on:
 
 permissions:
   issues: write
+  security-events: read
 
 jobs:
   create-issues:

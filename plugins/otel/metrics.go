@@ -2,12 +2,8 @@ package otel
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -245,53 +241,6 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 	return m, nil
 }
 
-const maxCACertFileSize = 1 << 20 // 1 MB
-
-var allowedCACertDirs = []string{"/etc/", "/usr/", "/opt/", "/var/"}
-
-func validateCACertPath(certPath string) (string, error) {
-	if certPath == "" {
-		return "", nil
-	}
-
-	cleanPath := filepath.Clean(certPath)
-
-	if !filepath.IsAbs(cleanPath) {
-		return "", fmt.Errorf("TLS CA cert path must be absolute: %s", certPath)
-	}
-
-	allowed := false
-	for _, dir := range allowedCACertDirs {
-		if strings.HasPrefix(cleanPath, dir) {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		return "", fmt.Errorf("TLS CA cert path must be under one of %v: %s", allowedCACertDirs, certPath)
-	}
-
-	if strings.Contains(cleanPath, "..") {
-		return "", fmt.Errorf("invalid TLS CA cert path: %s", certPath)
-	}
-
-	info, err := os.Lstat(cleanPath)
-	if err != nil {
-		return "", fmt.Errorf("TLS CA cert path not accessible: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("TLS CA cert path cannot be a symlink: %s", certPath)
-	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("TLS CA cert path is not a regular file: %s", certPath)
-	}
-	if info.Size() > maxCACertFileSize {
-		return "", fmt.Errorf("TLS CA cert file too large (%d bytes, max %d)", info.Size(), maxCACertFileSize)
-	}
-
-	return cleanPath, nil
-}
-
 func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
 	opts := []otlpmetrichttp.Option{
 		otlpmetrichttp.WithEndpointURL(config.Endpoint),
@@ -301,32 +250,16 @@ func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 		opts = append(opts, otlpmetrichttp.WithHeaders(config.Headers))
 	}
 
-	// TLS priority: custom CA > system roots > insecure
-	if config.TLSCACert != "" {
-		safePath, err := validateCACertPath(config.TLSCACert)
+	// HTTP metrics insecure mode disables TLS entirely (unlike the trace HTTP client
+	// which uses InsecureSkipVerify). buildTLSConfig is bypassed for that case.
+	if config.TLSCACert == "" && config.Insecure {
+		opts = append(opts, otlpmetrichttp.WithInsecure())
+	} else {
+		tlsConfig, err := buildTLSConfig(config.TLSCACert, false)
 		if err != nil {
 			return nil, err
 		}
-		caCert, err := os.ReadFile(safePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read CA cert: %w", err)
-		}
-		caCertPool := x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("failed to parse CA cert")
-		}
-		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(&tls.Config{
-			RootCAs:    caCertPool,
-			MinVersion: tls.VersionTLS12,
-		}))
-	} else if config.Insecure {
-		// Skip TLS entirely
-		opts = append(opts, otlpmetrichttp.WithInsecure())
-	} else {
-		// Use system root CAs (empty tls.Config uses system roots)
-		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(&tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}))
+		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(tlsConfig))
 	}
 
 	return otlpmetrichttp.New(ctx, opts...)
@@ -341,36 +274,15 @@ func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 		opts = append(opts, otlpmetricgrpc.WithHeaders(config.Headers))
 	}
 
-	// TLS priority: custom CA > system roots > insecure
-	if config.TLSCACert != "" {
-		safePath, err := validateCACertPath(config.TLSCACert)
+	// gRPC insecure mode uses plaintext (no TLS at all). buildTLSConfig is bypassed for that case.
+	if config.TLSCACert == "" && config.Insecure {
+		opts = append(opts, otlpmetricgrpc.WithTLSCredentials(insecure.NewCredentials()))
+	} else {
+		tlsConfig, err := buildTLSConfig(config.TLSCACert, false)
 		if err != nil {
 			return nil, err
 		}
-		caCert, err := os.ReadFile(safePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read CA cert: %w", err)
-		}
-		caCertPool := x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("failed to parse CA cert")
-		}
-		tlsConfig := &tls.Config{
-			RootCAs:    caCertPool,
-			MinVersion: tls.VersionTLS12,
-		}
-		creds := credentials.NewTLS(tlsConfig)
-		opts = append(opts, otlpmetricgrpc.WithTLSCredentials(creds))
-	} else if config.Insecure {
-		// Skip TLS entirely
-		opts = append(opts, otlpmetricgrpc.WithTLSCredentials(insecure.NewCredentials()))
-	} else {
-		// Use system root CAs with MinVersion
-		tlsConfig := &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}
-		creds := credentials.NewTLS(tlsConfig)
-		opts = append(opts, otlpmetricgrpc.WithTLSCredentials(creds))
+		opts = append(opts, otlpmetricgrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig)))
 	}
 
 	return otlpmetricgrpc.New(ctx, opts...)

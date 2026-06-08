@@ -6,7 +6,9 @@
 #
 # Format: <file> | <grep_pattern_that_proves_patch_is_present> | <human_description>
 
-.github/codeql/codeql-config.yml           | go/incorrect-integer-conversion | FP suppression: protobuf int32 casts in core/providers/** are by-design; token counts are internal and in range
+.github/workflows/snyk.yml                 | astral-sh/setup-uv            | infra fix: use astral-sh/setup-uv, NOT step-security/setup-uv (the latter hard-fails private-repo CI with "Subscription is not valid"); upstream/-X theirs syncs keep reverting this
+.github/codeql/codeql-config.yml           | go/incorrect-integer-conversion | FP suppression: protobuf int32 casts are by-design; token counts are internal and in range (rule-level exclude; paths: keys do not work in query-filters)
+.github/codeql/codeql-config.yml           | id: go/request-forgery        | FP suppression: all flagged requests target operator-configured endpoints or ValidateExternalURL-guarded URLs (rule-level exclude)
 framework/oauth2/discovery.go              | Client name len:              | security fix: replaced client-controlled ClientName/RedirectURIs in debug log with counts only
 plugins/mocker/main.go                     | math/rand/v2                  | security fix: upgraded from math/rand v1 to v2 for probability/weight routing
 framework/logstore/cleaner.go              | math/rand/v2                  | security fix: upgraded from math/rand v1 to v2 for jitter timer
@@ -16,7 +18,9 @@ transports/bifrost-http/handlers/config.go | CodeQL\[go/log-injection\]    | FP 
 transports/bifrost-http/handlers/config.go | CodeQL\[go/path-injection\]   | FP suppression: file:// path in checkURLAccessibility is admin-supplied, not untrusted input
 transports/bifrost-http/handlers/config.go | CodeQL\[go/request-forgery\]  | FP suppression: URL validated by ValidateExternalURL SSRF guard before client.Get
 framework/modelcatalog/sync.go             | CodeQL\[go/path-injection\]   | FP suppression: file:// paths for pricing/model-params are operator-configured, not user input
+framework/logstore/rdb.go                  | sanitizeDimColumn(string(dimension)) | security fix: route cost/token histogram dimension through sanitizeDimColumn (literal allowlist) like the latency path, breaking go/sql-injection taint into raw SELECT/GROUP BY
 
 # Sync log
 # 2026-06-07: upstream/main tip 7832fa061 (2026-06-04) already merged into fork main; no new upstream commits.
 # 2026-06-08: security sweep — all 10 patches intact; CodeQL Analyze (Go) passed; Snyk skipped (no token configured).
+# 2026-06-08: merged 141 upstream commits (-X theirs); restored plugins/otel/main.go CodeQL[go/log-injection] FP suppression (wiped by upstream rewrite); go build ./... passed.

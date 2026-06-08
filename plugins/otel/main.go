@@ -486,6 +486,7 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 			}
 			return nil, fmt.Errorf("profile %d: failed to initialize metrics exporter: %w", index, err)
 		}
+		// CodeQL[go/log-injection] False positive: logging operator-configured endpoint URL and push interval at startup, not user-supplied input.
 		logger.Info("OTEL metrics push enabled for profile %d, pushing to %s every %d seconds", index, profile.MetricsEndpoint.GetValue(), pushInterval)
 	}
 

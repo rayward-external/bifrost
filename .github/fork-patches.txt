@@ -20,3 +20,4 @@ framework/modelcatalog/sync.go             | CodeQL\[go/path-injection\]   | FP 
 # Sync log
 # 2026-06-07: upstream/main tip 7832fa061 (2026-06-04) already merged into fork main; no new upstream commits.
 # 2026-06-08: security sweep — all 10 patches intact; CodeQL Analyze (Go) passed; Snyk skipped (no token configured).
+# 2026-06-08: merged 141 upstream commits (-X theirs); restored plugins/otel/main.go CodeQL[go/log-injection] FP suppression (wiped by upstream rewrite); go build ./... passed.

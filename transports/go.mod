@@ -36,6 +36,8 @@ require (
 	gorm.io/gorm v1.31.1
 )
 
+require github.com/stretchr/objx v0.5.3 // indirect
+
 require (
 	cel.dev/expr v0.25.1 // indirect
 	cloud.google.com/go v0.123.0 // indirect

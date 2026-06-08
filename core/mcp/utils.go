@@ -128,18 +128,18 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.logger.Debug("%s GetClientByName: Looking for client '%s' among %d clients", MCPLogPrefix, clientName, len(m.clientMap))
+	m.logger.Debug("%s GetClientByName: Looking for client '%s' among %d clients", MCPLogPrefix, sanitizeLogValue(clientName), len(m.clientMap))
 	for _, client := range m.clientMap {
 		m.logger.Debug("%s Checking client with Name: %s, ID: %s", MCPLogPrefix, client.ExecutionConfig.Name, client.ExecutionConfig.ID)
 		if client.ExecutionConfig.Name == clientName {
 			// Return a copy to prevent TOCTOU race conditions
 			// The caller receives a snapshot of the client state at this point in time
-			m.logger.Debug("%s Found client '%s' with IsCodeModeClient=%v", MCPLogPrefix, clientName, client.ExecutionConfig.IsCodeModeClient)
+			m.logger.Debug("%s Found client '%s' with IsCodeModeClient=%v", MCPLogPrefix, sanitizeLogValue(clientName), client.ExecutionConfig.IsCodeModeClient)
 			clientCopy := *client
 			return &clientCopy
 		}
 	}
-	m.logger.Debug("%s Client '%s' not found", MCPLogPrefix, clientName)
+	m.logger.Debug("%s Client '%s' not found", MCPLogPrefix, sanitizeLogValue(clientName))
 	return nil
 }
 
@@ -425,7 +425,7 @@ func shouldIncludeClient(clientName string, includeClients []string, logger sche
 
 		// Check if specific client is in the list
 		included := slices.Contains(includeClients, clientName)
-		logger.Debug("%s shouldIncludeClient: %s - %s (filter: %v)", MCPLogPrefix, clientName, map[bool]string{true: "ALLOWED", false: "BLOCKED"}[included], includeClients)
+		logger.Debug("%s shouldIncludeClient: %s - %s (filter: %v)", MCPLogPrefix, sanitizeLogValue(clientName), map[bool]string{true: "ALLOWED", false: "BLOCKED"}[included], includeClients)
 		return included
 	}
 

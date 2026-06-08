@@ -3496,6 +3496,7 @@ func (bifrost *Bifrost) GetDropExcessRequests() bool {
 // This allows for hot-reloading of this configuration value.
 func (bifrost *Bifrost) UpdateDropExcessRequests(value bool) {
 	bifrost.dropExcessRequests.Store(value)
+	// CodeQL[go/log-injection] FP: value is a bool, which cannot carry newlines or control characters to forge a log entry.
 	bifrost.logger.Info("drop_excess_requests updated to: %v", value)
 }
 
@@ -4031,7 +4032,7 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*Pr
 		pq := pqValue.(*ProviderQueue)
 		return pq, nil
 	}
-	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
+	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", schemas.SanitizeLogValue(string(providerKey))))
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config for provider: %v", err)
@@ -4372,7 +4373,7 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil || config == nil {
 		if slices.Contains(dynamicallyConfigurableProviders, providerKey) {
-			bifrost.logger.Info(fmt.Sprintf("initializing provider %s with default config", providerKey))
+			bifrost.logger.Info(fmt.Sprintf("initializing provider %s with default config", schemas.SanitizeLogValue(string(providerKey))))
 			// If no config found, use default config
 			config = &schemas.ProviderConfig{
 				NetworkConfig:            schemas.DefaultNetworkConfig,
@@ -4577,7 +4578,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx = bifrost.ctx
 	}
 
-	bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
+	bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", schemas.SanitizeLogValue(string(provider)), schemas.SanitizeLogValue(model), len(fallbacks)))
 
 	// Try the primary provider first
 	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 0)
@@ -4589,9 +4590,9 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
-			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
+			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", schemas.SanitizeLogValue(string(provider)), schemas.SanitizeLogValue(model), schemas.SanitizeLogValue(primaryErr.Error.Message)))
 		} else {
-			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %v", provider, model, primaryErr))
+			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %v", schemas.SanitizeLogValue(string(provider)), schemas.SanitizeLogValue(model), primaryErr))
 		}
 		if len(fallbacks) > 0 {
 			bifrost.logger.Debug(fmt.Sprintf("check if we should try %d fallbacks", len(fallbacks)))

@@ -18,6 +18,38 @@ func Ptr[T any](v T) *T {
 	return &v
 }
 
+// maxLogValueLen bounds a sanitized log value so a pathological input cannot
+// bloat a single log entry.
+const maxLogValueLen = 256
+
+// SanitizeLogValue makes a client-controlled string safe to embed in a log
+// line. It replaces ASCII control characters (anything below space, plus DEL)
+// with '?' so an attacker cannot inject newlines, carriage returns, or terminal
+// escape sequences to forge or corrupt log entries, and truncates the result to
+// maxLogValueLen runes. It is the canonical sanitizer for CodeQL's
+// go/log-injection sink across all modules.
+func SanitizeLogValue(value string) string {
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	count := 0
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			b.WriteByte('?')
+		} else {
+			b.WriteRune(r)
+		}
+		count++
+		if count >= maxLogValueLen {
+			b.WriteString("...[truncated]")
+			break
+		}
+	}
+	return b.String()
+}
+
 // GetRandomString generates a random alphanumeric string of the given length.
 func GetRandomString(length int) string {
 	if length <= 0 {

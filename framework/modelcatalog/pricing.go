@@ -1153,7 +1153,7 @@ func (mc *ModelCatalog) resolvePricing(provider, originalModelRequested, resolve
 	if resolvedModelUsed == "" {
 		resolvedModelUsed = originalModelRequested
 	}
-	mc.logger.Debug("looking up pricing for resolved model %s and provider %s of request type %s", resolvedModelUsed, provider, normalizeRequestType(requestType))
+	mc.logger.Debug("looking up pricing for resolved model %s and provider %s of request type %s", schemas.SanitizeLogValue(resolvedModelUsed), provider, normalizeRequestType(requestType))
 
 	if scopes.Provider == "" {
 		scopes.Provider = provider
@@ -1165,7 +1165,7 @@ func (mc *ModelCatalog) resolvePricing(provider, originalModelRequested, resolve
 		return &result
 	}
 
-	mc.logger.Debug("pricing not found for resolved model %s, trying alias %s", resolvedModelUsed, originalModelRequested)
+	mc.logger.Debug("pricing not found for resolved model %s, trying alias %s", schemas.SanitizeLogValue(resolvedModelUsed), schemas.SanitizeLogValue(originalModelRequested))
 	base, exists = mc.getBasePricing(originalModelRequested, provider, requestType)
 	if exists && base != nil {
 		// Apply overrides using the resolved model name, not the alias
@@ -1175,12 +1175,12 @@ func (mc *ModelCatalog) resolvePricing(provider, originalModelRequested, resolve
 
 	// No base catalog entry found; still try overrides in case the user defined
 	// override-only pricing for a model not in the built-in catalog.
-	mc.logger.Debug("pricing not found for resolved model %s and provider %s, trying override-only pricing", resolvedModelUsed, provider)
+	mc.logger.Debug("pricing not found for resolved model %s and provider %s, trying override-only pricing", schemas.SanitizeLogValue(resolvedModelUsed), provider)
 	result, applied := mc.applyPricingOverrides(resolvedModelUsed, requestType, configstoreTables.TableModelPricing{}, scopes)
 	if applied {
 		return &result
 	}
-	mc.logger.Debug("no pricing found for resolved model %s and provider %s, skipping cost calculation", resolvedModelUsed, provider)
+	mc.logger.Debug("no pricing found for resolved model %s and provider %s, skipping cost calculation", schemas.SanitizeLogValue(resolvedModelUsed), provider)
 	return nil
 }
 
@@ -1236,7 +1236,7 @@ func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schem
 		// Vertex models can be of the form "provider/model", so try to lookup the model without the provider prefix and keep the original provider
 		if strings.Contains(model, "/") {
 			modelWithoutProvider := strings.SplitN(model, "/", 2)[1]
-			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
+			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", schemas.SanitizeLogValue(modelWithoutProvider))
 			pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", mode)]
 			if ok {
 				return &pricing, true

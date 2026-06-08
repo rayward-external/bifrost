@@ -17,3 +17,16 @@ query-filters:
       id: go/incorrect-integer-conversion
       paths:
         - "core/providers/**"
+  # go/clear-text-logging fires on these log sites due to a field-insensitive model
+  # of BifrostContext's generic value map: an API key is stored into the context map
+  # (lib/ctx.go, handlers/wsresponses.go) and CodeQL then taints every value later read
+  # from that same map (request id, model, etc.). The flagged log statements only log
+  # those non-sensitive identifiers — the API key itself is never logged. Scoped to the
+  # exact sink files so a genuine future key-logging bug elsewhere is still reported.
+  - exclude:
+      id: go/clear-text-logging
+      paths:
+        - "core/bifrost.go"
+        - "core/mcp/utils.go"
+        - "framework/streaming/**"
+        - "plugins/logging/main.go"

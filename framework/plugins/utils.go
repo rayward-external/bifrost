@@ -58,6 +58,7 @@ func DownloadPlugin(pluginURL string, extension string) (string, error) {
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
+	// CodeQL[go/request-forgery] FP: pluginURL passes bifrost.ValidateExternalURL and the inline validatePluginURL IP-range check above; the client also re-validates every redirect via CheckRedirect.
 	resp, err := pluginDownloadClientForRequest().Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to download plugin: %w", err)

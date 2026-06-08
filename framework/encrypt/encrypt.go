@@ -122,6 +122,7 @@ func Key() []byte {
 // Used for hash-based lookups on encrypted columns (e.g., virtual key value, session token).
 // SHA-256 is cryptographically strong (256-bit); this is NOT a weak hash algorithm.
 func HashSHA256(value string) string {
+	// CodeQL[go/weak-sensitive-data-hashing] FP: SHA-256 is used for deterministic hash-based lookups on encrypted columns (virtual key / session token indexing), not password storage, where a slow KDF would break lookups.
 	h := sha256.Sum256([]byte(value)) // #nosec G401 — SHA-256 is not a weak hash
 	return hex.EncodeToString(h[:])
 }

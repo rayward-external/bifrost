@@ -900,7 +900,7 @@ func (gs *LocalGovernanceStore) CheckBudget(ctx context.Context, entityWiseBudge
 					if time.Since(budget.LastReset) >= duration {
 						// Budget expired but hasn't been reset yet - treat as reset
 						// Note: actual reset will happen in post-hook via AtomicBudgetUpdate
-						gs.logger.Debug("LocalStore CheckBudget: Budget %s (%s) expired, skipping check", budget.ID, entity)
+						gs.logger.Debug("LocalStore CheckBudget: Budget %s (%s) expired, skipping check", schemas.SanitizeLogValue(budget.ID), schemas.SanitizeLogValue(entity))
 						continue // Skip budget check for expired budgets
 					}
 				}
@@ -910,7 +910,7 @@ func (gs *LocalGovernanceStore) CheckBudget(ctx context.Context, entityWiseBudge
 				baseline = 0
 			}
 			gs.logger.Debug("LocalStore CheckBudget: Checking %s budget %s: local=%.4f, remote=%.4f, total=%.4f, limit=%.4f",
-				entity, budget.ID, budget.CurrentUsage, baseline, budget.CurrentUsage+baseline, budget.MaxLimit)
+				schemas.SanitizeLogValue(entity), schemas.SanitizeLogValue(budget.ID), budget.CurrentUsage, baseline, budget.CurrentUsage+baseline, budget.MaxLimit)
 			// Check if current usage (local + remote baseline) exceeds budget limit
 			if budget.CurrentUsage+baseline >= budget.MaxLimit {
 				gs.logger.Debug("LocalStore CheckBudget: Budget %s EXCEEDED", budget.ID)

@@ -158,7 +158,7 @@ func (s *StarlarkCodeMode) UpdateConfig(config *mcp.CodeModeConfig) {
 	}
 
 	s.logger.Info("%s Starlark code mode configuration updated: binding level=%s, timeout=%v",
-		mcp.CodeModeLogPrefix, config.BindingLevel, config.ToolExecutionTimeout)
+		mcp.CodeModeLogPrefix, schemas.SanitizeLogValue(string(config.BindingLevel)), config.ToolExecutionTimeout)
 }
 
 // getToolExecutionTimeout returns the current tool execution timeout.

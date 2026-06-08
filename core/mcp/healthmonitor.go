@@ -80,7 +80,7 @@ func (chm *ClientHealthMonitor) Start() {
 
 	if !exists {
 		// Use clientID for logging when client is missing
-		chm.logger.Error("%s Health monitor failed to start for client %s, client not found in manager", MCPLogPrefix, chm.clientID)
+		chm.logger.Error("%s Health monitor failed to start for client %s, client not found in manager", MCPLogPrefix, sanitizeLogValue(chm.clientID))
 		return
 	}
 
@@ -113,7 +113,7 @@ func (chm *ClientHealthMonitor) Stop() {
 		chm.cancel()
 	}
 
-	chm.logger.Debug("%s Health monitor stopped for client %s", MCPLogPrefix, chm.clientID)
+	chm.logger.Debug("%s Health monitor stopped for client %s", MCPLogPrefix, sanitizeLogValue(chm.clientID))
 }
 
 // monitorLoop runs the health check loop
@@ -217,7 +217,7 @@ func (chm *ClientHealthMonitor) attemptReconnect() {
 		chm.mu.Unlock()
 	}()
 
-	chm.logger.Debug("%s Attempting to reconnect MCP client %s...", MCPLogPrefix, chm.clientID)
+	chm.logger.Debug("%s Attempting to reconnect MCP client %s...", MCPLogPrefix, sanitizeLogValue(chm.clientID))
 
 	// Do not attempt reconnect if the client has been intentionally disabled
 	// Health monitoring is already stopped for disabled clients. This is just a sanity check.
@@ -226,16 +226,16 @@ func (chm *ClientHealthMonitor) attemptReconnect() {
 	isDisabled := exists && clientState != nil && clientState.State == schemas.MCPConnectionStateDisabled
 	chm.manager.mu.RUnlock()
 	if isDisabled {
-		chm.logger.Debug("%s Skipping reconnect for disabled MCP client %s", MCPLogPrefix, chm.clientID)
+		chm.logger.Debug("%s Skipping reconnect for disabled MCP client %s", MCPLogPrefix, sanitizeLogValue(chm.clientID))
 		return
 	}
 
 	if err := chm.manager.ReconnectClient(chm.clientID); err != nil {
-		chm.logger.Warn("%s Failed to reconnect MCP client %s: %v", MCPLogPrefix, chm.clientID, err)
+		chm.logger.Warn("%s Failed to reconnect MCP client %s: %v", MCPLogPrefix, sanitizeLogValue(chm.clientID), err)
 		return
 	}
 
-	chm.logger.Info("%s Successfully reconnected MCP client %s", MCPLogPrefix, chm.clientID)
+	chm.logger.Info("%s Successfully reconnected MCP client %s", MCPLogPrefix, sanitizeLogValue(chm.clientID))
 	chm.resetFailures()
 }
 

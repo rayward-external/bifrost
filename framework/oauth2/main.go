@@ -219,7 +219,7 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 		return fmt.Errorf("failed to update token: %w", err)
 	}
 
-	logger.Debug("OAuth token refreshed successfully oauth_config_id : %s", oauthConfigID)
+	logger.Debug("OAuth token refreshed successfully oauth_config_id : %s", schemas.SanitizeLogValue(oauthConfigID))
 
 	return nil
 }
@@ -428,7 +428,7 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 			return nil, fmt.Errorf("server_url is required for OAuth discovery when authorize_url or token_url is not provided")
 		}
 
-		logger.Debug("Performing OAuth discovery for missing endpoints", "server_url", config.ServerURL)
+		logger.Debug("Performing OAuth discovery for missing endpoints", "server_url", schemas.SanitizeLogValue(config.ServerURL))
 
 		metadata, err := DiscoverOAuthMetadata(ctx, config.ServerURL)
 		if err != nil {
@@ -561,7 +561,7 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		scopes,
 	)
 
-	logger.Debug("OAuth flow initiated successfully: oauth_config_id: %s, client_id: %s", oauthConfigID, resolvedClientID)
+	logger.Debug("OAuth flow initiated successfully: oauth_config_id: %s, client_id: %s", schemas.SanitizeLogValue(oauthConfigID), schemas.SanitizeLogValue(resolvedClientID))
 
 	return &schemas.OAuth2FlowInitiation{
 		OauthConfigID: oauthConfigID,
@@ -1065,7 +1065,7 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 		}
 	}
 
-	logger.Debug("Per-user OAuth flow initiated: session_id=%s, mcp_client_id=%s", sessionID, mcpClientID)
+	logger.Debug("Per-user OAuth flow initiated: session_id=%s, mcp_client_id=%s", schemas.SanitizeLogValue(sessionID), schemas.SanitizeLogValue(mcpClientID))
 
 	return &schemas.OAuth2FlowInitiation{
 		OauthConfigID: oauthConfigID,

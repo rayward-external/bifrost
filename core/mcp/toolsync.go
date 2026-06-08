@@ -70,7 +70,7 @@ func (cts *ClientToolSyncer) Start() {
 	cts.ticker = time.NewTicker(cts.interval)
 
 	go cts.syncLoop()
-	cts.logger.Debug("%s Tool syncer started for client %s (interval: %v)", MCPLogPrefix, cts.clientID, cts.interval)
+	cts.logger.Debug("%s Tool syncer started for client %s (interval: %v)", MCPLogPrefix, sanitizeLogValue(cts.clientID), cts.interval)
 }
 
 // Stop stops syncing tools
@@ -89,7 +89,7 @@ func (cts *ClientToolSyncer) Stop() {
 	if cts.cancel != nil {
 		cts.cancel()
 	}
-	cts.logger.Debug("%s Tool syncer stopped for client %s", MCPLogPrefix, cts.clientID)
+	cts.logger.Debug("%s Tool syncer stopped for client %s", MCPLogPrefix, sanitizeLogValue(cts.clientID))
 }
 
 // syncLoop runs the tool sync loop
@@ -117,7 +117,7 @@ func (cts *ClientToolSyncer) performSync() {
 
 	if clientState.Conn == nil {
 		cts.manager.mu.RUnlock()
-		cts.logger.Debug("%s Skipping tool sync for %s: client not connected", MCPLogPrefix, cts.clientID)
+		cts.logger.Debug("%s Skipping tool sync for %s: client not connected", MCPLogPrefix, sanitizeLogValue(cts.clientID))
 		return
 	}
 
@@ -133,7 +133,7 @@ func (cts *ClientToolSyncer) performSync() {
 	newTools, newMapping, err := cts.manager.runListToolsWithHooks(ctx, conn, clientName)
 	if err != nil {
 		// On failure, keep existing tools intact
-		cts.logger.Warn("%s Tool sync failed for %s, keeping existing tools: %v", MCPLogPrefix, cts.clientID, err)
+		cts.logger.Warn("%s Tool sync failed for %s, keeping existing tools: %v", MCPLogPrefix, sanitizeLogValue(cts.clientID), err)
 		return
 	}
 
@@ -154,9 +154,9 @@ func (cts *ClientToolSyncer) performSync() {
 	cts.manager.mu.Unlock()
 
 	if oldToolCount != newToolCount {
-		cts.logger.Info("%s Tool sync completed for %s: %d -> %d tools", MCPLogPrefix, cts.clientID, oldToolCount, newToolCount)
+		cts.logger.Info("%s Tool sync completed for %s: %d -> %d tools", MCPLogPrefix, sanitizeLogValue(cts.clientID), oldToolCount, newToolCount)
 	} else {
-		cts.logger.Debug("%s Tool sync completed for %s: %d tools (no change)", MCPLogPrefix, cts.clientID, newToolCount)
+		cts.logger.Debug("%s Tool sync completed for %s: %d tools (no change)", MCPLogPrefix, sanitizeLogValue(cts.clientID), newToolCount)
 	}
 }
 

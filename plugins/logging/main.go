@@ -235,7 +235,7 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		case p.deferredUsageSem <- struct{}{}:
 			defer func() { <-p.deferredUsageSem }()
 		default:
-			p.logger.Warn("deferred usage update dropped for request %s: semaphore full", requestID)
+			p.logger.Warn("deferred usage update dropped for request %s: semaphore full", schemas.SanitizeLogValue(requestID))
 			return
 		}
 		usageUpdates := map[string]interface{}{
@@ -257,7 +257,7 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		for i := 0; i < 3; i++ {
 			found, findErr = p.store.IsLogEntryPresent(p.ctx, requestID)
 			if findErr != nil {
-				p.logger.Warn("failed to check if log entry is present for request %s: %s", requestID, sanitizeLogErr(findErr))
+				p.logger.Warn("failed to check if log entry is present for request %s: %s", schemas.SanitizeLogValue(requestID), sanitizeLogErr(findErr))
 				continue
 			}
 			if found {
@@ -266,11 +266,11 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 			time.Sleep(time.Duration(math.Pow(2, float64(i))) * time.Second * 2)
 		}
 		if !found {
-			p.logger.Warn("log entry not found for request %s after 3 retries. failed to update deferred usage for large payload request", requestID)
+			p.logger.Warn("log entry not found for request %s after 3 retries. failed to update deferred usage for large payload request", schemas.SanitizeLogValue(requestID))
 			return
 		}
 		if updErr := p.store.Update(p.ctx, requestID, usageUpdates); updErr != nil {
-			p.logger.Warn("failed to update deferred usage for request %s: %s", requestID, sanitizeLogErr(updErr))
+			p.logger.Warn("failed to update deferred usage for request %s: %s", schemas.SanitizeLogValue(requestID), sanitizeLogErr(updErr))
 		}
 	}()
 }
@@ -575,7 +575,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	createdTimestamp := time.Now().UTC()
 
-	p.logger.Debug("PreLLMHook: request %s type=%q", requestID, req.RequestType)
+	p.logger.Debug("PreLLMHook: request %s type=%q", schemas.SanitizeLogValue(requestID), req.RequestType)
 
 	// If request type is streaming we create a stream accumulator via the tracer
 	if bifrost.IsStreamRequestType(req.RequestType) {
@@ -845,7 +845,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
-	p.logger.Debug("PostLLMHook: request %s type=%q isFinalChunk=%v hasError=%v", requestID, requestType, isFinalChunk, bifrostErr != nil)
+	p.logger.Debug("PostLLMHook: request %s type=%q isFinalChunk=%v hasError=%v", schemas.SanitizeLogValue(requestID), requestType, isFinalChunk, bifrostErr != nil)
 
 	// Retrieve pending input data from PreLLMHook
 	var pendingVal any
@@ -856,14 +856,14 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		pendingVal, hasPending = p.pendingLogsEntries.Load(requestID)
 	}
 
-	p.logger.Debug("PostLLMHook: pending data lookup for request %s: found=%v", requestID, hasPending)
+	p.logger.Debug("PostLLMHook: pending data lookup for request %s: found=%v", schemas.SanitizeLogValue(requestID), hasPending)
 
 	if !hasPending {
 		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
 		// so the error is visible in logs. Without PreLLMHook's DB insert, silently returning
 		// here means the error is completely lost.
 		if bifrostErr != nil {
-			p.logger.Warn("no pending log data found for request %s, writing minimal error entry", requestID)
+			p.logger.Warn("no pending log data found for request %s, writing minimal error entry", schemas.SanitizeLogValue(requestID))
 			entry := &logstore.Log{
 				ID:        requestID,
 				Provider:  string(bifrostErr.ExtraFields.Provider),
@@ -891,7 +891,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 			p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		} else {
-			p.logger.Warn("no pending log data found for request %s, skipping log write", requestID)
+			p.logger.Warn("no pending log data found for request %s, skipping log write", schemas.SanitizeLogValue(requestID))
 		}
 		return result, bifrostErr, nil
 	}
@@ -902,7 +902,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Fallback to request type from pending data if request type is not set
 	if requestType == "" {
 		requestType = schemas.RequestType(pending.InitialData.Object)
-		p.logger.Warn("PostLLMHook: request type missing from response extra fields for request %s, falling back to pre-hook value %q", requestID, requestType)
+		p.logger.Warn("PostLLMHook: request type missing from response extra fields for request %s, falling back to pre-hook value %q", schemas.SanitizeLogValue(requestID), requestType)
 	}
 
 	var tracer schemas.Tracer

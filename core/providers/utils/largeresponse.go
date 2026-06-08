@@ -126,6 +126,7 @@ func MaterializeStreamErrorBody(ctx *schemas.BifrostContext, resp *fasthttp.Resp
 		if ct := resp.Header.ContentType(); len(ct) == 0 || strings.Contains(strings.ToLower(string(ct)), "html") {
 			resp.Header.SetContentType("application/json")
 		}
+		// CodeQL[go/reflected-xss] FP: any html/empty Content-Type is forced to application/json immediately above, so the echoed upstream error body cannot be rendered as HTML.
 		resp.SetBody(bodyBytes)
 	}
 }
@@ -233,6 +234,7 @@ func FinalizeResponseWithLargeDetection(
 	if bodyStream == nil {
 		// No stream available — fall back to buffered read
 		if logger != nil {
+			// CodeQL[go/log-injection] FP: contentLength and responseThreshold are integers, which cannot carry newlines or control characters to forge a log entry.
 			logger.Warn("large-response fallback to buffered path: content_length=%d threshold=%d body_stream_nil=true", contentLength, responseThreshold)
 		}
 		body, err := CheckAndDecodeBody(resp)
@@ -257,6 +259,7 @@ func FinalizeResponseWithLargeDetection(
 	if prefetchSize > maxPrefetchSize {
 		prefetchSize = maxPrefetchSize
 	}
+	// CodeQL[go/uncontrolled-allocation-size] FP: prefetchSize is clamped to maxPrefetchSize (10 MB) immediately above before this allocation.
 	prefetchBuf := make([]byte, prefetchSize)
 	n, readErr := io.ReadFull(decompressedStream, prefetchBuf)
 	if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {

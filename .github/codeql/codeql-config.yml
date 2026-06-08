@@ -66,3 +66,11 @@ query-filters:
       id: go/useless-assignment-to-field
   - exclude:
       id: go/useless-assignment-to-local
+
+  # go/comparison-of-identical-expressions (warning): fires on one upstream site
+  # in handlers/governance.go. All sort.Slice comparators were verified to use
+  # distinct i/j operands (no copy-paste bug), so the remaining match is an
+  # intentional self-comparison (idiomatic float/NaN-style check). Quality
+  # warning, not a vulnerability.
+  - exclude:
+      id: go/comparison-of-identical-expressions

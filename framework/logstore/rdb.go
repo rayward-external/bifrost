@@ -2802,7 +2802,10 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	dimCol := string(dimension)
+	dimCol, err := sanitizeDimColumn(string(dimension))
+	if err != nil {
+		return nil, err
+	}
 	dialect := s.db.Dialector.Name()
 	// Team / business-unit dimensions fan out over the JSON array (scalar
 	// fallback for old / VK-team logs). Postgres-only; forces the live path.
@@ -2914,7 +2917,10 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	dimCol := string(dimension)
+	dimCol, err := sanitizeDimColumn(string(dimension))
+	if err != nil {
+		return nil, err
+	}
 	dialect := s.db.Dialector.Name()
 	// Team / business-unit dimensions fan out over the JSON array (scalar
 	// fallback for old / VK-team logs). Postgres-only; forces the live path.

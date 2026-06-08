@@ -6,6 +6,7 @@
 #
 # Format: <file> | <grep_pattern_that_proves_patch_is_present> | <human_description>
 
+transports/Dockerfile.custom               | golang:1.26.4                 | build fix: builder image Go must be >= the version in core/go.mod (GOTOOLCHAIN=local won't auto-upgrade); bump in step with go.work on every upstream sync or the image build fails at `go work init`
 .github/workflows/snyk.yml                 | astral-sh/setup-uv            | infra fix: use astral-sh/setup-uv, NOT step-security/setup-uv (the latter hard-fails private-repo CI with "Subscription is not valid"); upstream/-X theirs syncs keep reverting this
 .github/codeql/codeql-config.yml           | go/incorrect-integer-conversion | FP suppression: protobuf int32 casts are by-design; token counts are internal and in range (rule-level exclude; paths: keys do not work in query-filters)
 .github/codeql/codeql-config.yml           | id: go/request-forgery        | FP suppression: all flagged requests target operator-configured endpoints or ValidateExternalURL-guarded URLs (rule-level exclude)

@@ -391,10 +391,10 @@ github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6Kllzaw
 github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
 github.com/valyala/fasthttp v1.71.0 h1:tepR7H+Guh9VUqxxcPggYi8R3lGUu2Rsdh+z7/FCY3k=
 github.com/valyala/fasthttp v1.71.0/go.mod h1:z1sDUvOShhXq/C9mwH/fSm1Vb71tUJwmQdgkBrBNwnA=
-github.com/weaviate/weaviate v1.36.5 h1:lCiuEfQ08+5wK0DkTCUBb6ayNep9QpBH6JJhmZaRfzk=
-github.com/weaviate/weaviate v1.36.5/go.mod h1:ljzrgEmGKn3CRzDdcxvhmBUUZIcghwIYd1Lmn54f3Z8=
-github.com/weaviate/weaviate-go-client/v5 v5.7.1 h1:vEMxh486QqRqWaq58UEe/TiTbGbo9T5x7ZPFd5QENvQ=
-github.com/weaviate/weaviate-go-client/v5 v5.7.1/go.mod h1:T/JDErjN074GrnYIa0AgK1TGUGP/6A/8vqXNPlv4c6E=
+github.com/weaviate/weaviate v1.37.6 h1:yaPbHe6/EDH7VBBpC9ErXuJzdrCMQJSZR8/nS7kXvg8=
+github.com/weaviate/weaviate v1.37.6/go.mod h1:dK+fvwCoumNL/jLKfEpjFTU1CBIkuxZdhyx6z6StInU=
+github.com/weaviate/weaviate-go-client/v5 v5.7.3 h1:AB7asp3Nv3QMh34EtJarpezQQ600p6TJVrdRhmisrMI=
+github.com/weaviate/weaviate-go-client/v5 v5.7.3/go.mod h1:Q6lG7oDiKZLcE0UPiPkJ2+V7bOejSOpgJV3kZari1MY=
 github.com/wk8/go-ordered-map/v2 v2.1.8 h1:5h/BUHu93oj4gIdvHHHGsScSTMijfx5PeYkE/fJgbpc=
 github.com/wk8/go-ordered-map/v2 v2.1.8/go.mod h1:5nJHM5DyteebpVlHnWMV0rPz6Zp7+xBAnxjb1X5vnTw=
 github.com/wlynxg/anet v0.0.5 h1:J3VJGi1gvo0JwZ/P1/Yc/8p63SoW98B5dHkYDmpgvvU=

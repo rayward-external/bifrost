@@ -6,7 +6,9 @@
 #
 # Format: <file> | <grep_pattern_that_proves_patch_is_present> | <human_description>
 
-.github/codeql/codeql-config.yml           | go/incorrect-integer-conversion | FP suppression: protobuf int32 casts in core/providers/** are by-design; token counts are internal and in range
+.github/workflows/snyk.yml                 | astral-sh/setup-uv            | infra fix: use astral-sh/setup-uv, NOT step-security/setup-uv (the latter hard-fails private-repo CI with "Subscription is not valid"); upstream/-X theirs syncs keep reverting this
+.github/codeql/codeql-config.yml           | go/incorrect-integer-conversion | FP suppression: protobuf int32 casts are by-design; token counts are internal and in range (rule-level exclude; paths: keys do not work in query-filters)
+.github/codeql/codeql-config.yml           | id: go/request-forgery        | FP suppression: all flagged requests target operator-configured endpoints or ValidateExternalURL-guarded URLs (rule-level exclude)
 framework/oauth2/discovery.go              | Client name len:              | security fix: replaced client-controlled ClientName/RedirectURIs in debug log with counts only
 plugins/mocker/main.go                     | math/rand/v2                  | security fix: upgraded from math/rand v1 to v2 for probability/weight routing
 framework/logstore/cleaner.go              | math/rand/v2                  | security fix: upgraded from math/rand v1 to v2 for jitter timer

@@ -1,9 +1,9 @@
 ---
-title: "v1.4.7"
-description: "Enterprise v1.4.7 changelog - 2026-06-07"
+title: "v1.4.8"
+description: "Enterprise v1.4.8 changelog - 2026-06-08"
 ---
 
-<Update label="Bifrost Enterprise" description="v1.4.7">
+<Update label="Bifrost Enterprise" description="v1.4.8">
 
 <Warning>
   **Breaking changes in v1.4.0.** See the [v1.4.0 Migration
@@ -11,58 +11,22 @@ description: "Enterprise v1.4.7 changelog - 2026-06-07"
   details, and a step-by-step checklist before upgrading.
 </Warning>
 
-<Warning>
-  v1.4.7 has a known issue where <code>/virtua-key/quota</code> was not sending back budgets. This is fixed in v1.4.8.
-</Warning>
-
-<Note>
-  **Private Network Access** — To connect to a provider on a private network (e.g. a local vLLM or Ollama instance), set `allow_private_network: true` in the provider's `network_config`. This allows connections to RFC 1918 ranges (`192.168.x.x`, `10.x.x.x`, `172.16.x.x`). Link-local addresses (`169.254.x.x`) remain blocked regardless of this setting. See [Provider Configuration](/quickstart/gateway/provider-configuration#private-network-access) for details.
-</Note>
 
 ## Changelog
 
-A governance and organizational-hierarchy release on `transports/v1.5.10`. The headline work is a full **customer -> team -> business unit** model with end-to-end usage and budget tracking, a rebuilt **DAC + RBAC** layer backed by a virtual-key mapping table, and a more robust **access profile** lifecycle.
+A maintenance release on `transports/v1.5.11`. It picks up an OSS fix that makes virtual-key budget quota and reload (rotate) APIs return accurate, freshly hydrated governance data, and bumps the Go toolchain and deployment base images.
 
 ## ✨ Features
 
-- **Customer, team, and business unit hierarchy (enterprise)** - Teams can be attached to customers, customers surface their teams and business units in the detail sheet, and user detail sheets show an aggregated customers section. Usage and budgets now propagate across the team -> customer -> business unit chain, including business unit usage tracking when a team virtual key is used.
-- **Multi-team and multi-BU logging and tracking (enterprise)** - Logging and usage tracking support multiple teams and business units per request, with team and business unit budget usage updated as user usage accrues.
-- **Business units as a dedicated RBAC resource (enterprise)** - Business units migrated to a first-class RBAC resource with their own `/api/governance` endpoints.
-- **DAC + RBAC via virtual-key mapping table (enterprise)** - Reworked data-access and role-based access control to use a persistent virtual-key to user mapping table with bulk load, CRUD helpers, and startup hydration, removing the dependency on `created_by_user_id` for virtual keys and tightening MCP DAC scope handling.
-- **Access profile detail and lifecycle (enterprise)** - New access profile detail sheet showing budget and rate-limit usage. AP assignment now mints a fresh virtual key (with optional reuse of existing standalone VKs) and rebases AP budgets using a delta formula instead of blindly preserving prior values.
-- **Filtered logs for governance entities (enterprise)** - Added the ability to view filtered logs scoped to governance entities, plus a rate-limits column in the teams view.
-- **Harness support for GKE and AWS (enterprise)** - Added GKE and AWS harness support, model-config-owned budgets, and bounded resource handling for deployment harnesses.
-- **Governance-aware fallbacks (enterprise)** - Fallback provider selection can now be restricted based on governance rules.
-- **Cluster budget carry-over (enterprise)** - Usage carry extended to include rate-limit token and request deltas, with fold-and-evict budget carry pairs broadcast across cluster nodes.
-- **Provider-level governance (OSS)** - Budgets and limits are now scope-aware and can be applied at the virtual-key top level and per provider, wired from the model configs table, with UI filters for scope and providers.
-- **Customer budgets (OSS)** - Customers support multiple budgets and `calendar_aligned` budget windows.
-- **OpenAI conversation compaction (OSS)** - Added OpenAI conversation compaction support across core, framework, logging, and the API surface.
-- **Request header capture (enterprise + OSS)** - Added `request_headers` capture with wildcard pattern filtering (e.g. `x-custom-*`) across logging and the OTel and Maxim observability plugins.
-- **OTel content controls and multiple collectors (OSS)** - New `disable_content_logging` option drops message and tool content from exported spans, plus support for multiple OTel collectors.
-- **xAI x_search (OSS)** - Added xAI `x_search` tool support.
-- **Fetch URL validation (OSS)** - Added fetch URL validation with private-network configuration and link-local blocking.
-- **File scheme pricing URLs (OSS)** - Pricing source URLs now accept the `file://` scheme for air-gapped and self-hosted deployments.
-- **Paginated virtual keys (enterprise + OSS)** - Virtual key fetching and user database queries are paginated to handle deployments with very large numbers of keys.
-- **Log navigation and UI (OSS)** - Added a "View logs" menu item to customer, team, and virtual key tables, clickable links in log detail views, a customer detail sheet, a reusable budget display component, and a faster first paint via an inline loading shell.
+- **Go toolchain and dependency bump (enterprise)** - Upgraded the Go version across the codebase and deployment Dockerfiles, refreshing pinned dependencies to current patch levels.
 
 ## 🐞 Fixed
 
-- **100k virtual key bootup (enterprise)** - Resolved bootup issues affecting deployments with very large virtual key counts, including a stream accumulator refcount leak for providers that bypass key tracking.
-- **Access profile broadcasts and propagation (enterprise)** - Fixed user access profile broadcasts, corrected the access profile assignment sequence, and reloaded virtual keys while removing empty access profiles to prevent silent business unit issues.
-- **Customer to business unit log context (enterprise)** - Fixed customer to business unit edge mapping for log context, and fixed deletes of teams and business units not propagating.
-- **Cluster usage carry-over (enterprise)** - Disabled usage carry-over where a clustering bug caused incorrect accounting, preserving in-memory state, and added a rollback path with tests to the governance migration.
-- **Vulnerability remediation (enterprise)** - Bumped dependency versions flagged by vulnerability scanning.
-- **Passthrough governance (OSS)** - Fixed passthrough budgets, gated passthrough models per virtual key, corrected model extraction for Azure passthrough, and restricted fallbacks and provider selection to the virtual key boundary.
-- **VK usage accounting (OSS)** - Fixed double usage counting when creating a virtual key, replicated the VK hierarchy flow for ghost node reconciliation, and added a monotonic log cursor so node usage reconciliation does not skip late async log writes.
-- **Model config lifecycle (OSS)** - Cascade deletes for model configs, removal of stale in-memory model configs, and preserved non-pricing model pool entries across pricing reloads.
-- **SSRF hardening (OSS)** - Hardened fetch URL IP checks against SSRF.
-- **Stream handling (OSS)** - Drain non-SSE stream readers, retry stale connections, strip empty thinking blocks, and remove usage from the `responses.created` event in the OpenAI stream.
-- **Provider compatibility (OSS)** - Map upstream connection failures to 502 instead of 400, accept numeric schema integer constraints for Gemini, strip the Azure diagnostic property for Claude models, preserve chat `max_tokens` during param filtering, and broaden Mantle model matching to all `gpt` variants.
-- **FTS and sync workers (OSS)** - Reduced the FTS index cap to stay within the tsvector limit and shortened the sync worker ticker period to prevent threshold drift.
+- **VK budget quota and reload APIs return stale data (OSS)** - The virtual-key quota and reload (rotate) APIs now hydrate governance data (model configs and budgets) before responding, so budget information is accurate instead of missing or stale, with proper error handling added when fetching model config during hydration.
 
 ## 📀 Base OSS version
 
-`transports/v1.5.10`
+`transports/v1.5.11`
 
 ## 🔌 If you are compiling plugin against this release - use following deps
 
@@ -99,7 +63,7 @@ require (
 	github.com/maximhq/bifrost/plugins/logging v1.5.18
 	github.com/maximhq/bifrost/plugins/prompts v1.0.18
 	github.com/maximhq/bifrost/plugins/semanticcache v1.5.18
-	github.com/maximhq/bifrost/transports v1.5.10
+	github.com/maximhq/bifrost/transports v1.5.11
 	github.com/nakabonne/tstorage v0.3.6
 	github.com/segmentio/kafka-go v0.4.47
 	github.com/stretchr/testify v1.11.1
@@ -295,11 +259,11 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/compat v0.1.16 // indirect
-	github.com/maximhq/bifrost/plugins/maxim v1.6.17 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.5.17 // indirect
-	github.com/maximhq/bifrost/plugins/otel v1.2.17 // indirect
-	github.com/maximhq/bifrost/plugins/telemetry v1.5.17 // indirect
+	github.com/maximhq/bifrost/plugins/compat v0.1.17 // indirect
+	github.com/maximhq/bifrost/plugins/maxim v1.6.18 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.5.18 // indirect
+	github.com/maximhq/bifrost/plugins/otel v1.2.18 // indirect
+	github.com/maximhq/bifrost/plugins/telemetry v1.5.18 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/mholt/archives v0.1.2 // indirect
 	github.com/miekg/dns v1.1.68 // indirect

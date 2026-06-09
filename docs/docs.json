@@ -518,6 +518,7 @@
       },
       {
         "tab": "API",
+        "url": "api-reference",
         "icon": "code",
         "groups": [
           {

@@ -345,6 +345,7 @@
               "cli-agents/librechat",
               "cli-agents/claude-code",
               "cli-agents/claude-for-office",
+              "cli-agents/claude-desktop",
               "cli-agents/codex-cli",
               "cli-agents/gemini-cli",
               "cli-agents/qwen-code",
@@ -518,8 +519,15 @@
       },
       {
         "tab": "API",
+        "url": "api-reference",
         "icon": "code",
         "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api-reference/overview"
+            ]
+          },
           {
             "group": "API Reference",
             "openapi": "openapi/openapi.json"

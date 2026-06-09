@@ -523,6 +523,12 @@
         "icon": "code",
         "groups": [
           {
+            "group": "Overview",
+            "pages": [
+              "api-reference/overview"
+            ]
+          },
+          {
             "group": "API Reference",
             "openapi": "openapi/openapi.json"
           }

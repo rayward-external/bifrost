@@ -24,6 +24,7 @@ framework/logstore/rdb.go                  | sanitizeDimColumn(string(dimension)
 .github/workflows/release-pipeline.yml    | GOTEST_SKIP                   | quarantine: skip 5 upstream-broken tests in test-bifrost-http (TestConfigSchemaSync, TestGetVirtualKeys_FromMemoryUsesConfigStore, TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore, TestSQLite_Customer_HashMismatch_FileSync, TestSQLite_Governance_FullReconciliation); REMOVAL CONDITION: remove when the quarantined tests pass on upstream/main
 .github/workflows/release-pipeline.yml    | continue-on-error: true       | quarantine: test-migrations continue-on-error (upstream faker coverage validation broken for governance_budgets/governance_customers/governance_model_configs/logs columns); REMOVAL CONDITION: remove when upstream fixes run-migration-tests.sh faker validation and the job passes on upstream/main
 .github/workflows/scripts/test-bifrost-http.sh | GOTEST_SKIP              | quarantine support: reads GOTEST_SKIP env var and passes it as -skip flag to go test; remove when upstream-broken tests are fixed and the GOTEST_SKIP workflow env var is removed
+.github/workflows/alert-bridge.yml             | Alert Bridge               | CI/security: workflow_dispatch bridge for code-scanning alerts (list/dismiss); required because the Claude GitHub App lacks code-scanning API scopes on the fork; re-apply after every -X theirs sync
 
 # Sync log
 # 2026-06-07: upstream/main tip 7832fa061 (2026-06-04) already merged into fork main; no new upstream commits.

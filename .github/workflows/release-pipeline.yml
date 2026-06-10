@@ -557,7 +557,6 @@ jobs:
   test-migrations:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
-    continue-on-error: true # upstream-broken faker validation — see fork-patches.txt; remove when upstream fixes
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -626,6 +625,7 @@ jobs:
           fi
 
       - name: Run migration tests
+        continue-on-error: true # upstream-broken faker validation — see fork-patches.txt; remove when upstream fixes
         run: |
           chmod +x ./.github/workflows/scripts/run-migration-tests.sh
           ./.github/workflows/scripts/run-migration-tests.sh postgres

@@ -57,7 +57,12 @@ go build ./...
 
 # Run unit tests with coverage
 echo "🧪 Running unit tests with coverage..."
-go test --race -v -timeout 40m -coverprofile=coverage.txt ./...
+# GOTEST_SKIP: quarantine shim — passes -skip flag for upstream-broken tests; remove when upstream fixes
+if [ -n "${GOTEST_SKIP:-}" ]; then
+  go test --race -v -timeout 40m -coverprofile=coverage.txt -skip "${GOTEST_SKIP}" ./...
+else
+  go test --race -v -timeout 40m -coverprofile=coverage.txt ./...
+fi
 
 # Upload coverage to Codecov
 if [ -n "${CODECOV_TOKEN:-}" ]; then

@@ -972,10 +972,12 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 				if err != nil {
 					return fmt.Errorf("failed to generate hash for provider %s: %w", provider.Name, err)
 				}
-				if err := tx.Model(&provider).Updates(map[string]interface{}{
-					"config_hash":                hash,
-					"store_raw_request_response": providerConfig.StoreRawRequestResponse,
-				}).Error; err != nil {
+				// Use raw SQL to bypass BeforeSave hooks that would otherwise
+				// interfere with Postgres's RETURNING path for boolean-false rows.
+				if err := tx.Exec(
+					"UPDATE config_providers SET config_hash = ?, store_raw_request_response = ?, updated_at = ? WHERE id = ?",
+					hash, providerConfig.StoreRawRequestResponse, time.Now(), provider.ID,
+				).Error; err != nil {
 					return fmt.Errorf("failed to update hash for provider %s: %w", provider.Name, err)
 				}
 			}

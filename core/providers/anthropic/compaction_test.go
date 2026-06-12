@@ -425,10 +425,6 @@ func TestToAnthropicResponsesStreamResponse_TextOutputItemAdded_NotAffectedByCom
 func TestToBifrostResponsesResponse_PreservesStopReason(t *testing.T) {
 	t.Parallel()
 
-	// ToBifrostResponsesResponse normalizes the native Anthropic stop reason
-	// to the canonical Bifrost finish reason via ConvertAnthropicFinishReasonToBifrost,
-	// consistent with the Chat path and the reverse converter ToAnthropicResponsesResponse.
-	// Anthropic-only reasons without a Bifrost equivalent (e.g. "compaction") pass through.
 	tests := []struct {
 		name               string
 		stopReason         AnthropicStopReason

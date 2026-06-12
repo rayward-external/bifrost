@@ -551,7 +551,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		// Multiple plugins can call this - the processing is idempotent
 		data, processErr := a.processAccumulatedChatStreamingChunks(requestID, bifrostErr, isFinalChunk)
 		if processErr != nil {
-			a.logger.Error("failed to process accumulated chunks for request %s: %s", schemas.SanitizeLogValue(requestID), sanitizeLogErr(processErr))
+			a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
 			return nil, processErr
 		}
 		var rawRequest interface{}
@@ -568,6 +568,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			Provider:       provider,
 			RequestedModel: model,
 			ResolvedModel:  resolvedModel,
+			RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 			Data:           data,
 			RawRequest:     &rawRequest,
 		}, nil
@@ -580,6 +581,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		Provider:       provider,
 		RequestedModel: model,
 		ResolvedModel:  resolvedModel,
+		RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 		Data:           nil,
 	}, nil
 }

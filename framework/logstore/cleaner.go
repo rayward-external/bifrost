@@ -2,7 +2,7 @@ package logstore
 
 import (
 	"context"
-	"math/rand/v2"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -156,6 +156,6 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 
 // calculateNextRunDuration returns 24 hours plus a random jitter between 15-30 minutes
 func calculateNextRunDuration() time.Duration {
-	jitter := minJitter + time.Duration(rand.Int64N(int64(maxJitter-minJitter)))
+	jitter := minJitter + time.Duration(rand.Int63n(int64(maxJitter-minJitter)))
 	return cleanupInterval + jitter
 }

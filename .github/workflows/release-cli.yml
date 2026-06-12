@@ -78,7 +78,7 @@ jobs:
     if: needs.check-version.outputs.tag_exists == 'false'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     outputs:
       success: ${{ steps.release.outputs.success }}
     steps:
@@ -92,7 +92,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN || github.token }}
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
@@ -112,20 +112,14 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: |
-          if [ -z "${GH_TOKEN:-}" ] || [ -z "${R2_ENDPOINT:-}" ] || [ -z "${R2_ACCESS_KEY_ID:-}" ] || [ -z "${R2_SECRET_ACCESS_KEY:-}" ] || [ -z "${R2_BUCKET:-}" ]; then
-            echo "Release secrets are not configured; skipping CLI release."
-            echo "success=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          ./.github/workflows/scripts/release-cli.sh "${{ needs.check-version.outputs.version }}"
+        run: ./.github/workflows/scripts/release-cli.sh "${{ needs.check-version.outputs.version }}"
 
   push-mintlify-changelog:
     needs: [check-version, release-cli]
-    if: needs.check-version.outputs.tag_exists == 'false' && needs.release-cli.outputs.success == 'true'
+    if: needs.check-version.outputs.tag_exists == 'false' && needs.release-cli.result == 'success'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -137,7 +131,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN || github.token }}
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Push Mintlify changelog
         run: |

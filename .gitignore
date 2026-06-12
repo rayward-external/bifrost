@@ -19,10 +19,6 @@ ui/components/enterprise
 /transports/ui
 /transports/bifrost-http/lib/ui
 /transports/bifrost-http/ui/
-/transports/bifrost-http/internal/uiassets/ui/
-!/transports/bifrost-http/internal/uiassets/ui/
-/transports/bifrost-http/internal/uiassets/ui/*
-!/transports/bifrost-http/internal/uiassets/ui/index.html
 transports/bifrost-http/logs/
 transports/bifrost-http/tmp/
 node_modules
@@ -39,7 +35,8 @@ private
 build/
 target/
 
-# Go workspace checksum (local only)
+# Go workspaces (local only)
+go.work
 go.work.sum
 
 # Generated schema copy (created by go generate)
@@ -77,7 +74,6 @@ settings.local.json
 
 # MCP servers
 examples/mcps/**/bin/
-examples/mcps/oauth-demo-server/oauth-demo-server
 examples/mcps/http-no-ping-server/http-server
 examples/mcps/test-tools-server/dist/
 
@@ -180,7 +176,6 @@ ui/app/routeTree.gen.ts
 .next
 
 .infisical
-.worktrees/
 
 # e2e test artifacts
 examples/mcps/auth-demo-server/auth-demo-server
@@ -189,3 +184,6 @@ examples/mcps/oauth-demo-server/oauth-demo-server
 # binaries
 tests/cmd/e2eseed/e2eseed
 tests/cmd/seedvks/seedvks
+
+# routing harness ledgers (local run journals, never committed)
+tests/e2e/api/routing/ledger-*

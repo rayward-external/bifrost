@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -202,6 +201,11 @@ func (p *Plugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas
 // happens in PreLLMHook before the provider call.
 func (p *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
+}
+
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (p *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
 }
 
 // PreLLMHook resolves the prompt via PromptResolver, loads the version from the in-memory
@@ -487,10 +491,6 @@ func parseNumberFromContext(ctx *schemas.BifrostContext, key schemas.BifrostCont
 	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
 		return 0, err
-	}
-	// Bounds-check before narrowing int64 → int to prevent silent overflow on 32-bit platforms.
-	if n < math.MinInt || n > math.MaxInt {
-		return 0, fmt.Errorf("value %d overflows int", n)
 	}
 	return int(n), nil
 }

@@ -302,7 +302,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 		if shouldProcess {
 			data, processErr := a.processAccumulatedImageStreamingChunks(requestID, bifrostErr, isFinalChunk)
 			if processErr != nil {
-				a.logger.Error(fmt.Sprintf("failed to process accumulated chunks for request %s: %s", schemas.SanitizeLogValue(requestID), sanitizeLogErr(processErr)))
+				a.logger.Error(fmt.Sprintf("failed to process accumulated chunks for request %s: %v", requestID, processErr))
 				return nil, processErr
 			}
 			var rawRequest interface{}
@@ -315,6 +315,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 				Provider:       provider,
 				RequestedModel: requestedModel,
 				ResolvedModel:  resolvedModel,
+				RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 				Data:           data,
 				RawRequest:     &rawRequest,
 			}, nil
@@ -331,6 +332,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 		Provider:       provider,
 		RequestedModel: requestedModel,
 		ResolvedModel:  resolvedModel,
+		RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 		Data:           nil,
 	}, nil
 }

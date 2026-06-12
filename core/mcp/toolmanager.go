@@ -792,7 +792,7 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 
 	m.disableAutoToolInject.Store(config.DisableAutoToolInject)
 
-	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout.D(), config.MaxAgentDepth, sanitizeLogValue(string(config.CodeModeBindingLevel)))
+	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout.D(), config.MaxAgentDepth, config.CodeModeBindingLevel)
 }
 
 // GetCodeModeBindingLevel returns the current code mode binding level.

@@ -981,7 +981,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		// Multiple plugins can call this - the processing is idempotent
 		data, processErr := a.processAccumulatedResponsesStreamingChunks(requestID, bifrostErr, isFinalChunk)
 		if processErr != nil {
-			a.logger.Error("failed to process accumulated responses chunks for request %s: %s", schemas.SanitizeLogValue(requestID), sanitizeLogErr(processErr))
+			a.logger.Error("failed to process accumulated responses chunks for request %s: %v", requestID, processErr)
 			return nil, processErr
 		}
 
@@ -996,6 +996,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 			Provider:       provider,
 			RequestedModel: requestedModel,
 			ResolvedModel:  resolvedModel,
+			RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 			Data:           data,
 			RawRequest:     &rawRequest,
 		}, nil
@@ -1007,6 +1008,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		Provider:       provider,
 		RequestedModel: requestedModel,
 		ResolvedModel:  resolvedModel,
+		RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 		Data:           nil,
 	}, nil
 }

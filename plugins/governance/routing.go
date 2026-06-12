@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
 // DefaultRoutingChainMaxDepth is the default maximum depth for routing rule chain evaluation.
@@ -36,14 +37,15 @@ type RoutingDecision struct {
 // RoutingContext holds all data needed for routing rule evaluation
 // Reuses existing configstore table types for VirtualKey, Team, Customer
 type RoutingContext struct {
-	VirtualKey               *configstoreTables.TableVirtualKey // nil if no VK
-	Provider                 schemas.ModelProvider              // Current provider
-	Model                    string                             // Current model
-	RequestType              string                             // Normalized request type (e.g., "chat_completion", "embedding") from HTTP context
-	Fallbacks                []string                           // Fallback chain: ["provider/model", ...]
-	Headers                  map[string]string                  // Request headers for dynamic routing
-	QueryParams              map[string]string                  // Query parameters for dynamic routing
-	BudgetAndRateLimitStatus *BudgetAndRateLimitStatus          // Budget and rate limit status by provider/model
+	VirtualKey               *configstoreTables.TableVirtualKey  // nil if no VK
+	Provider                 schemas.ModelProvider               // Current provider
+	Model                    string                              // Current model
+	RequestType              string                              // Normalized request type (e.g., "chat_completion", "embedding") from HTTP context
+	Fallbacks                []string                            // Fallback chain: ["provider/model", ...]
+	Headers                  map[string]string                   // Request headers for dynamic routing
+	QueryParams              map[string]string                   // Query parameters for dynamic routing
+	BudgetAndRateLimitStatus *BudgetAndRateLimitStatus           // Budget and rate limit status by provider/model
+	computeComplexity        func() *complexity.ComplexityResult // Lazy complexity computation; called at most once when a rule references "complexity_tier"
 }
 
 type RoutingEngine struct {
@@ -123,6 +125,8 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
 
 	var finalDecision *RoutingDecision
+	var complexityResult *complexity.ComplexityResult
+	computeComplexity := routingCtx.computeComplexity
 
 	for chainStep := 0; ; chainStep++ {
 		// TERMINATION 4: Chain exceeded configured max depth.
@@ -150,6 +154,9 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 			re.logger.Error("[RoutingEngine] Failed to extract routing variables: %v", err)
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Failed to extract routing variables: %v", err))
 			return nil, fmt.Errorf("failed to extract routing variables: %w", err)
+		}
+		if complexityResult != nil {
+			variables["complexity_tier"] = complexityResult.Tier
 		}
 
 		re.logger.Debug("[RoutingEngine] Chain Step: %d", chainStep)
@@ -181,6 +188,17 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				}
 				re.logger.Debug("[RoutingEngine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
+				referencesComplexity := celExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
+
+				// Lazy complexity: compute only when a rule references complexity and it hasn't been computed yet
+				if complexityResult == nil && computeComplexity != nil && referencesComplexity {
+					complexityResult = computeComplexity()
+					computeComplexity = nil // compute at most once
+					if complexityResult != nil {
+						variables["complexity_tier"] = complexityResult.Tier
+					}
+				}
+
 				program, err := re.store.GetRoutingProgram(ctx, rule)
 				if err != nil {
 					re.logger.Warn("[RoutingEngine] Failed to compile rule %s: %v", rule.Name, err)
@@ -188,7 +206,12 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					continue
 				}
 
-				matched, err := evaluateCELExpression(program, variables)
+				var unknowns []*cel.AttributePatternType
+				if referencesComplexity && complexityResult == nil {
+					unknowns = append(unknowns, cel.AttributePattern("complexity_tier"))
+				}
+
+				matched, err := evaluateCELExpression(program, variables, unknowns...)
 				if err != nil {
 					re.logger.Warn("[RoutingEngine] Failed to evaluate rule %s: %v", rule.Name, err)
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' skipped: eval error: %v", rule.Name, err))
@@ -229,7 +252,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					Provider:        provider,
 					Model:           model,
 					KeyID:           keyID,
-					Fallbacks:       buildRuleFallbacks(rule, target, currentProvider, currentModel),
+					Fallbacks:       rule.ParsedFallbacks,
 					MatchedRuleID:   rule.ID,
 					MatchedRuleName: rule.Name,
 				}
@@ -324,100 +347,6 @@ func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (confi
 	return valid[len(valid)-1], true
 }
 
-func routingTargetSortKey(target configstoreTables.TableRoutingTarget) string {
-	return strings.Join([]string{
-		routingTargetValue(target.Provider),
-		routingTargetValue(target.Model),
-		routingTargetValue(target.KeyID),
-		fmt.Sprintf("%020.10f", target.Weight),
-	}, "\x00")
-}
-
-func buildRuleFallbacks(rule *configstoreTables.TableRoutingRule, selected configstoreTables.TableRoutingTarget, currentProvider schemas.ModelProvider, currentModel string) []string {
-	targetFallbacks := buildRoutingTargetFallbacks(rule.Targets, selected, currentProvider, currentModel)
-	return appendUniqueFallbacks(targetFallbacks, rule.ParsedFallbacks...)
-}
-
-func buildRoutingTargetFallbacks(targets []configstoreTables.TableRoutingTarget, selected configstoreTables.TableRoutingTarget, currentProvider schemas.ModelProvider, currentModel string) []string {
-	candidates := fallbackCandidateTargets(targets)
-	if len(candidates) == 0 {
-		return nil
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].Weight != candidates[j].Weight {
-			return candidates[i].Weight > candidates[j].Weight
-		}
-		return routingTargetSortKey(candidates[i]) < routingTargetSortKey(candidates[j])
-	})
-
-	fallbacks := make([]string, 0, len(candidates))
-	for _, target := range candidates {
-		if sameRoutingTarget(selected, target, currentProvider, currentModel) {
-			continue
-		}
-		provider, model, keyID := resolvedRoutingTarget(target, currentProvider, currentModel)
-		if provider == "" || model == "" {
-			continue
-		}
-		fallbacks = append(fallbacks, schemas.FormatFallback(schemas.ModelProvider(provider), model, keyID))
-	}
-	return fallbacks
-}
-
-func fallbackCandidateTargets(targets []configstoreTables.TableRoutingTarget) []configstoreTables.TableRoutingTarget {
-	candidates := make([]configstoreTables.TableRoutingTarget, 0, len(targets))
-	for _, target := range targets {
-		if target.Weight < 0 {
-			continue
-		}
-		candidates = append(candidates, target)
-	}
-	return candidates
-}
-
-func sameRoutingTarget(left configstoreTables.TableRoutingTarget, right configstoreTables.TableRoutingTarget, currentProvider schemas.ModelProvider, currentModel string) bool {
-	leftProvider, leftModel, leftKeyID := resolvedRoutingTarget(left, currentProvider, currentModel)
-	rightProvider, rightModel, rightKeyID := resolvedRoutingTarget(right, currentProvider, currentModel)
-	return leftProvider == rightProvider && leftModel == rightModel && leftKeyID == rightKeyID
-}
-
-func resolvedRoutingTarget(target configstoreTables.TableRoutingTarget, currentProvider schemas.ModelProvider, currentModel string) (string, string, string) {
-	provider := strings.TrimSpace(string(currentProvider))
-	if target.Provider != nil && strings.TrimSpace(*target.Provider) != "" {
-		provider = strings.TrimSpace(*target.Provider)
-	}
-	model := strings.TrimSpace(currentModel)
-	if target.Model != nil && strings.TrimSpace(*target.Model) != "" {
-		model = strings.TrimSpace(*target.Model)
-	}
-	keyID := routingTargetValue(target.KeyID)
-	return provider, model, keyID
-}
-
-func appendUniqueFallbacks(primary []string, secondary ...string) []string {
-	seen := make(map[string]struct{}, len(primary)+len(secondary))
-	merged := make([]string, 0, len(primary)+len(secondary))
-	for _, fallback := range append(primary, secondary...) {
-		fallback = strings.TrimSpace(fallback)
-		if fallback == "" {
-			continue
-		}
-		if _, ok := seen[fallback]; ok {
-			continue
-		}
-		seen[fallback] = struct{}{}
-		merged = append(merged, fallback)
-	}
-	return merged
-}
-
-func routingTargetValue(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return strings.TrimSpace(*value)
-}
-
 // buildScopeChain builds the scope evaluation chain based on organizational hierarchy
 // Returns scope levels in precedence order (highest to lowest)
 // VirtualKey > Team > Customer > Global
@@ -464,19 +393,35 @@ func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey) []ScopeLevel
 }
 
 // evaluateCELExpression evaluates a compiled CEL program with given variables
-func evaluateCELExpression(program cel.Program, variables map[string]any) (bool, error) {
+func evaluateCELExpression(program cel.Program, variables map[string]any, unknowns ...*cel.AttributePatternType) (bool, error) {
 	if program == nil {
 		return false, fmt.Errorf("CEL program is nil")
 	}
 
+	activation := any(variables)
+	if len(unknowns) > 0 {
+		partial, err := cel.PartialVars(variables, unknowns...)
+		if err != nil {
+			return false, fmt.Errorf("CEL partial activation error: %w", err)
+		}
+		activation = partial
+	}
+
 	// Evaluate the program
-	out, _, err := program.Eval(variables)
+	out, _, err := program.Eval(activation)
 	if err != nil {
 		// Gracefully handle "no such key" errors - when a header/param is missing, treat as non-match
 		if strings.Contains(err.Error(), "no such key") {
 			return false, nil
 		}
 		return false, fmt.Errorf("CEL evaluation error: %w", err)
+	}
+
+	// Unknown means the expression depends on a value that is unavailable for
+	// this request. For routing safety, treat it as a no-match rather than
+	// allowing sentinels like complexity_tier == "" to leak into product logic.
+	if types.IsUnknown(out) {
+		return false, nil
 	}
 
 	// Convert result to boolean
@@ -568,6 +513,11 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 		variables["tokens_used"] = 0.0
 		variables["request"] = 0.0
 	}
+
+	// Placeholder only: EvaluateRoutingRules fills this lazily when a rule
+	// actually references complexity_tier. If complexity is unavailable, it is
+	// evaluated as a CEL unknown so negative predicates do not accidentally match.
+	variables["complexity_tier"] = ""
 
 	return variables, nil
 }
@@ -671,5 +621,9 @@ func createCELEnvironment() (*cel.Env, error) {
 		cel.Variable("tokens_used", cel.DoubleType),
 		cel.Variable("request", cel.DoubleType),
 		cel.Variable("budget_used", cel.DoubleType),
+
+		// Complexity tier. When analysis is unavailable, evaluation marks this
+		// variable as CEL unknown so complexity-dependent predicates do not match.
+		cel.Variable("complexity_tier", cel.StringType),
 	)
 }

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
-	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -136,17 +135,17 @@ func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration
 	return min(result, config.NetworkConfig.RetryBackoffMax)
 }
 
-// validateRequest validates the given request.
-func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
+// validateRequestAfterPreRequestHooks validates the provider and model fields of the given request.
+func validateRequestAfterPreRequestHooks(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
 		return newBifrostErrorFromMsg("bifrost request cannot be nil")
 	}
 	provider, model, _ := req.GetRequestFields()
 	if provider == "" {
-		return newBifrostErrorFromMsg("provider is required")
+		return newBifrostErrorFromMsg("could not auto resolve a provider for the request, please specify a provider explicitly")
 	}
 	if isModelRequired(req.RequestType) && model == "" {
-		return newBifrostErrorFromMsg("model is required")
+		return newBifrostErrorFromMsg("could not auto resolve a model for the request, please specify a model explicitly")
 	}
 	return nil
 }
@@ -213,6 +212,32 @@ func IsRateLimitErrorMessage(errorMessage string) bool {
 	}
 
 	return false
+}
+
+// routingErrorSummary produces a sanitized, audit-safe one-line summary of a
+// BifrostError for emission to the per-request routing engine log trail.
+// It deliberately omits the upstream provider message — which can echo back
+// API keys, tokens, or user input — and surfaces only the error type and HTTP
+// status code. Used by the core fallback orchestrator so the routing log
+// records *why* a fallback was triggered without leaking secrets into log
+// storage or the UI.
+func routingErrorSummary(e *schemas.BifrostError) string {
+	if e == nil {
+		return "unknown error"
+	}
+	parts := make([]string, 0, 2)
+	if e.Error != nil && e.Error.Type != nil && *e.Error.Type != "" {
+		parts = append(parts, *e.Error.Type)
+	} else if e.Type != nil && *e.Type != "" {
+		parts = append(parts, *e.Type)
+	}
+	if e.StatusCode != nil {
+		parts = append(parts, fmt.Sprintf("HTTP %d", *e.StatusCode))
+	}
+	if len(parts) == 0 {
+		return "request failed"
+	}
+	return strings.Join(parts, " ")
 }
 
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
@@ -415,6 +440,18 @@ func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostErro
 	return
 }
 
+// GetResponseRoutingInfo extracts the RoutingInfo recorded on a completed
+// attempt — from the accumulated response, or the error when the attempt failed.
+func GetResponseRoutingInfo(result *schemas.BifrostResponse, err *schemas.BifrostError) schemas.RoutingInfo {
+	if result != nil {
+		return result.GetExtraFields().RoutingInfo
+	}
+	if err != nil {
+		return err.ExtraFields.RoutingInfo
+	}
+	return schemas.RoutingInfo{}
+}
+
 // MarshalUnsafe marshals the given value to a JSON string without escaping HTML characters.
 // Returns empty string if marshaling fails.
 func MarshalUnsafe(v any) string {
@@ -520,31 +557,9 @@ func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 	return nil
 }
 
-// NewSSRFSafeClient returns an *http.Client that re-validates every redirect
-// target through ValidateExternalURL, so a 3xx cannot bounce an outbound call
-// to an internal/link-local/private address. Redirects to private networks are
-// blocked (allowPrivateNetwork=false) regardless of the initial request's
-// policy — an attacker-influenced redirect target must not reach internal IPs.
-// Fork patch: this is relied on by framework/oauth2 and framework/plugins; the
-// upstream -X theirs sync wiped it, so it is restored here (see fork-patches.txt).
-func NewSSRFSafeClient(timeout time.Duration) *http.Client {
-	return &http.Client{
-		Timeout: timeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			if err := ValidateExternalURL(req.URL.String(), false); err != nil {
-				return fmt.Errorf("redirect blocked by SSRF protection: %w", err)
-			}
-			return nil
-		},
-	}
-}
-
-// sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name
+// sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name.
 func sanitizeSpanName(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+	return schemas.SanitizePluginSpanName(name)
 }
 
 // IsCodemodeTool returns true if the given tool name is a codemode tool.
@@ -553,11 +568,8 @@ func IsCodemodeTool(toolName string) bool {
 }
 
 // hashSHA256 returns a deterministic hex-encoded SHA-256 hash of the input.
-// SHA-256 is used for non-reversible fingerprinting (not password storage); this
-// is NOT a weak hash — the function intentionally uses SHA-256 (256-bit output).
 func hashSHA256(value string) string {
-	// CodeQL[go/weak-sensitive-data-hashing] FP: SHA-256 is used for deterministic non-reversible fingerprinting of a session id (cache key), not password storage, where a slow KDF would be incorrect.
-	h := sha256.Sum256([]byte(value)) // #nosec G401 — SHA-256 is not a weak hash
+	h := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(h[:])
 }
 

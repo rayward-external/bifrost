@@ -613,6 +613,11 @@ func (p *PrometheusPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 	return chunk, nil
 }
 
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (p *PrometheusPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PreLLMHook records the start time of the request in the context.
 // This time is used later in PostLLMHook to calculate request duration.
 func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
@@ -1019,8 +1024,8 @@ func (p *PrometheusPlugin) EnablePushGateway(config *PushGatewayConfig) error {
 
 	go p.pushLoop()
 
-	// CodeQL[go/log-injection] False positive: logging operator-configured push gateway URL and interval at startup, not user-supplied input.
-	p.logger.Info("push gateway started, pushing to %s every %d seconds", config.PushGatewayURL.GetValue(), config.PushInterval)
+	p.logger.Info("push gateway started, pushing to %s every %d seconds",
+		config.PushGatewayURL.GetValue(), config.PushInterval)
 
 	return nil
 }

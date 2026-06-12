@@ -4,9 +4,10 @@
 	"private": true,
 	"scripts": {
 		"dev": "vite",
-		"build-enterprise": "vite build",
-		"build": "vite build && npm run copy-build",
-		"copy-build": "rm -rf ../transports/bifrost-http/internal/uiassets/ui && mkdir -p ../transports/bifrost-http/internal/uiassets && cp -r out ../transports/bifrost-http/internal/uiassets/ui",
+		"build-enterprise": "vite build && npm run typecheck",
+		"typecheck": "tsc --noEmit",
+		"build": "vite build && npm run typecheck && npm run copy-build",
+		"copy-build": "rm -rf ../transports/bifrost-http/ui && cp -r out ../transports/bifrost-http/ui",
 		"start": "vite preview",
 		"lint": "oxlint",
 		"format": "oxfmt",
@@ -42,7 +43,6 @@
 		"@radix-ui/react-tabs": "1.1.13",
 		"@radix-ui/react-tooltip": "1.2.8",
 		"@reduxjs/toolkit": "2.8.2",
-		"@tanstack/history": "file:./vendor/tanstack-history",
 		"@tanstack/react-router": "1.168.10",
 		"@tanstack/react-table": "8.21.3",
 		"@xyflow/react": "12.10.1",
@@ -79,8 +79,6 @@
 		"zod": "4.2.1"
 	},
 	"devDependencies": {
-		"@emnapi/core": "1.10.0",
-		"@emnapi/runtime": "1.10.0",
 		"@tailwindcss/postcss": "4.2.1",
 		"@tailwindcss/vite": "4.2.2",
 		"@tanstack/router-devtools": "1.166.11",
@@ -96,12 +94,10 @@
 		"tailwindcss": "4.1.12",
 		"typescript": "5.9.2",
 		"vite": "8.0.7",
-		"vite-plugin-checker": "0.12.0",
 		"vite-plugin-monaco-editor": "1.1.0",
 		"vitest": "4.1.6"
 	},
 	"overrides": {
-		"@tanstack/history": "$@tanstack/history",
 		"dompurify": "3.4.0",
 		"follow-redirects": "1.16.0",
 		"tar": "7.5.3"

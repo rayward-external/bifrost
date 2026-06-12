@@ -24,6 +24,8 @@ jobs:
     permissions:
       # Needed to upload the results to code-scanning dashboard.
       security-events: write
+      # Needed to publish results and get a badge (see publish_results below).
+      id-token: write
       contents: read
       actions: read
       # To allow GraphQL ListCommits to work
@@ -67,55 +69,14 @@ jobs:
           # To create the PAT, follow the steps in https://github.com/ossf/scorecard-action#authentication-with-pat.
           # repo_token: ${{ secrets.SCORECARD_TOKEN }}
 
-          # Keep SARIF generation/upload local to GitHub code scanning. Publishing
-          # to the OpenSSF webapp requires the job to contain only `uses` steps,
-          # but this fork filters SARIF before upload.
-          publish_results: false
-
-      - name: "Filter fork-inapplicable findings"
-        run: |
-          sudo chown "$(id -u):$(id -g)" results.sarif
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          sarif_path = Path("results.sarif")
-          sarif = json.loads(sarif_path.read_text())
-          drop_rule_ids = {
-              "CIIBestPracticesID",
-              "CodeReviewID",
-              "MaintainedID",
-          }
-          removed = 0
-
-          for run in sarif.get("runs", []):
-              results = run.get("results", [])
-              filtered_results = [
-                  result
-                  for result in results
-                  if result.get("ruleId") not in drop_rule_ids
-              ]
-              removed += len(results) - len(filtered_results)
-              run["results"] = filtered_results
-
-              driver = run.get("tool", {}).get("driver", {})
-              rules = driver.get("rules")
-              if rules is None:
-                  continue
-              used_rule_ids = {
-                  result.get("ruleId")
-                  for result in filtered_results
-                  if result.get("ruleId")
-              }
-              driver["rules"] = [
-                  rule
-                  for rule in rules
-                  if rule.get("id") not in drop_rule_ids or rule.get("id") in used_rule_ids
-              ]
-
-          sarif_path.write_text(json.dumps(sarif, indent=2) + "\n")
-          print(f"Removed {removed} fork-inapplicable Scorecard findings from code-scanning SARIF.")
-          PY
+          # Public repositories:
+          #   - Publish results to OpenSSF REST API for easy access by consumers
+          #   - Allows the repository to include the Scorecard badge.
+          #   - See https://github.com/ossf/scorecard-action#publishing-results.
+          # For private repositories:
+          #   - `publish_results` will always be set to `false`, regardless
+          #     of the value entered here.
+          publish_results: true
 
       # Upload the results as artifacts (optional). Commenting out will disable uploads of run results in SARIF
       # format to the repository Actions tab.

@@ -86,7 +86,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// updating any matching global model-only configs.
 	if update.Model != "" {
 		if err := t.store.UpdateProviderAndModelRateLimitUsageInMemory(ctx, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			t.logger.Error("failed to update rate limit usage for model %s, provider %s: %v", schemas.SanitizeLogValue(update.Model), schemas.SanitizeLogValue(string(update.Provider)), err)
+			t.logger.Error("failed to update rate limit usage for model %s, provider %s: %v", update.Model, update.Provider, err)
 		}
 	}
 
@@ -97,7 +97,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// updating any matching global model-only configs.
 	if update.Model != "" && shouldUpdateBudget && update.Cost > 0 {
 		if err := t.store.UpdateProviderAndModelBudgetUsageInMemory(ctx, update.Model, update.Provider, update.Cost); err != nil {
-			t.logger.Error("failed to update budget usage for model %s, provider %s: %v", schemas.SanitizeLogValue(update.Model), schemas.SanitizeLogValue(string(update.Provider)), err)
+			t.logger.Error("failed to update budget usage for model %s, provider %s: %v", update.Model, update.Provider, err)
 		}
 	}
 

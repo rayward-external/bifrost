@@ -21,58 +21,6 @@ import (
 // same (cache_key, request_hash, params_hash) tuple maps to the same ID.
 var directCacheNamespace = uuid.MustParse("b1f3c2d4-e5a6-7890-abcd-ef1234567890")
 
-// maxLogErrLen caps the number of characters from an error message included in
-// log output.  Errors originating from HTTP response processing may embed
-// sensitive payload data; truncating prevents inadvertent clear-text logging
-// (CWE-532).
-const maxLogErrLen = 256
-
-// sanitizeLogErr returns a sanitized, truncated string representation of an
-// error suitable for operational log messages. It strips ASCII control
-// characters (CWE-117 log injection) and caps the length (CWE-532).
-func sanitizeLogErr(err error) string {
-	if err == nil {
-		return "<nil>"
-	}
-	s := err.Error()
-	if len(s) > maxLogErrLen {
-		s = s[:maxLogErrLen] + "...[truncated]"
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
-			b.WriteByte('?')
-		} else {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-// sanitizeLogValue strips control characters and caps length to prevent log injection (CWE-117).
-func sanitizeLogValue(value string) string {
-	if value == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.Grow(len(value))
-	count := 0
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			b.WriteByte('?')
-		} else {
-			b.WriteRune(r)
-		}
-		count++
-		if count >= maxLogErrLen {
-			b.WriteString("...[truncated]")
-			break
-		}
-	}
-	return b.String()
-}
-
 // isSemanticCacheSupportedRequestType reports whether semantic cache supports
 // this request type for cache lookup and storage. Unsupported types are skipped.
 //
@@ -521,7 +469,7 @@ func (plugin *Plugin) addNonStreamingResponse(ctx context.Context, responseID st
 		return fmt.Errorf("failed to store unified cache entry: %w", err)
 	}
 
-	plugin.logger.Debug("Successfully cached single response with ID: %s", sanitizeLogValue(responseID))
+	plugin.logger.Debug("Successfully cached single response with ID: %s", responseID)
 	return nil
 }
 
@@ -558,7 +506,7 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, requestID string
 		return nil
 	}
 	if err := plugin.processAccumulatedStream(ctx, requestID); err != nil {
-		plugin.logger.Warn("Failed to process accumulated stream for request %s: %s", sanitizeLogValue(requestID), sanitizeLogErr(err))
+		plugin.logger.Warn("Failed to process accumulated stream for request %s: %v", requestID, err)
 	}
 	return nil
 }

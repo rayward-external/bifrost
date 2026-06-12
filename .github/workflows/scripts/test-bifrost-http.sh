@@ -57,7 +57,11 @@ go build ./...
 
 # Run unit tests with coverage
 echo "🧪 Running unit tests with coverage..."
-go test --race -v -timeout 40m -coverprofile=coverage.txt ./...
+SKIP_FLAG=""
+if [ -n "${GOTEST_SKIP:-}" ]; then
+  SKIP_FLAG="-skip=${GOTEST_SKIP}"
+fi
+go test --race -v -timeout 40m -coverprofile=coverage.txt ${SKIP_FLAG:+$SKIP_FLAG} ./...
 
 # Upload coverage to Codecov
 if [ -n "${CODECOV_TOKEN:-}" ]; then

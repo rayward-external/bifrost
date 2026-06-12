@@ -2768,6 +2768,26 @@ func (s *RDBLogStore) buildProviderLatencyHistogramResult(computedBuckets map[in
 // Generic dimension histogram methods
 // ---------------------------------------------------------------------------
 
+// sanitizeDimColumn maps the caller-supplied dimension name to a known-safe
+// string literal.  Returning a literal (not the input) breaks static-analysis
+// taint tracking while still validating at runtime.
+func sanitizeDimColumn(col string) (string, error) {
+	switch col {
+	case "provider":
+		return "provider", nil
+	case "team_id":
+		return "team_id", nil
+	case "customer_id":
+		return "customer_id", nil
+	case "user_id":
+		return "user_id", nil
+	case "business_unit_id":
+		return "business_unit_id", nil
+	default:
+		return "", fmt.Errorf("invalid dimension column: %s", col)
+	}
+}
+
 // GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
 // Uses the mv_logs_hourly materialized view on PostgreSQL when eligible; falls back to raw queries otherwise.
 func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {
@@ -2777,7 +2797,10 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	dimCol := string(dimension)
+	dimCol, err := sanitizeDimColumn(string(dimension))
+	if err != nil {
+		return nil, err
+	}
 	dialect := s.db.Dialector.Name()
 	// Team / business-unit dimensions fan out over the JSON array (scalar
 	// fallback for old / VK-team logs). Postgres-only; forces the live path.
@@ -2889,7 +2912,10 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	dimCol := string(dimension)
+	dimCol, err := sanitizeDimColumn(string(dimension))
+	if err != nil {
+		return nil, err
+	}
 	dialect := s.db.Dialector.Name()
 	// Team / business-unit dimensions fan out over the JSON array (scalar
 	// fallback for old / VK-team logs). Postgres-only; forces the live path.
@@ -3022,7 +3048,10 @@ func (s *RDBLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters 
 	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
 		return s.getDimensionLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
 	}
-	dimCol := string(dimension)
+	dimCol, err := sanitizeDimColumn(string(dimension))
+	if err != nil {
+		return nil, err
+	}
 	dialect := s.db.Dialector.Name()
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)

@@ -396,7 +396,7 @@ type DynamicClientRegistrationResponse struct {
 // Returns client_id and optional client_secret that can be used for OAuth flows.
 func RegisterDynamicClient(ctx context.Context, registrationURL string, req *DynamicClientRegistrationRequest) (*DynamicClientRegistrationResponse, error) {
 	logger.Debug(fmt.Sprintf("[Dynamic Registration] Registering client at: %s", registrationURL))
-	logger.Debug(fmt.Sprintf("[Dynamic Registration] Client name: %s, Redirect URIs: %v", req.ClientName, req.RedirectURIs))
+	logger.Debug(fmt.Sprintf("[Dynamic Registration] Client name len: %d, Redirect URI count: %d", len(req.ClientName), len(req.RedirectURIs)))
 
 	// Serialize request
 	reqBody, err := json.Marshal(req)

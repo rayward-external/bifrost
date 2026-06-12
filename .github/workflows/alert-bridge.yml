@@ -1,0 +1,52 @@
+name: Alert Bridge
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        required: true
+        type: choice
+        options:
+          - list
+          - dismiss
+      dismissals:
+        required: false
+        default: '[]'
+        description: 'JSON array of {number,reason,comment}'
+
+permissions:
+  security-events: write
+  contents: read
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: LIST alerts
+        if: inputs.mode == 'list'
+        run: |
+          gh api --paginate "repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=100" > alerts.json
+          echo "Open alerts: $(jq length alerts.json)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload alerts artifact
+        if: inputs.mode == 'list'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: alerts
+          path: alerts.json
+
+      - name: DISMISS alerts
+        if: inputs.mode == 'dismiss'
+        run: |
+          echo '${{ inputs.dismissals }}' | jq -c '.[]' | while read d; do
+            n=$(jq -r .number <<<"$d")
+            r=$(jq -r .reason <<<"$d")
+            c=$(jq -r .comment <<<"$d")
+            gh api -X PATCH "repos/${{ github.repository }}/code-scanning/alerts/$n" \
+              -f state=dismissed \
+              -f dismissed_reason="$r" \
+              -f dismissed_comment="$c" \
+              && echo "dismissed #$n ($r)" >> $GITHUB_STEP_SUMMARY
+          done

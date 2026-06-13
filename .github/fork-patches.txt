@@ -27,7 +27,7 @@ framework/logstore/rdb.go                  | sanitizeDimColumn(string(dimension)
 .github/codeql/codeql-config.yml               | go/weak-sensitive-data-hashing | FP suppression: HashSHA256 in framework/encrypt/encrypt.go is for lookup-index hashes on virtual keys/tokens, not password storage; CodeQL cannot model this distinction
 .github/codeql/codeql-config.yml               | go/duplicate-if-branches   | FP suppression: identical else-if/else branches in bedrock provider for extended-thinking config; upstream scaffolding for future differentiation, not a bug
 .github/codeql/codeql-config.yml               | go/impossible-interface-nil-check | FP suppression: dead if-nil guard after exhaustive switch in bedrock invoke.go; upstream dead code, not a vulnerability
-.github/workflows/dependency-review.yml        | fail-on-severity: critical  | policy: only block sync PRs on CRITICAL dependency vulns; HIGH vulns in upstream transitive deps are reported only (default blocks on HIGH which is too strict for sync PRs)
+.github/workflows/dependency-review.yml        | warn-only: true             | policy: dependency-review warns but never blocks — sync PRs bring in upstream transitive deps we cannot unilaterally patch; findings still surface in the PR for awareness
 
 framework/configstore/migrations.go               | raw SQL to bypass BeforeSave | bug fix: migrationAddStoreRawRequestResponseColumn used GORM Updates(map) which triggers BeforeSave hook; on Postgres RETURNING path this left config_hash as empty string for the both_false case (store_raw_request_response=false); use tx.Exec raw SQL to bypass hooks (PR #109, merged 2026-06-10)
 

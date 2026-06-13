@@ -74,3 +74,27 @@ query-filters:
   # warning, not a vulnerability.
   - exclude:
       id: go/comparison-of-identical-expressions
+
+  # go/weak-sensitive-data-hashing (2 high): framework/encrypt/encrypt.go:HashSHA256
+  # uses SHA-256 for deterministic lookup-index hashes on virtual keys and session
+  # tokens — NOT for password storage. The function comment documents this. CodeQL
+  # does not model the distinction between password hashing and lookup hashing.
+  # Audited: only this one site matches the rule repo-wide; no user password is
+  # ever hashed with SHA-256.
+  - exclude:
+      id: go/weak-sensitive-data-hashing
+
+  # go/duplicate-if-branches (2 warnings): identical else-if/else branches in
+  # core/providers/bedrock/{responses,utils}.go for extended-thinking config.
+  # Both branches set reasoningConfig/thinking to "disabled"; the IsNovaModelFamily
+  # guard is scaffolding for future provider-specific handling. Upstream code —
+  # changing it would break the keep-the-fork-vanilla rule.
+  - exclude:
+      id: go/duplicate-if-branches
+
+  # go/impossible-interface-nil-check (1 warning): core/providers/bedrock/invoke.go
+  # contains an `if event == nil` guard after a switch that already returns on every
+  # case; the nil branch is dead code. Upstream code — removing it would add
+  # unnecessary divergence from upstream. Quality warning, not a vulnerability.
+  - exclude:
+      id: go/impossible-interface-nil-check

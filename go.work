@@ -23,6 +23,7 @@ use (
 	./plugins/jsonparser
 	./plugins/logging
 	./plugins/maxim
+	./plugins/modelcatalogresolver
 	./plugins/mocker
 	./plugins/otel
 	./plugins/prompts

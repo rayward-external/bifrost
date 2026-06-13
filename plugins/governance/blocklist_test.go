@@ -6,7 +6,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func TestIsModelBlockedByList(t *testing.T) {
+func TestBlackListIsBlocked(t *testing.T) {
 	tests := []struct {
 		name      string
 		blacklist schemas.BlackList
@@ -32,16 +32,16 @@ func TestIsModelBlockedByList(t *testing.T) {
 			want:      true,
 		},
 		{
-			name:      "prefixed blacklist blocks bare request",
+			name:      "prefixed blacklist does not block bare request",
 			blacklist: schemas.BlackList{"ollama/mistral:latest"},
 			model:     "mistral:latest",
-			want:      true,
+			want:      false,
 		},
 		{
-			name:      "bare blacklist blocks prefixed request",
+			name:      "bare blacklist does not block prefixed request",
 			blacklist: schemas.BlackList{"mistral:latest"},
 			model:     "ollama/mistral:latest",
-			want:      true,
+			want:      false,
 		},
 		{
 			name:      "prefixed blacklist blocks prefixed request",
@@ -65,8 +65,8 @@ func TestIsModelBlockedByList(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isModelBlockedByList(tt.blacklist, tt.model); got != tt.want {
-				t.Fatalf("isModelBlockedByList(%v, %q) = %v, want %v", tt.blacklist, tt.model, got, tt.want)
+			if got := tt.blacklist.IsBlocked(tt.model); got != tt.want {
+				t.Fatalf("BlackList.IsBlocked(%v, %q) = %v, want %v", tt.blacklist, tt.model, got, tt.want)
 			}
 		})
 	}

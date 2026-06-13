@@ -119,7 +119,9 @@ func IsAllDigitsASCII(s string) bool {
 	return true
 }
 
-// ParseFallbacks parses a slice of strings into a slice of Fallback structs
+// ParseFallbacks parses a slice of strings into a slice of Fallback structs.
+// Strings may carry a "?key_id=<value>" query suffix that is extracted into
+// Fallback.KeyID (e.g. "azure/gpt-4o?key_id=standby-key-xyz").
 func ParseFallbacks(fallbacks []string) []Fallback {
 	if len(fallbacks) == 0 {
 		return nil
@@ -129,9 +131,18 @@ func ParseFallbacks(fallbacks []string) []Fallback {
 		if fallback == "" {
 			continue
 		}
+		var keyID string
+		if idx := strings.Index(fallback, "?"); idx != -1 {
+			for _, kv := range strings.Split(fallback[idx+1:], "&") {
+				if strings.HasPrefix(kv, "key_id=") {
+					keyID = strings.TrimPrefix(kv, "key_id=")
+				}
+			}
+			fallback = fallback[:idx]
+		}
 		fallbackProvider, fallbackModel := ParseModelString(fallback, "")
 		if fallbackProvider != "" && fallbackModel != "" {
-			parsedFallbacks = append(parsedFallbacks, Fallback{Provider: fallbackProvider, Model: fallbackModel})
+			parsedFallbacks = append(parsedFallbacks, Fallback{Provider: fallbackProvider, Model: fallbackModel, KeyID: keyID})
 		}
 	}
 	return parsedFallbacks

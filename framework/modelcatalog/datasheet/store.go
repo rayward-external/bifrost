@@ -419,6 +419,31 @@ func NewTestStore(baseModelIndex map[string]string) *Store {
 	}
 }
 
+// NewTestStoreWithRows constructs a minimal Store for unit tests with
+// pre-seeded pricing rows and base-model index. Callers that need to test
+// GetCapabilityEntry / GetModelCapabilityEntryForModel at the modelcatalog
+// facade level use this instead of NewTestStore so they can supply rows
+// without accessing the private pricingData field.
+func NewTestStoreWithRows(
+	pricingData map[string]configstoreTables.TableModelPricing,
+	baseModelIndex map[string]string,
+) *Store {
+	if pricingData == nil {
+		pricingData = make(map[string]configstoreTables.TableModelPricing)
+	}
+	if baseModelIndex == nil {
+		baseModelIndex = make(map[string]string)
+	}
+	return &Store{
+		logger:                 bifrost.NewNoOpLogger(),
+		pricingData:            pricingData,
+		baseModelIndex:         baseModelIndex,
+		supportedResponseTypes: make(map[string][]string),
+		supportedParams:        make(map[string][]string),
+		datasheetByProvider:    make(map[schemas.ModelProvider][]string),
+	}
+}
+
 // --- Internal: rebuild the datasheet view from current pricingData ---
 
 // rebuildDatasheetViewUnsafe regenerates baseModelIndex and datasheetByProvider

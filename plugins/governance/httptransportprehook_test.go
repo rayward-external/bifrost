@@ -21,11 +21,11 @@ func TestHTTPTransportPreHook_VirtualKeyReplicateRefinesNestedModel(t *testing.T
 	mc := modelcatalog.NewTestCatalog(map[string]string{
 		"openai/gpt-5-nano": "gpt-5-nano",
 	})
-	mc.UpsertModelDataForProvider(schemas.Replicate, &schemas.BifrostListModelsResponse{
+	mc.UpsertLiveFromResponse(schemas.Replicate, "", false, &schemas.BifrostListModelsResponse{
 		Data: []schemas.Model{
 			{ID: "replicate/openai/gpt-5-nano"},
 		},
-	}, nil)
+	})
 
 	virtualKey := buildVirtualKeyWithProviders(
 		"vk1",
@@ -107,7 +107,7 @@ func TestHTTPTransportPreHook_ModelOnlyVirtualKeySetsAvailableProviders(t *testi
 	require.NoError(t, err)
 	require.Nil(t, resp)
 
-	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider)
 	require.True(t, ok, "provider constraint should be set")
 	require.Equal(t, []schemas.ModelProvider{schemas.OpenAI}, allowedProviders)
 }
@@ -147,14 +147,14 @@ func TestHTTPTransportPreHook_ModelOnlyVirtualKeySetsEmptyAvailableProvidersWhen
 	require.NoError(t, err)
 	require.Nil(t, resp)
 
-	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider)
 	require.True(t, ok, "provider constraint should be set")
 	require.Empty(t, allowedProviders)
 }
 
 // TestHTTPTransportPreHook_WildcardKeepsCatalogOpaqueProvider_VLLM verifies that a VK with a
 // wildcard ("*") allow-list on a catalog-opaque provider (here vLLM, whose self-hosted models
-// are never in the bundled catalog) keeps that provider in BifrostContextKeyAvailableProviders
+// are never in the bundled catalog) keeps that provider in BifrostContextKeyRoutingAllowedProviders
 // for a bare, uncatalogued model. Before the fix, loadBalanceProvider gates the provider on the
 // catalog (GetProvidersForModel is empty), drops it, and publishes an empty provider set —
 // dead-ending the request (issue #4122 / #3282).
@@ -163,8 +163,8 @@ func TestHTTPTransportPreHook_WildcardKeepsCatalogOpaqueProvider_VLLM(t *testing
 
 	// Catalog knows a first-party model but has NO model list for vLLM (self-hosted).
 	mc := modelcatalog.NewTestCatalog(map[string]string{"openai/gpt-4o": "gpt-4o"})
-	mc.UpsertModelDataForProvider(schemas.OpenAI,
-		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "openai/gpt-4o"}}}, nil)
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "", false,
+		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "openai/gpt-4o"}}})
 
 	// inMemoryStore must be non-nil so loadBalanceProvider takes the catalog branch.
 	inMem := &mockInMemoryStore{
@@ -205,7 +205,7 @@ func TestHTTPTransportPreHook_WildcardKeepsCatalogOpaqueProvider_VLLM(t *testing
 	require.NoError(t, err)
 	require.Nil(t, resp)
 
-	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider)
 	require.True(t, ok, "available providers should be set")
 	// PRE-PATCH: catalog has no vLLM models -> provider excluded -> [] -> FAILS.
 	// POST-PATCH: wildcard + catalog-opaque -> kept -> [vllm].
@@ -213,7 +213,7 @@ func TestHTTPTransportPreHook_WildcardKeepsCatalogOpaqueProvider_VLLM(t *testing
 }
 
 // TestHTTPTransportPreHook_MixedOpaqueAndCatalogProvider_GPT4o shows what lands in
-// BifrostContextKeyAvailableProviders when a VK has catalog-known providers (openai, anthropic,
+// BifrostContextKeyRoutingAllowedProviders when a VK has catalog-known providers (openai, anthropic,
 // vertex) AND a catalog-opaque vLLM (no list-models) — all under wildcard allow-lists — and the
 // model is gpt-4o. Only openai (which serves gpt-4o per the catalog) and vLLM (a wildcard
 // catch-all) should be available; anthropic and vertex are catalog-known but do not serve gpt-4o.
@@ -223,12 +223,12 @@ func TestHTTPTransportPreHook_MixedOpaqueAndCatalogProvider_GPT4o(t *testing.T) 
 	// Catalog knows openai/gpt-4o, anthropic/claude-3-5-sonnet, vertex/gemini-1.5-pro.
 	// It has NO model list for vLLM (opaque).
 	mc := modelcatalog.NewTestCatalog(map[string]string{"openai/gpt-4o": "gpt-4o"})
-	mc.UpsertModelDataForProvider(schemas.OpenAI,
-		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "openai/gpt-4o"}}}, nil)
-	mc.UpsertModelDataForProvider(schemas.Anthropic,
-		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "anthropic/claude-3-5-sonnet"}}}, nil)
-	mc.UpsertModelDataForProvider(schemas.Vertex,
-		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "vertex/gemini-1.5-pro"}}}, nil)
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "", false,
+		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "openai/gpt-4o"}}})
+	mc.UpsertLiveFromResponse(schemas.Anthropic, "", false,
+		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "anthropic/claude-3-5-sonnet"}}})
+	mc.UpsertLiveFromResponse(schemas.Vertex, "", false,
+		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "vertex/gemini-1.5-pro"}}})
 
 	inMem := &mockInMemoryStore{
 		configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
@@ -274,7 +274,7 @@ func TestHTTPTransportPreHook_MixedOpaqueAndCatalogProvider_GPT4o(t *testing.T) 
 	require.NoError(t, err)
 	require.Nil(t, resp)
 
-	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider)
 	require.True(t, ok, "available providers should be set")
 	t.Logf("AvailableProviders for gpt-4o (VK = openai + vllm-opaque, both wildcard): %v", allowedProviders)
 
@@ -291,10 +291,10 @@ func TestHTTPTransportPreHook_VKExcludesUnlistedProviderEvenIfItServesModel(t *t
 
 	// Catalog: BOTH openai and vertex serve gpt-4o. vLLM has no catalog models (opaque).
 	mc := modelcatalog.NewTestCatalog(map[string]string{"openai/gpt-4o": "gpt-4o"})
-	mc.UpsertModelDataForProvider(schemas.OpenAI,
-		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "openai/gpt-4o"}}}, nil)
-	mc.UpsertModelDataForProvider(schemas.Vertex,
-		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "vertex/gpt-4o"}}}, nil)
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "", false,
+		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "openai/gpt-4o"}}})
+	mc.UpsertLiveFromResponse(schemas.Vertex, "", false,
+		&schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "vertex/gpt-4o"}}})
 
 	inMem := &mockInMemoryStore{
 		configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
@@ -338,7 +338,7 @@ func TestHTTPTransportPreHook_VKExcludesUnlistedProviderEvenIfItServesModel(t *t
 	require.NoError(t, err)
 	require.Nil(t, resp)
 
-	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider)
 	require.True(t, ok, "available providers should be set")
 	t.Logf("AvailableProviders for gpt-4o (catalog: openai+vertex serve it; VK = openai + vllm only): %v", allowedProviders)
 
@@ -349,7 +349,7 @@ func TestHTTPTransportPreHook_VKExcludesUnlistedProviderEvenIfItServesModel(t *t
 // TestHTTPTransportPreHook_WildcardOpaqueProviderRespectsBlacklist guards the ordering in
 // loadBalanceProvider: the blacklist pre-pass must exclude a provider before the wildcard +
 // catalog-opaque shortcut applies, so a blacklisted model on an opaque provider is dropped
-// from BifrostContextKeyAvailableProviders even under a ["*"] allow-list.
+// from BifrostContextKeyRoutingAllowedProviders even under a ["*"] allow-list.
 func TestHTTPTransportPreHook_WildcardOpaqueProviderRespectsBlacklist(t *testing.T) {
 	logger := NewMockLogger()
 
@@ -394,7 +394,7 @@ func TestHTTPTransportPreHook_WildcardOpaqueProviderRespectsBlacklist(t *testing
 	require.NoError(t, err)
 	require.Nil(t, resp)
 
-	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider)
 	require.True(t, ok, "available providers should be set")
 	// Blacklisted model is excluded even though the provider is catalog-opaque under ["*"].
 	require.Empty(t, allowedProviders)

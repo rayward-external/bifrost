@@ -5,23 +5,16 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 )
 
 // newTestCatalog creates a minimal ModelCatalog for testing within the package.
 func newTestCatalog(modelPool map[schemas.ModelProvider][]string, baseModelIndex map[string]string) *ModelCatalog {
-	if modelPool == nil {
-		modelPool = make(map[schemas.ModelProvider][]string)
+	mc := NewTestCatalog(baseModelIndex)
+	for provider, models := range modelPool {
+		mc.UpsertLive(provider, "", false, models)
 	}
-	if baseModelIndex == nil {
-		baseModelIndex = make(map[string]string)
-	}
-	return &ModelCatalog{
-		modelPool:      modelPool,
-		baseModelIndex: baseModelIndex,
-		pricingData:    make(map[string]configstoreTables.TableModelPricing),
-	}
+	return mc
 }
 
 // --- GetBaseModelName tests ---

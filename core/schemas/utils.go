@@ -18,38 +18,6 @@ func Ptr[T any](v T) *T {
 	return &v
 }
 
-// maxLogValueLen bounds a sanitized log value so a pathological input cannot
-// bloat a single log entry.
-const maxLogValueLen = 256
-
-// SanitizeLogValue makes a client-controlled string safe to embed in a log
-// line. It replaces ASCII control characters (anything below space, plus DEL)
-// with '?' so an attacker cannot inject newlines, carriage returns, or terminal
-// escape sequences to forge or corrupt log entries, and truncates the result to
-// maxLogValueLen runes. It is the canonical sanitizer for CodeQL's
-// go/log-injection sink across all modules.
-func SanitizeLogValue(value string) string {
-	if value == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.Grow(len(value))
-	count := 0
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			b.WriteByte('?')
-		} else {
-			b.WriteRune(r)
-		}
-		count++
-		if count >= maxLogValueLen {
-			b.WriteString("...[truncated]")
-			break
-		}
-	}
-	return b.String()
-}
-
 // GetRandomString generates a random alphanumeric string of the given length.
 func GetRandomString(length int) string {
 	if length <= 0 {
@@ -126,13 +94,6 @@ func IsKnownProvider(provider string) bool {
 // Only splits on "/" when the prefix is a known Bifrost provider, so model
 // namespaces like "meta-llama/Llama-3.1-8B" are preserved as-is.
 func ParseModelString(model string, defaultProvider ModelProvider) (ModelProvider, string) {
-	// Strip any query-string suffix (e.g. "?key_id=...") — routing hints are not
-	// part of the model identity. Leaving them in pollutes logs/the model filter
-	// and breaks provider catalog lookups. Fallback specs extract key_id via
-	// parseFallbackOptions BEFORE calling this, so their option is not lost.
-	if i := strings.IndexByte(model, '?'); i >= 0 {
-		model = model[:i]
-	}
 	// Check if model contains a provider prefix (only split on first "/" to preserve model names with "/")
 	if strings.Contains(model, "/") {
 		parts := strings.SplitN(model, "/", 2)
@@ -158,18 +119,6 @@ func IsAllDigitsASCII(s string) bool {
 	return true
 }
 
-// FormatFallback formats a fallback as provider/model with an optional key_id query parameter.
-func FormatFallback(provider ModelProvider, model string, keyID string) string {
-	fallback := strings.TrimSpace(string(provider)) + "/" + strings.TrimSpace(model)
-	keyID = strings.TrimSpace(keyID)
-	if keyID == "" {
-		return fallback
-	}
-	values := url.Values{}
-	values.Set("key_id", keyID)
-	return fallback + "?" + values.Encode()
-}
-
 // ParseFallbacks parses a slice of strings into a slice of Fallback structs
 func ParseFallbacks(fallbacks []string) []Fallback {
 	if len(fallbacks) == 0 {
@@ -177,37 +126,15 @@ func ParseFallbacks(fallbacks []string) []Fallback {
 	}
 	parsedFallbacks := make([]Fallback, 0, len(fallbacks))
 	for _, fallback := range fallbacks {
-		fallback = strings.TrimSpace(fallback)
 		if fallback == "" {
 			continue
 		}
-		// Extract the ?key_id= option BEFORE provider/model splitting so it
-		// survives ParseModelString's query-suffix stripping.
-		fallbackSpec, keyID := parseFallbackOptions(fallback)
-		fallbackProvider, fallbackModel := ParseModelString(fallbackSpec, "")
+		fallbackProvider, fallbackModel := ParseModelString(fallback, "")
 		if fallbackProvider != "" && fallbackModel != "" {
-			parsedFallbacks = append(parsedFallbacks, Fallback{Provider: fallbackProvider, Model: fallbackModel, KeyID: keyID})
+			parsedFallbacks = append(parsedFallbacks, Fallback{Provider: fallbackProvider, Model: fallbackModel})
 		}
 	}
 	return parsedFallbacks
-}
-
-func parseFallbackOptions(modelSpec string) (string, string) {
-	modelSpec = strings.TrimSpace(modelSpec)
-	model, rawQuery, ok := strings.Cut(modelSpec, "?")
-	if !ok {
-		return modelSpec, ""
-	}
-
-	values, err := url.ParseQuery(rawQuery)
-	if err != nil {
-		return modelSpec, ""
-	}
-	keyID := strings.TrimSpace(values.Get("key_id"))
-	if keyID == "" {
-		keyID = strings.TrimSpace(values.Get("keyID"))
-	}
-	return strings.TrimSpace(model), keyID
 }
 
 //* IMAGE UTILS *//
@@ -1504,6 +1431,19 @@ func IsGemmaModel(model string) bool {
 // IsImagenModel checks if the model is an Imagen model.
 func IsImagenModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "imagen")
+}
+
+// IsCohereModel checks if the model is a Cohere model. Matches the Bedrock
+// identifier prefix ("cohere.embed-*", "cohere.command-*") which is the wire
+// shape that flows through alias resolution.
+func IsCohereModel(model string) bool {
+	return strings.Contains(model, "cohere")
+}
+
+// IsTitanModel checks if the model is an Amazon Titan model. Matches the
+// Bedrock identifier prefix ("amazon.titan-*").
+func IsTitanModel(model string) bool {
+	return strings.Contains(model, "titan")
 }
 
 // List of grok reasoning models

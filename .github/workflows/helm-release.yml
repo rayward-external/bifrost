@@ -10,15 +10,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   release:
-    # Helm chart releases (publishes to maximhq.github.io/helm-charts) only
-    # make sense on the upstream repo, which has the GH_TOKEN secret. The
-    # fork doesn't publish helm charts; skip the job here.
-    if: github.repository == 'maximhq/bifrost'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -26,8 +25,11 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             api.github.com:443
+            auth.docker.io:443
             get.helm.sh:443
+            ghcr.io:443
             github.com:443
+            registry-1.docker.io:443
             maximhq.github.io:443
             proxy.golang.org:443
             release-assets.githubusercontent.com:443
@@ -90,7 +92,7 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Package Helm chart
         run: |
@@ -106,7 +108,7 @@ jobs:
             --title "Helm Chart v${{ steps.chart-version.outputs.version }}" \
             --notes "Helm chart release for Bifrost v${{ steps.chart-version.outputs.version }}"
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Helm repository index
         run: |
@@ -124,10 +126,37 @@ jobs:
         uses: step-security/actions-gh-pages@db28a5e317d585916043c4acc5a4319ab3da9275 # v4.0.1
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v1.5.0'
         with:
-          github_token: ${{ secrets.GH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./helm-charts
           destination_dir: helm-charts
           keep_files: false
           enable_jekyll: false
           user_name: "github-actions[bot]"
           user_email: "github-actions[bot]@users.noreply.github.com"
+
+      - name: Login to GitHub Container Registry
+        if: steps.check-release.outputs.exists == 'false'
+        continue-on-error: true
+        run: |
+          printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Login to Docker Hub
+        if: steps.check-release.outputs.exists == 'false'
+        continue-on-error: true
+        run: |
+          printf '%s' "$DOCKER_PASSWORD" | helm registry login registry-1.docker.io --username "$DOCKER_USERNAME" --password-stdin
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Push Helm chart as OCI artifact to GHCR
+        if: steps.check-release.outputs.exists == 'false'
+        continue-on-error: true
+        run: |
+          helm push helm-charts/bifrost-${{ steps.chart-version.outputs.version }}.tgz oci://ghcr.io/maximhq/helm-charts
+
+      - name: Push Helm chart as OCI artifact to Docker Hub
+        if: steps.check-release.outputs.exists == 'false'
+        continue-on-error: true
+        run: |
+          helm push helm-charts/bifrost-${{ steps.chart-version.outputs.version }}.tgz oci://registry-1.docker.io/maximhq/helm-charts

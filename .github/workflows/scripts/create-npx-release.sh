@@ -29,7 +29,7 @@ The Bifrost CLI is now available on npm!
 
 \`\`\`bash
 # Install globally
-npm i -g @maximhq/bifrost
+npm install -g @maximhq/bifrost
 
 # Or use with npx (no installation needed)
 npx @maximhq/bifrost --help

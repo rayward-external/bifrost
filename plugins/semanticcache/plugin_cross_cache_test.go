@@ -8,7 +8,6 @@ import (
 
 // TestCrossCacheTypeAccessibility tests that entries cached one way are accessible another way
 func TestCrossCacheTypeAccessibility(t *testing.T) {
-	requireOpenAIKey(t)
 	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
@@ -187,7 +186,6 @@ func TestCacheTypeFallbackBehavior(t *testing.T) {
 
 // TestMultipleCacheEntriesPriority tests behavior when multiple cache entries exist
 func TestMultipleCacheEntriesPriority(t *testing.T) {
-	requireOpenAIKey(t)
 	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()

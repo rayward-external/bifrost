@@ -952,7 +952,7 @@ func (gs *LocalGovernanceStore) CheckBudget(ctx context.Context, entityWiseBudge
 					if time.Since(budget.LastReset) >= duration {
 						// Budget expired but hasn't been reset yet - treat as reset
 						// Note: actual reset will happen in post-hook via AtomicBudgetUpdate
-						gs.logger.Debug("LocalStore CheckBudget: Budget %s (%s) expired, skipping check", schemas.SanitizeLogValue(budget.ID), schemas.SanitizeLogValue(entity))
+						gs.logger.Debug("LocalStore CheckBudget: Budget %s (%s) expired, skipping check", budget.ID, entity)
 						continue // Skip budget check for expired budgets
 					}
 				}
@@ -962,7 +962,7 @@ func (gs *LocalGovernanceStore) CheckBudget(ctx context.Context, entityWiseBudge
 				baseline = 0
 			}
 			gs.logger.Debug("LocalStore CheckBudget: Checking %s budget %s: local=%.4f, remote=%.4f, total=%.4f, limit=%.4f",
-				schemas.SanitizeLogValue(entity), schemas.SanitizeLogValue(budget.ID), budget.CurrentUsage, baseline, budget.CurrentUsage+baseline, budget.MaxLimit)
+				entity, budget.ID, budget.CurrentUsage, baseline, budget.CurrentUsage+baseline, budget.MaxLimit)
 			// Check if current usage (local + remote baseline) exceeds budget limit
 			if budget.CurrentUsage+baseline >= budget.MaxLimit {
 				gs.logger.Debug("LocalStore CheckBudget: Budget %s EXCEEDED", budget.ID)
@@ -1380,6 +1380,42 @@ func (gs *LocalGovernanceStore) GetTeamCustomerID(ctx context.Context, teamID st
 		return ""
 	}
 	return *team.CustomerID
+}
+
+// GetTeamName returns a team's display name from the in-memory store, or "" if
+// the team is unknown. The enterprise layer uses it as the fallback for log
+// stamping when its edge-driven name caches miss (e.g. a team with no user
+// members and no business unit).
+func (gs *LocalGovernanceStore) GetTeamName(ctx context.Context, teamID string) string {
+	if teamID == "" {
+		return ""
+	}
+	teamValue, exists := gs.teams.Load(teamID)
+	if !exists || teamValue == nil {
+		return ""
+	}
+	team, ok := teamValue.(*configstoreTables.TableTeam)
+	if !ok || team == nil {
+		return ""
+	}
+	return team.Name
+}
+
+// GetCustomerName returns a customer's display name from the in-memory store,
+// or "" if the customer is unknown. Same fallback role as GetTeamName.
+func (gs *LocalGovernanceStore) GetCustomerName(ctx context.Context, customerID string) string {
+	if customerID == "" {
+		return ""
+	}
+	customerValue, exists := gs.customers.Load(customerID)
+	if !exists || customerValue == nil {
+		return ""
+	}
+	customer, ok := customerValue.(*configstoreTables.TableCustomer)
+	if !ok || customer == nil {
+		return ""
+	}
+	return customer.Name
 }
 
 // CheckCustomerBudget checks customer-level budget and returns evaluation result if violated
@@ -3730,8 +3766,16 @@ func (gs *LocalGovernanceStore) GetRoutingProgram(ctx context.Context, rule *con
 		return nil, fmt.Errorf("CEL compile error: %s", issues.Err().Error())
 	}
 
-	// Create program
-	program, err := gs.routingCELEnv.Program(ast)
+	// Create program. Partial evaluation is only needed for complexity rules,
+	// where routing treats unavailable complexity_tier as unknown instead of
+	// leaking an empty-string sentinel.
+	var program cel.Program
+	var err error
+	if celASTReferencesIdentifier(ast, "complexity_tier") {
+		program, err = gs.routingCELEnv.Program(ast, cel.EvalOptions(cel.OptPartialEval))
+	} else {
+		program, err = gs.routingCELEnv.Program(ast)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("CEL program creation error: %w", err)
 	}

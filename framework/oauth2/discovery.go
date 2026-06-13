@@ -13,9 +13,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	bifrost "github.com/maximhq/bifrost/core"
-	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // OAuthMetadata contains discovered OAuth configuration from authorization server
@@ -55,15 +52,12 @@ type ResourceMetadata struct {
 // 6. Return complete OAuth configuration
 func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadata, error) {
 	if logger != nil {
-		logger.Debug(fmt.Sprintf("[OAuth Discovery] Starting discovery for server: %s", schemas.SanitizeLogValue(serverURL)))
+		logger.Debug(fmt.Sprintf("[OAuth Discovery] Starting discovery for server: %s", serverURL))
 	}
 
 	// Step 1: Attempt to connect to MCP server, expect 401 with WWW-Authenticate header
-	client := bifrost.NewSSRFSafeClient(10 * time.Second)
-
-	// Validate the server URL to prevent SSRF attacks
-	if err := bifrost.ValidateExternalURL(serverURL, false); err != nil {
-		return nil, fmt.Errorf("invalid server URL: %w", err)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", serverURL, nil)
@@ -71,7 +65,6 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// CodeQL[go/request-forgery] FP: serverURL is validated by bifrost.ValidateExternalURL (SSRF guard) above and the request uses an SSRF-safe client.
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to server: %w", err)
@@ -88,10 +81,10 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 
 	resourceMetadataURL, scopesFromHeader := parseWWWAuthenticateHeader(wwwAuth)
 	if resourceMetadataURL != "" {
-		logger.Debug(fmt.Sprintf("[OAuth Discovery] Found resource_metadata URL: %s", schemas.SanitizeLogValue(resourceMetadataURL)))
+		logger.Debug(fmt.Sprintf("[OAuth Discovery] Found resource_metadata URL: %s", resourceMetadataURL))
 	}
 	if len(scopesFromHeader) > 0 {
-		logger.Debug(fmt.Sprintf("[OAuth Discovery] Found %d scope(s) in header", len(scopesFromHeader)))
+		logger.Debug(fmt.Sprintf("[OAuth Discovery] Found scopes in header: %v", scopesFromHeader))
 	}
 
 	// Step 3: Fetch resource metadata if available
@@ -131,11 +124,11 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 		metadata.ScopesSupported = resourceScopes
 	}
 
-	logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully discovered OAuth metadata for %s", schemas.SanitizeLogValue(serverURL)))
-	logger.Debug(fmt.Sprintf("[OAuth Discovery] Authorization URL: %s", schemas.SanitizeLogValue(metadata.AuthorizationURL)))
-	logger.Debug(fmt.Sprintf("[OAuth Discovery] Token URL: %s", schemas.SanitizeLogValue(metadata.TokenURL)))
+	logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully discovered OAuth metadata for %s", serverURL))
+	logger.Debug(fmt.Sprintf("[OAuth Discovery] Authorization URL: %s", metadata.AuthorizationURL))
+	logger.Debug(fmt.Sprintf("[OAuth Discovery] Token URL: %s", metadata.TokenURL))
 	if metadata.RegistrationURL != nil {
-		logger.Debug(fmt.Sprintf("[OAuth Discovery] Registration URL: %s", schemas.SanitizeLogValue(*metadata.RegistrationURL)))
+		logger.Debug(fmt.Sprintf("[OAuth Discovery] Registration URL: %s", *metadata.RegistrationURL))
 	}
 	logger.Debug(fmt.Sprintf("[OAuth Discovery] Scopes: %v", metadata.ScopesSupported))
 
@@ -172,19 +165,15 @@ func parseWWWAuthenticateHeader(header string) (resourceMetadataURL string, scop
 
 // fetchResourceMetadata fetches OAuth metadata from resource metadata endpoint (RFC 9728)
 func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, []string, error) {
-	// Validate the metadata URL to prevent SSRF attacks
-	if err := bifrost.ValidateExternalURL(metadataURL, false); err != nil {
-		return nil, nil, fmt.Errorf("invalid metadata URL: %w", err)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
 	}
-
-	client := bifrost.NewSSRFSafeClient(10 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// CodeQL[go/request-forgery] FP: metadataURL is validated by bifrost.ValidateExternalURL (SSRF guard) above and the request uses an SSRF-safe client.
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, err
@@ -227,16 +216,16 @@ func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string,
 	logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying %d .well-known URLs", len(candidateURLs)))
 
 	for _, candidateURL := range candidateURLs {
-		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying: %s", schemas.SanitizeLogValue(candidateURL)))
+		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying: %s", candidateURL))
 		authServers, scopes, err := fetchResourceMetadata(ctx, candidateURL)
 		if err == nil && len(authServers) > 0 {
-			logger.Debug(fmt.Sprintf("[OAuth Discovery] Found metadata at: %s", schemas.SanitizeLogValue(candidateURL)))
+			logger.Debug(fmt.Sprintf("[OAuth Discovery] Found metadata at: %s", candidateURL))
 			return authServers, scopes, nil
 		}
 	}
 
 	// Fallback: assume server base is the authorization server
-	logger.Debug(fmt.Sprintf("[OAuth Discovery] No .well-known found, assuming server base is auth server: %s", schemas.SanitizeLogValue(base)))
+	logger.Debug(fmt.Sprintf("[OAuth Discovery] No .well-known found, assuming server base is auth server: %s", base))
 	return []string{base}, nil, nil
 }
 
@@ -244,13 +233,13 @@ func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string,
 // Tries multiple authorization servers until one succeeds
 func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string) (*OAuthMetadata, error) {
 	for _, issuer := range authServers {
-		logger.Debug(fmt.Sprintf("[OAuth Discovery] Fetching metadata from authorization server: %s", schemas.SanitizeLogValue(issuer)))
+		logger.Debug(fmt.Sprintf("[OAuth Discovery] Fetching metadata from authorization server: %s", issuer))
 		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer)
 		if err == nil && metadata != nil {
-			logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully fetched metadata from: %s", schemas.SanitizeLogValue(issuer)))
+			logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully fetched metadata from: %s", issuer))
 			return metadata, nil
 		}
-		logger.Debug(fmt.Sprintf("[OAuth Discovery] Failed to fetch from %s: %v", schemas.SanitizeLogValue(issuer), err))
+		logger.Debug(fmt.Sprintf("[OAuth Discovery] Failed to fetch from %s: %v", issuer, err))
 	}
 	return nil, fmt.Errorf("failed to fetch metadata from any authorization server")
 }
@@ -277,20 +266,17 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 		strings.TrimSuffix(issuer, "/"), // Try the issuer URL itself
 	)
 
-	client := bifrost.NewSSRFSafeClient(10 * time.Second)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
 
 	for _, candidateURL := range candidateURLs {
-		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", schemas.SanitizeLogValue(candidateURL)))
-		// Validate the candidate URL to prevent SSRF attacks
-		if err := bifrost.ValidateExternalURL(candidateURL, false); err != nil {
-			continue
-		}
+		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", candidateURL))
 		req, err := http.NewRequestWithContext(ctx, "GET", candidateURL, nil)
 		if err != nil {
 			continue
 		}
 
-		// CodeQL[go/request-forgery] FP: candidateURL is validated by bifrost.ValidateExternalURL (SSRF guard) above and the request uses an SSRF-safe client.
 		resp, err := client.Do(req)
 		if err != nil {
 			continue
@@ -308,7 +294,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 			if err := json.Unmarshal(bodyBytes, &metadata); err == nil {
 				// Validate that we got at least authorization_endpoint
 				if metadata.AuthorizationURL != "" {
-					logger.Debug(fmt.Sprintf("[OAuth Discovery] Valid metadata found at: %s", schemas.SanitizeLogValue(candidateURL)))
+					logger.Debug(fmt.Sprintf("[OAuth Discovery] Valid metadata found at: %s", candidateURL))
 					return &metadata, nil
 				}
 			}
@@ -409,12 +395,7 @@ type DynamicClientRegistrationResponse struct {
 //
 // Returns client_id and optional client_secret that can be used for OAuth flows.
 func RegisterDynamicClient(ctx context.Context, registrationURL string, req *DynamicClientRegistrationRequest) (*DynamicClientRegistrationResponse, error) {
-	// Validate the registration URL to prevent SSRF attacks
-	if err := bifrost.ValidateExternalURL(registrationURL, false); err != nil {
-		return nil, fmt.Errorf("invalid registration URL: %w", err)
-	}
-
-	logger.Debug(fmt.Sprintf("[Dynamic Registration] Registering client at: %s", schemas.SanitizeLogValue(registrationURL)))
+	logger.Debug(fmt.Sprintf("[Dynamic Registration] Registering client at: %s", registrationURL))
 	logger.Debug(fmt.Sprintf("[Dynamic Registration] Client name len: %d, Redirect URI count: %d", len(req.ClientName), len(req.RedirectURIs)))
 
 	// Serialize request
@@ -432,8 +413,7 @@ func RegisterDynamicClient(ctx context.Context, registrationURL string, req *Dyn
 	httpReq.Header.Set("Accept", "application/json")
 
 	// Send request
-	client := bifrost.NewSSRFSafeClient(15 * time.Second)
-	// CodeQL[go/request-forgery] FP: registrationURL is validated by bifrost.ValidateExternalURL (SSRF guard) above and the request uses an SSRF-safe client.
+	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("registration request failed: %w", err)
@@ -448,7 +428,7 @@ func RegisterDynamicClient(ctx context.Context, registrationURL string, req *Dyn
 
 	// Check status code (201 Created or 200 OK are both valid per RFC 7591)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		logger.Error(fmt.Sprintf("[Dynamic Registration] Failed with status %d: %s", resp.StatusCode, schemas.SanitizeLogValue(string(respBody))))
+		logger.Error(fmt.Sprintf("[Dynamic Registration] Failed with status %d: %s", resp.StatusCode, string(respBody)))
 		return nil, fmt.Errorf("registration failed with status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -463,7 +443,7 @@ func RegisterDynamicClient(ctx context.Context, registrationURL string, req *Dyn
 		return nil, fmt.Errorf("registration response missing client_id")
 	}
 
-	logger.Debug(fmt.Sprintf("[Dynamic Registration] Successfully registered client_id: %s", schemas.SanitizeLogValue(regResp.ClientID)))
+	logger.Debug(fmt.Sprintf("[Dynamic Registration] Successfully registered client_id: %s", regResp.ClientID))
 	if regResp.ClientSecret != "" {
 		logger.Debug("[Dynamic Registration] Client secret provided by server")
 	} else {

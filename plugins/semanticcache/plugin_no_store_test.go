@@ -275,7 +275,6 @@ func TestCacheNoStoreErrorHandling(t *testing.T) {
 
 // TestCacheNoStoreReadButNoWrite tests that NoStore allows reading cache but prevents writing
 func TestCacheNoStoreReadButNoWrite(t *testing.T) {
-	requireOpenAIKey(t)
 	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()

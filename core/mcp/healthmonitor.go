@@ -80,7 +80,7 @@ func (chm *ClientHealthMonitor) Start() {
 
 	if !exists {
 		// Use clientID for logging when client is missing
-		chm.logger.Error("%s Health monitor failed to start for client %s, client not found in manager", MCPLogPrefix, sanitizeLogValue(chm.clientID))
+		chm.logger.Error("%s Health monitor failed to start for client %s, client not found in manager", MCPLogPrefix, chm.clientID)
 		return
 	}
 
@@ -113,7 +113,7 @@ func (chm *ClientHealthMonitor) Stop() {
 		chm.cancel()
 	}
 
-	chm.logger.Debug("%s Health monitor stopped for client %s", MCPLogPrefix, sanitizeLogValue(chm.clientID))
+	chm.logger.Debug("%s Health monitor stopped for client %s", MCPLogPrefix, chm.clientID)
 }
 
 // monitorLoop runs the health check loop
@@ -174,8 +174,14 @@ func (chm *ClientHealthMonitor) performHealthCheck() {
 		err = fmt.Errorf("no active connection")
 	} else {
 		// Perform health check with timeout
-		ctx, cancel := context.WithTimeout(context.Background(), chm.timeout)
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), chm.timeout)
 		defer cancel()
+
+		// Mark the request as bifrost-generated for health checks so plugins/hooks can
+		// distinguish these internal pings/list_tools probes from caller-initiated requests.
+		// runPingWithHooks / runListToolsWithHooks wrap this ctx, so the marker propagates.
+		ctx := schemas.NewBifrostContext(timeoutCtx, schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
 
 		if chm.isPingAvailable {
 			err = chm.runPingWithHooks(ctx, conn, clientName)
@@ -217,7 +223,7 @@ func (chm *ClientHealthMonitor) attemptReconnect() {
 		chm.mu.Unlock()
 	}()
 
-	chm.logger.Debug("%s Attempting to reconnect MCP client %s...", MCPLogPrefix, sanitizeLogValue(chm.clientID))
+	chm.logger.Debug("%s Attempting to reconnect MCP client %s...", MCPLogPrefix, chm.clientID)
 
 	// Do not attempt reconnect if the client has been intentionally disabled
 	// Health monitoring is already stopped for disabled clients. This is just a sanity check.
@@ -226,16 +232,16 @@ func (chm *ClientHealthMonitor) attemptReconnect() {
 	isDisabled := exists && clientState != nil && clientState.State == schemas.MCPConnectionStateDisabled
 	chm.manager.mu.RUnlock()
 	if isDisabled {
-		chm.logger.Debug("%s Skipping reconnect for disabled MCP client %s", MCPLogPrefix, sanitizeLogValue(chm.clientID))
+		chm.logger.Debug("%s Skipping reconnect for disabled MCP client %s", MCPLogPrefix, chm.clientID)
 		return
 	}
 
 	if err := chm.manager.ReconnectClient(chm.clientID); err != nil {
-		chm.logger.Warn("%s Failed to reconnect MCP client %s: %v", MCPLogPrefix, sanitizeLogValue(chm.clientID), err)
+		chm.logger.Warn("%s Failed to reconnect MCP client %s: %v", MCPLogPrefix, chm.clientID, err)
 		return
 	}
 
-	chm.logger.Info("%s Successfully reconnected MCP client %s", MCPLogPrefix, sanitizeLogValue(chm.clientID))
+	chm.logger.Info("%s Successfully reconnected MCP client %s", MCPLogPrefix, chm.clientID)
 	chm.resetFailures()
 }
 

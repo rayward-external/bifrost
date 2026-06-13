@@ -317,7 +317,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		}
 		m.clientMap[config.ID] = clientState
 		m.mu.Unlock()
-		m.logger.Debug("%s MCP client '%s' registered in disabled state", MCPLogPrefix, sanitizeLogValue(config.Name))
+		m.logger.Debug("%s MCP client '%s' registered in disabled state", MCPLogPrefix, config.Name)
 		return nil
 	}
 
@@ -356,10 +356,10 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 				}
 				client.ToolNameMapping = config.DiscoveredToolNameMapping
 				client.State = schemas.MCPConnectionStateConnected
-				m.logger.Debug("%s Per-user (%s) MCP client '%s' restored with %d tools", MCPLogPrefix, sanitizeLogValue(string(config.AuthType)), sanitizeLogValue(config.Name), len(config.DiscoveredTools))
+				m.logger.Debug("%s Per-user (%s) MCP client '%s' restored with %d tools", MCPLogPrefix, config.AuthType, config.Name, len(config.DiscoveredTools))
 			} else {
 				client.State = schemas.MCPConnectionStatePendingTools
-				m.logger.Debug("%s Per-user (%s) MCP client '%s' registered (connection deferred to runtime)", MCPLogPrefix, sanitizeLogValue(string(config.AuthType)), sanitizeLogValue(config.Name))
+				m.logger.Debug("%s Per-user (%s) MCP client '%s' registered (connection deferred to runtime)", MCPLogPrefix, config.AuthType, config.Name)
 			}
 		}
 		m.mu.Unlock()
@@ -666,7 +666,7 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 		return nil, nil, fmt.Errorf("failed to discover tools during verification: %w", err)
 	}
 
-	m.logger.Info("%s Per-user headers verification succeeded for '%s': discovered %d tools", MCPLogPrefix, sanitizeLogValue(config.Name), len(tools))
+	m.logger.Info("%s Per-user headers verification succeeded for '%s': discovered %d tools", MCPLogPrefix, config.Name, len(tools))
 	return tools, toolNameMapping, nil
 }
 
@@ -1332,7 +1332,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		}
 
 		// Start the transport (with internal retries). Each retry uses a fresh client.
-		m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, sanitizeLogValue(config.Name))
+		m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
 		transportRetryConfig := DefaultRetryConfig
 		if startErr := ExecuteWithRetry(
 			m.ctx,
@@ -1368,7 +1368,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 					// The subprocess needs the context to stay valid for the entire connection lifetime
 					// Do NOT defer cancel - the context manages the subprocess lifetime.
 					perAttemptCtx = longLivedCtx
-					m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, sanitizeLogValue(config.Name))
+					m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
 				} else {
 					// HTTP already has timeout
 					perAttemptCtx = ctx
@@ -1380,7 +1380,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		); startErr != nil {
 			return nil, fmt.Errorf("failed to start MCP client transport after %d retries: %v", transportRetryConfig.MaxRetries, startErr)
 		}
-		m.logger.Debug("%s [%s] Transport started successfully", MCPLogPrefix, sanitizeLogValue(config.Name))
+		m.logger.Debug("%s [%s] Transport started successfully", MCPLogPrefix, config.Name)
 
 		// Initialize with retry. Capture InitializeResult so the gate response can expose
 		// ServerInfo / ProtocolVersion / Capabilities.
@@ -1403,7 +1403,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 					var initCancel context.CancelFunc
 					initCtx, initCancel = context.WithTimeout(longLivedCtx, MCPClientConnectionEstablishTimeout)
 					defer initCancel()
-					m.logger.Debug("%s [%s] Initializing client with %v timeout...", MCPLogPrefix, sanitizeLogValue(config.Name), MCPClientConnectionEstablishTimeout)
+					m.logger.Debug("%s [%s] Initializing client with %v timeout...", MCPLogPrefix, config.Name, MCPClientConnectionEstablishTimeout)
 				} else {
 					initCtx = ctx
 				}
@@ -1416,7 +1416,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		); initErr != nil {
 			return nil, fmt.Errorf("failed to initialize MCP client after %d retries: %v", initRetryConfig.MaxRetries, initErr)
 		}
-		m.logger.Debug("%s [%s] Client initialized successfully", MCPLogPrefix, sanitizeLogValue(config.Name))
+		m.logger.Debug("%s [%s] Client initialized successfully", MCPLogPrefix, config.Name)
 
 		// Build the gate response from captured initialize result.
 		resp := &schemas.BifrostMCPConnectResponse{
@@ -1460,7 +1460,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		// to query. Register the client as "connected" with an empty tool set — this is
 		// the documented Connect-success-shortcircuit gotcha. Subsequent tool calls will
 		// fail until a real connect happens.
-		m.logger.Warn("%s [%s] Connect plugin short-circuited with success; no live transport — registering with empty tool set", MCPLogPrefix, sanitizeLogValue(config.Name))
+		m.logger.Warn("%s [%s] Connect plugin short-circuited with success; no live transport — registering with empty tool set", MCPLogPrefix, config.Name)
 		if connectionInfo == nil {
 			connectionInfo = &schemas.MCPClientConnectionInfo{Type: config.ConnectionType}
 		}
@@ -1468,18 +1468,18 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		// Retrieve tools from the external server through the list_tools plugin gate.
 		// Use a bounded timeout context to prevent indefinite hangs during tool retrieval.
 		// For STDIO/SSE, ctx is longLivedCtx (no timeout), so we create a separate one here.
-		m.logger.Debug("%s [%s] Retrieving tools...", MCPLogPrefix, sanitizeLogValue(config.Name))
+		m.logger.Debug("%s [%s] Retrieving tools...", MCPLogPrefix, config.Name)
 		toolRetrievalCtx, toolRetrievalCancel := context.WithTimeout(m.ctx, MCPClientConnectionEstablishTimeout)
 		defer toolRetrievalCancel()
 		t, mapping, err := m.runListToolsWithHooks(toolRetrievalCtx, externalClient, config.Name)
 		if err != nil {
-			m.logger.Warn("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, sanitizeLogValue(config.Name), err)
+			m.logger.Warn("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err)
 			// Continue with connection even if tool retrieval fails
 		} else {
 			tools = t
 			toolNameMapping = mapping
 		}
-		m.logger.Debug("%s [%s] Retrieved %d tools", MCPLogPrefix, sanitizeLogValue(config.Name), len(tools))
+		m.logger.Debug("%s [%s] Retrieved %d tools", MCPLogPrefix, config.Name, len(tools))
 	}
 
 	// Second lock: Update client with final connection details and tools
@@ -1500,7 +1500,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 					m.logger.Warn("%s Failed to close external client during disable rollback: %v", MCPLogPrefix, closeErr)
 				}
 			}
-			m.logger.Debug("%s [%s] Client was disabled during connection setup; rolling back", MCPLogPrefix, sanitizeLogValue(config.Name))
+			m.logger.Debug("%s [%s] Client was disabled during connection setup; rolling back", MCPLogPrefix, config.Name)
 			return fmt.Errorf("client %s was disabled during connection setup", config.Name)
 		}
 
@@ -1522,8 +1522,8 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		// Store tool name mapping for execution (sanitized_name -> original_mcp_name)
 		client.ToolNameMapping = toolNameMapping
 
-		m.logger.Debug("%s [%s] Registering %d tools. Client config - ID: %s, Name: %s, IsCodeModeClient: %v", MCPLogPrefix, sanitizeLogValue(config.Name), len(tools), sanitizeLogValue(config.ID), sanitizeLogValue(config.Name), config.IsCodeModeClient)
-		m.logger.Info("%s Connected to MCP server '%s'", MCPLogPrefix, sanitizeLogValue(config.Name))
+		m.logger.Debug("%s [%s] Registering %d tools. Client config - ID: %s, Name: %s, IsCodeModeClient: %v", MCPLogPrefix, config.Name, len(tools), config.ID, config.Name, config.IsCodeModeClient)
+		m.logger.Info("%s Connected to MCP server '%s'", MCPLogPrefix, config.Name)
 	} else {
 		// Release lock before cleanup and return
 		m.mu.Unlock()
@@ -1548,7 +1548,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	// Register OnConnectionLost hook for SSE connections to detect idle timeouts
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE && externalClient != nil {
 		externalClient.OnConnectionLost(func(err error) {
-			m.logger.Warn("%s SSE connection lost for MCP server '%s': %v", MCPLogPrefix, sanitizeLogValue(config.Name), err)
+			m.logger.Warn("%s SSE connection lost for MCP server '%s': %v", MCPLogPrefix, config.Name, err)
 			// Update state to disconnected, but never overwrite a disabled state.
 			// DisableClient calls Conn.Close() while holding m.mu; the SSE library
 			// fires OnConnectionLost after the lock is released, by which point

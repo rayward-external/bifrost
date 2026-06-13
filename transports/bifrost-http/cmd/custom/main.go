@@ -8,7 +8,6 @@ package main
 import (
 	"context"
 	"flag"
-	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -40,11 +39,7 @@ func init() {
 	if defaultLogLevel == "" {
 		defaultLogLevel = bifrostServer.DefaultLogLevel
 	}
-	uiContent, err := fs.Sub(uiassets.Content, "ui")
-	if err != nil {
-		panic(err)
-	}
-	server = bifrostServer.NewBifrostHTTPServer(Version, uiContent)
+	server = bifrostServer.NewBifrostHTTPServer(Version, uiassets.Content)
 	flag.StringVar(&server.Port, "port", bifrostServer.DefaultPort, "Port to run the server on")
 	flag.StringVar(&server.Host, "host", defaultHost, "Host to bind the server to")
 	flag.StringVar(&server.AppDir, "app-dir", bifrostServer.DefaultAppDir, "Application data directory")

@@ -128,55 +128,24 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.logger.Debug("%s GetClientByName: Looking for client '%s' among %d clients", MCPLogPrefix, sanitizeLogValue(clientName), len(m.clientMap))
+	m.logger.Debug("%s GetClientByName: Looking for client '%s' among %d clients", MCPLogPrefix, clientName, len(m.clientMap))
 	for _, client := range m.clientMap {
 		m.logger.Debug("%s Checking client with Name: %s, ID: %s", MCPLogPrefix, client.ExecutionConfig.Name, client.ExecutionConfig.ID)
 		if client.ExecutionConfig.Name == clientName {
 			// Return a copy to prevent TOCTOU race conditions
 			// The caller receives a snapshot of the client state at this point in time
-			m.logger.Debug("%s Found client '%s' with IsCodeModeClient=%v", MCPLogPrefix, sanitizeLogValue(clientName), client.ExecutionConfig.IsCodeModeClient)
+			m.logger.Debug("%s Found client '%s' with IsCodeModeClient=%v", MCPLogPrefix, clientName, client.ExecutionConfig.IsCodeModeClient)
 			clientCopy := *client
 			return &clientCopy
 		}
 	}
-	m.logger.Debug("%s Client '%s' not found", MCPLogPrefix, sanitizeLogValue(clientName))
+	m.logger.Debug("%s Client '%s' not found", MCPLogPrefix, clientName)
 	return nil
 }
 
 // isTransientError determines if an error is transient and should be retried.
 // Permanent errors (auth failures, config errors, context deadline, etc.) return false.
 // Transient errors (network issues, temporary timeouts, etc.) return true.
-// maxLogValueLen caps user-controlled values embedded in operational log
-// lines so a malicious or pathological value can't bloat log entries.
-const maxLogValueLen = 128
-
-// sanitizeLogValue makes a user-controlled string safe to embed in log lines.
-// It strips ASCII control characters (anything below space plus DEL) so a
-// malicious value can't inject newlines, carriage returns, or terminal
-// escape sequences into the log stream, and truncates the result to
-// maxLogValueLen runes. Required by CodeQL's go/log-injection query.
-func sanitizeLogValue(value string) string {
-	if value == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.Grow(len(value))
-	count := 0
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			b.WriteByte('?')
-		} else {
-			b.WriteRune(r)
-		}
-		count++
-		if count >= maxLogValueLen {
-			b.WriteString("...[truncated]")
-			break
-		}
-	}
-	return b.String()
-}
-
 func isTransientError(err error) bool {
 	if err == nil {
 		return false
@@ -425,7 +394,7 @@ func shouldIncludeClient(clientName string, includeClients []string, logger sche
 
 		// Check if specific client is in the list
 		included := slices.Contains(includeClients, clientName)
-		logger.Debug("%s shouldIncludeClient: %s - %s (filter: %v)", MCPLogPrefix, sanitizeLogValue(clientName), map[bool]string{true: "ALLOWED", false: "BLOCKED"}[included], includeClients)
+		logger.Debug("%s shouldIncludeClient: %s - %s (filter: %v)", MCPLogPrefix, clientName, map[bool]string{true: "ALLOWED", false: "BLOCKED"}[included], includeClients)
 		return included
 	}
 

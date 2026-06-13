@@ -275,7 +275,7 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 		// enqueued successfully
 	default:
 		p.droppedRequests.Add(1)
-		p.logger.Warn("log write queue full, dropping log entry")
+		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
 	}
 }
 
@@ -301,7 +301,7 @@ func (p *LoggerPlugin) enqueueMCPToolLogEntry(entry *logstore.MCPToolLog, callba
 	case p.writeQueue <- &writeQueueEntry{mcpLog: entry, mcpCallback: callback}:
 	default:
 		p.droppedRequests.Add(1)
-		p.logger.Warn("log write queue full, dropping MCP tool log entry")
+		p.logger.Warn("log write queue full, dropping MCP tool log entry %s", entry.ID)
 	}
 }
 
@@ -473,6 +473,23 @@ func applyModelAlias(entry *logstore.Log, requestedModel, resolvedModel string) 
 			entry.Model = requestedModel
 		}
 		entry.Alias = nil
+	}
+}
+
+// applyResolvedAliasInfo copies the canonical model name and model family from the
+// resolved key alias onto the entry when the alias config defines them. Both fields
+// stay nil when no alias matched or the alias doesn't configure them.
+func applyResolvedAliasInfo(entry *logstore.Log, resolvedAlias *schemas.ResolvedKeyAlias) {
+	if resolvedAlias == nil {
+		return
+	}
+	if resolvedAlias.ModelName != nil && *resolvedAlias.ModelName != "" {
+		name := *resolvedAlias.ModelName
+		entry.CanonicalModelName = &name
+	}
+	if resolvedAlias.ModelFamily != nil && *resolvedAlias.ModelFamily != "" {
+		family := string(*resolvedAlias.ModelFamily)
+		entry.AliasModelFamily = &family
 	}
 }
 

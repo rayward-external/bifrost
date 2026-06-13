@@ -1,5 +1,4 @@
 name: Alert Bridge
-
 on:
   workflow_dispatch:
     inputs:
@@ -24,11 +23,11 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: LIST alerts
+      - name: List alerts
         if: inputs.mode == 'list'
         run: |
           gh api --paginate "repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=100" > alerts.json
-          echo "Open alerts: $(jq length alerts.json)" >> $GITHUB_STEP_SUMMARY
+          echo "Open code-scanning alerts: $(jq length alerts.json)" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload alerts artifact
         if: inputs.mode == 'list'
@@ -37,7 +36,7 @@ jobs:
           name: alerts
           path: alerts.json
 
-      - name: DISMISS alerts
+      - name: Dismiss alerts
         if: inputs.mode == 'dismiss'
         run: |
           echo '${{ inputs.dismissals }}' | jq -c '.[]' | while read d; do

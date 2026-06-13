@@ -24,9 +24,11 @@ framework/logstore/rdb.go                  | sanitizeDimColumn(string(dimension)
 .github/workflows/release-pipeline.yml    | continue-on-error: true       | quarantine: test-migrations continue-on-error (upstream faker coverage validation broken for governance_budgets/governance_customers/governance_model_configs/logs columns); REMOVAL CONDITION: remove when upstream fixes run-migration-tests.sh faker validation and the job passes on upstream/main
 .github/workflows/scripts/test-bifrost-http.sh | GOTEST_SKIP              | quarantine support: reads GOTEST_SKIP env var and passes it as -skip flag to go test; remove when upstream-broken tests are fixed and the GOTEST_SKIP workflow env var is removed
 .github/workflows/alert-bridge.yml             | Alert Bridge               | CI/security: workflow_dispatch bridge for code-scanning alerts (list/dismiss); required because the Claude GitHub App lacks code-scanning API scopes on the fork; re-apply after every -X theirs sync
+
 framework/configstore/migrations.go               | raw SQL to bypass BeforeSave | bug fix: migrationAddStoreRawRequestResponseColumn used GORM Updates(map) which triggers BeforeSave hook; on Postgres RETURNING path this left config_hash as empty string for the both_false case (store_raw_request_response=false); use tx.Exec raw SQL to bypass hooks (PR #109, merged 2026-06-10)
 
 # Sync log
 # 2026-06-07: upstream/main tip 7832fa061 (2026-06-04) already merged into fork main; no new upstream commits.
 # 2026-06-08: security sweep — all 10 patches intact; CodeQL Analyze (Go) passed; Snyk skipped (no token configured).
 # 2026-06-08: merged 141 upstream commits (-X theirs); restored plugins/otel/main.go CodeQL[go/log-injection] FP suppression (wiped by upstream rewrite); go build ./... passed.
+# 2026-06-10: merged upstream sync PR #108 (commit 9399212 — migrationAddStoreRawRequestResponseColumn); fixed new test-framework failure (PR #109) — config_hash empty for both_false/postgres case in the new migration; all PR checks green.

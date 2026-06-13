@@ -24,7 +24,7 @@ An **Access Profile** is a reusable policy template that describes what a user,t
 
 <Info>
   For the full API contract (every endpoint, request and response shape, error codes), see the
-  **Access Profiles** section of the [API Reference](/api-reference).
+  **Access Profiles** section of the [API Reference](/api-reference/overview).
 </Info>
 
 <Note>
@@ -192,13 +192,13 @@ Each row action exposes:
 - **Duplicate** - Opens the form pre-populated with the original; budgets and rate limits get fresh identifiers on save.
 - **Delete** - Asks to confirm. Blocked if any users still hold a copy; detach role attachments or remove user assignments first.
 
-For programmatic configuration (every endpoint, body shape, and error code), see the **Access Profiles** section of the [API Reference](/api-reference).
+For programmatic configuration (every endpoint, body shape, and error code), see the **Access Profiles** section of the [API Reference](/api-reference/overview).
 
 ---
 
 ## What you can configure
 
-A profile carries the following pieces of policy. Use the UI walkthrough above for guidance and see the [API Reference](/api-reference) for exact field shapes.
+A profile carries the following pieces of policy. Use the UI walkthrough above for guidance and see the [API Reference](/api-reference/overview) for exact field shapes.
 
 - **Provider access** - For each LLM provider: an allow-all toggle or an explicit model allowlist, plus optional per-provider budgets and rate limits.
 - **Global budgets** - Workspace-wide spend caps with reset durations of `1h`, `1d`, `1w`, `1M`, or `1Y`. Multiple budget lines can stack so you can combine a hard short-window cap with a softer long-window cap.

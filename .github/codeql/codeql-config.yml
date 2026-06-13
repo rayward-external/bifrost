@@ -84,13 +84,17 @@ query-filters:
   - exclude:
       id: go/weak-sensitive-data-hashing
 
-  # go/duplicate-if-branches (2 warnings): identical else-if/else branches in
-  # core/providers/bedrock/{responses,utils}.go for extended-thinking config.
-  # Both branches set reasoningConfig/thinking to "disabled"; the IsNovaModelFamily
-  # guard is scaffolding for future provider-specific handling. Upstream code —
-  # changing it would break the keep-the-fork-vanilla rule.
+  # go/duplicate-if-branches / go/duplicate-branches (warnings): identical
+  # else-if/else branches in core/providers/bedrock/{responses,utils}.go for
+  # extended-thinking config. Both branches set reasoningConfig/thinking to
+  # "disabled"; the IsNovaModelFamily guard is scaffolding for future
+  # provider-specific handling. Upstream code — changing it would break the
+  # keep-the-fork-vanilla rule. (security-extended/-and-quality emit these
+  # under the go/duplicate-branches id; the older alias is kept too.)
   - exclude:
       id: go/duplicate-if-branches
+  - exclude:
+      id: go/duplicate-branches
 
   # go/impossible-interface-nil-check (1 warning): core/providers/bedrock/invoke.go
   # contains an `if event == nil` guard after a switch that already returns on every

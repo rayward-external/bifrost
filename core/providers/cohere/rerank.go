@@ -43,6 +43,11 @@ func (req *CohereRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostConte
 	}
 
 	provider, model := schemas.ParseModelString(req.Model, "")
+	// ParseModelString returns empty provider for bare model names (e.g. "rerank-v3.5")
+	// since they carry no provider prefix. Fall back to Cohere explicitly here.
+	if provider == "" {
+		provider = schemas.Cohere
+	}
 
 	bifrostReq := &schemas.BifrostRerankRequest{
 		Provider: provider,

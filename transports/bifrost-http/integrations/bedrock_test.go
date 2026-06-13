@@ -65,6 +65,10 @@ func (m *mockHandlerStore) GetMCPExternalClientURL() string {
 	return ""
 }
 
+func (m *mockHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
+	return m.availableProviders
+}
+
 // Ensure mockHandlerStore implements lib.HandlerStore
 var _ lib.HandlerStore = (*mockHandlerStore)(nil)
 

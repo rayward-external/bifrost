@@ -771,6 +771,29 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 		}
 
+		// For Anthropic-type routes, raw request body passthrough is only valid for
+		// providers that speak the Anthropic Messages API natively. Clear the flag
+		// when only non-Anthropic-native providers (e.g. Bedrock) are available.
+		if config.Type == RouteConfigTypeAnthropic && g.handlerStore != nil {
+			if useRaw, ok := bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRaw {
+				providers := g.handlerStore.GetAvailableProviders()
+				if len(providers) > 0 {
+					hasNativeProvider := false
+					for _, p := range providers {
+						if p == schemas.Anthropic || p == schemas.Vertex || p == schemas.Azure {
+							hasNativeProvider = true
+							break
+						}
+					}
+					if !hasNativeProvider {
+						bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+						bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
+					}
+				}
+			}
+		}
+
 		// Handle batch requests if BatchRequestConverter is set
 		// GenAI has two cases: (1) Dedicated batch routes (list/retrieve) have only BatchRequestConverter — always use batch path.
 		// (2) The models path has both BatchRequestConverter and RequestConverter — use batch path only for batch create.

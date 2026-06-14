@@ -89,6 +89,8 @@ type HandlerStore interface {
 	// redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 	// if not configured (falls back to dynamic Host-header-based URL).
 	GetMCPExternalClientURL() string
+	// GetAvailableProviders returns the list of all configured provider names.
+	GetAvailableProviders() []schemas.ModelProvider
 }
 
 // Retry backoff constants for validation
@@ -4592,6 +4594,12 @@ func (c *Config) ShouldAllowDirectKeys() bool {
 // if not configured. Resolves env var references automatically.
 func (c *Config) GetMCPExternalClientURL() string {
 	return c.ClientConfig.MCPExternalClientURL.GetValue()
+}
+
+// GetAvailableProviders returns the list of all configured provider names.
+func (c *Config) GetAvailableProviders() []schemas.ModelProvider {
+	providers, _ := c.GetAllProviders()
+	return providers
 }
 
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.

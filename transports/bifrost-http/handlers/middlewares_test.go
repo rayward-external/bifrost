@@ -706,6 +706,12 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 		"/api/session/login",
 		"/api/oauth/callback",
 		"/health",
+		// Liveness/readiness probes must bypass auth like /health — they are
+		// unauthenticated infra endpoints (LB/k8s probes, uptime checks). #115
+		// restored the routes but left them out of systemWhitelistedRoutes, so
+		// they 401'd; guard that they stay whitelisted.
+		"/livez",
+		"/readyz",
 	}
 
 	for _, route := range whitelistedRoutes {

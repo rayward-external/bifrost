@@ -135,6 +135,22 @@ for plugin in "${PLUGINS[@]}"; do
         FAILED_PLUGINS+=("$plugin")
         OVERALL_EXIT_CODE=1
       fi
+    elif [ "$plugin" = "semanticcache" ]; then
+      echo "🧪 Running semanticcache plugin tests..."
+      # Fork patch: skip TestSemanticSimilarityEdgeCases — subtests call the OpenAI embedding API
+      # which is not available in CI (no OPENAI_API_KEY configured for fork). Qdrant is running
+      # (docker-compose) but the embedding call fails before any vector ops. The test passes in
+      # upstream CI because they have the key. REMOVAL CONDITION: remove when fork secrets include
+      # OPENAI_API_KEY or when upstream rewrites the test to use a mock embedder.
+      SEMANTICCACHE_SKIP='TestSemanticSimilarityEdgeCases'
+      if go test -v -timeout 20m -coverprofile=coverage.txt -coverpkg=./... -skip "$SEMANTICCACHE_SKIP" ./...; then
+        echo "✅ Tests passed for: $plugin"
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+      else
+        echo "❌ Tests failed for: $plugin"
+        FAILED_PLUGINS+=("$plugin")
+        OVERALL_EXIT_CODE=1
+      fi
     else
       echo "🧪 Running plugin tests with coverage..."
       if go test -v -timeout 20m -coverprofile=coverage.txt -coverpkg=./... ./...; then

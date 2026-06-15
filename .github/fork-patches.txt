@@ -39,7 +39,7 @@ examples/mcps/edge-case-server/package.json        | hono.*>=4.12 | security fix
 
 .github/workflows/scripts/test-core.sh                | GOTEST_SKIP                   | quarantine support: reads GOTEST_SKIP env var and passes it as -skip flag to go test; remove when upstream-broken tests are fixed and the GOTEST_SKIP workflow env var is removed
 .github/workflows/release-pipeline.yml                | TestTranscriptionStreamContextCancellation | quarantine: skip 4 Mistral tests with upstream data race in utils.SetupStreamCancellation (idleTimeoutReader.Read races with goroutine cancel); REMOVAL CONDITION: remove when upstream fixes the race in core/providers/utils/utils.go SetupStreamCancellation
-.github/workflows/scripts/test-all-plugins.sh          | SEMANTICCACHE_SKIP             | quarantine: skip TestSemanticSimilarityEdgeCases in semanticcache plugin — subtests call OpenAI embedding API not available in fork CI (no OPENAI_API_KEY secret); REMOVAL CONDITION: remove when fork adds OPENAI_API_KEY secret or upstream mocks the embedder
+.github/workflows/scripts/test-all-plugins.sh          | SEMANTICCACHE_SKIP             | quarantine: skip 3 semanticcache tests requiring OpenAI API access unavailable in fork CI: TestSemanticSimilarityEdgeCases (embedding), TestTextNormalizationDirectCache (tts-1), TestCacheNoStoreReadButNoWrite (embedding for cache hit); REMOVAL CONDITION: remove when fork adds OPENAI_API_KEY secret or upstream mocks the embedder/TTS
 .github/workflows/release-pipeline.yml                | Discord webhook not configured  | infra fix: guard notify-job Discord curl call against empty DISCORD_WEBHOOK secret; fork does not have this secret; REMOVAL CONDITION: remove guard when DISCORD_WEBHOOK secret is added to fork
 
 # Sync log

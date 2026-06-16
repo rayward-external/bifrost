@@ -805,12 +805,11 @@ func writeBillyFile(fs billy.Filesystem, filePath string, data []byte) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", filePath, err)
 	}
-	defer f.Close()
-	_, err = f.Write(data)
-	if err != nil {
+	if _, err = f.Write(data); err != nil {
+		_ = f.Close()
 		return fmt.Errorf("write %s: %w", filePath, err)
 	}
-	return nil
+	return f.Close()
 }
 
 // ============================================================================

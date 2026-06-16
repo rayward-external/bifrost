@@ -687,10 +687,9 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 	ctx.SetContentType(fmt.Sprintf("application/x-%s-advertisement", serviceName))
 	ctx.SetStatusCode(fasthttp.StatusOK)
 
-	// Write pkt-line service announcement header, then the advertised refs.
-	ctx.Write(pktLine("# service=" + serviceName + "\n")) //nolint:errcheck
-	ctx.Write(pktFlush())                                 //nolint:errcheck
-	ctx.Write(stdout.Bytes())                             //nolint:errcheck
+	// Build pkt-line response body: service announcement header + flush + advertised refs.
+	body := append(pktLine("# service="+serviceName+"\n"), pktFlush()...)
+	ctx.SetBody(append(body, stdout.Bytes()...))
 }
 
 // serveUploadPack handles POST /git-upload-pack by piping the request body

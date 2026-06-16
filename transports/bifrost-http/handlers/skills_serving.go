@@ -654,13 +654,10 @@ func serveGitRepo(ctx *fasthttp.RequestCtx, spec *GitRepoSpec, repoBase string) 
 // `git upload-pack --stateless-rpc --advertise-refs` and wrapping the output
 // in the git smart HTTP advertisement format.
 func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
-	serviceName := string(ctx.QueryArgs().Peek("service"))
-	if serviceName == "" {
-		serviceName = "git-upload-pack"
-	}
-
-	// Only upload-pack is supported (read-only serving).
-	if serviceName != "git-upload-pack" {
+	// Only upload-pack is supported (read-only serving). Validate the query
+	// parameter but never echo it back — use the literal constant in the
+	// response to prevent the request parameter from flowing into the response.
+	if svc := string(ctx.QueryArgs().Peek("service")); svc != "" && svc != "git-upload-pack" {
 		SendError(ctx, fasthttp.StatusForbidden, "service not available")
 		return
 	}
@@ -685,11 +682,12 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 	}
 
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
-	ctx.SetContentType(fmt.Sprintf("application/x-%s-advertisement", serviceName))
+	ctx.SetContentType("application/x-git-upload-pack-advertisement")
 	ctx.SetStatusCode(fasthttp.StatusOK)
 
 	// Build pkt-line response body: service announcement header + flush + advertised refs.
-	body := append(pktLine("# service="+serviceName+"\n"), pktFlush()...)
+	// Use the literal constant — never echo the request parameter into the response.
+	body := append(pktLine("# service=git-upload-pack\n"), pktFlush()...)
 	ctx.SetBody(append(body, stdout.Bytes()...))
 }
 
@@ -1393,9 +1391,12 @@ func (h *SkillsServingHandler) listAllSkills(ctx *fasthttp.RequestCtx) ([]tables
 }
 
 // resolveBaseURL derives the base URL from the request's Host header and scheme.
+// X-Forwarded-Proto is only trusted when it contains a known safe scheme to
+// prevent protocol-relative injection from untrusted proxy headers.
 func (h *SkillsServingHandler) resolveBaseURL(ctx *fasthttp.RequestCtx) string {
 	scheme := string(ctx.Request.Header.Peek("X-Forwarded-Proto"))
-	if scheme == "" {
+	if scheme != "http" && scheme != "https" {
+		// Untrusted or empty value — derive scheme from the TLS state instead.
 		if ctx.IsTLS() {
 			scheme = "https"
 		} else {

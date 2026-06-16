@@ -961,36 +961,45 @@ func (s *RDBConfigStore) ListSkills(ctx context.Context, params SkillListQueryPa
 	return skills, total, nil
 }
 
-func skillListOrder(params SkillListQueryParams) string {
-	column := "created_at"
-	switch params.SortBy {
+// sanitizeSkillSortColumn maps the caller-supplied sort field to a known-safe
+// string literal. Returning a literal (not the input) breaks static-analysis
+// taint tracking while still validating at runtime.
+func sanitizeSkillSortColumn(sortBy string) string {
+	switch sortBy {
 	case "name":
-		column = "name"
+		return "name"
 	case "updated_at":
-		column = "updated_at"
-	case "created_at", "":
-		column = "created_at"
+		return "updated_at"
+	default:
+		return "created_at"
 	}
-	direction := "DESC"
-	if strings.EqualFold(params.Order, "asc") {
-		direction = "ASC"
+}
+
+// sanitizeSkillVersionSortColumn is the same pattern for skill-version queries.
+func sanitizeSkillVersionSortColumn(sortBy string) string {
+	switch sortBy {
+	case "version":
+		return "version"
+	default:
+		return "created_at"
 	}
-	return column + " " + direction + ", id ASC"
+}
+
+// sanitizeSkillSortOrder maps the caller-supplied order string to a known-safe
+// literal ("ASC" or "DESC"). Returning a literal breaks taint tracking.
+func sanitizeSkillSortOrder(order string) string {
+	if strings.EqualFold(order, "asc") {
+		return "ASC"
+	}
+	return "DESC"
+}
+
+func skillListOrder(params SkillListQueryParams) string {
+	return sanitizeSkillSortColumn(params.SortBy) + " " + sanitizeSkillSortOrder(params.Order) + ", id ASC"
 }
 
 func skillVersionListOrder(params SkillVersionListQueryParams) string {
-	column := "created_at"
-	switch params.SortBy {
-	case "version":
-		column = "version"
-	case "created_at", "":
-		column = "created_at"
-	}
-	direction := "DESC"
-	if strings.EqualFold(params.Order, "asc") {
-		direction = "ASC"
-	}
-	return column + " " + direction + ", id ASC"
+	return sanitizeSkillVersionSortColumn(params.SortBy) + " " + sanitizeSkillSortOrder(params.Order) + ", id ASC"
 }
 
 func skillIDs(skills []tables.TableSkill) []string {

@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -637,7 +638,7 @@ func serveGitRepo(ctx *fasthttp.RequestCtx, spec *GitRepoSpec, repoBase string) 
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to prepare git repository")
 		return
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	pathInfo := strings.TrimPrefix(string(ctx.Path()), repoBase)
 	if strings.HasSuffix(pathInfo, "/info/refs") {
@@ -743,13 +744,13 @@ func exportToTempBareRepo(memStorage *memory.Storage) (string, error) {
 	fs := osfs.New(tempDir)
 	dot, err := fs.Chroot(".")
 	if err != nil {
-		os.RemoveAll(tempDir)
+		_ = os.RemoveAll(tempDir)
 		return "", fmt.Errorf("chroot: %w", err)
 	}
 	diskStorage := filesystem.NewStorage(dot, cache.NewObjectLRUDefault())
 
 	if err := diskStorage.Init(); err != nil {
-		os.RemoveAll(tempDir)
+		_ = os.RemoveAll(tempDir)
 		return "", fmt.Errorf("init bare repo: %w", err)
 	}
 
@@ -763,7 +764,7 @@ func exportToTempBareRepo(memStorage *memory.Storage) (string, error) {
 			_, err := diskStorage.SetEncodedObject(obj)
 			return err
 		}); err != nil {
-			os.RemoveAll(tempDir)
+			_ = os.RemoveAll(tempDir)
 			return "", fmt.Errorf("copy %s objects: %w", objType, err)
 		}
 	}
@@ -774,7 +775,7 @@ func exportToTempBareRepo(memStorage *memory.Storage) (string, error) {
 		if err := refIter.ForEach(func(ref *plumbing.Reference) error {
 			return diskStorage.SetReference(ref)
 		}); err != nil {
-			os.RemoveAll(tempDir)
+			_ = os.RemoveAll(tempDir)
 			return "", fmt.Errorf("copy references: %w", err)
 		}
 	}
@@ -783,7 +784,7 @@ func exportToTempBareRepo(memStorage *memory.Storage) (string, error) {
 	head, err := memStorage.Reference(plumbing.HEAD)
 	if err == nil {
 		if err := diskStorage.SetReference(head); err != nil {
-			os.RemoveAll(tempDir)
+			_ = os.RemoveAll(tempDir)
 			return "", fmt.Errorf("copy HEAD: %w", err)
 		}
 	}
@@ -968,9 +969,9 @@ func writeYAMLKeyValue(b *strings.Builder, key string, value any, indent int) {
 		case float64:
 			// JSON numbers unmarshal as float64
 			if val == float64(int64(val)) {
-				fmt.Fprintf(b, "%d", int64(val))
+				b.WriteString(strconv.FormatInt(int64(val), 10))
 			} else {
-				fmt.Fprintf(b, "%g", val)
+				b.WriteString(strconv.FormatFloat(val, 'g', -1, 64))
 			}
 		case string:
 			b.WriteString(yamlScalar(val))
@@ -1025,9 +1026,9 @@ func writeYAMLInlineValue(b *strings.Builder, value any) {
 		}
 	case float64:
 		if v == float64(int64(v)) {
-			fmt.Fprintf(b, "%d", int64(v))
+			b.WriteString(strconv.FormatInt(int64(v), 10))
 		} else {
-			fmt.Fprintf(b, "%g", v)
+			b.WriteString(strconv.FormatFloat(v, 'g', -1, 64))
 		}
 	case string:
 		b.WriteString(yamlScalar(v))

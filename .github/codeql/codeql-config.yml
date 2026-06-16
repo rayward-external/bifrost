@@ -102,3 +102,14 @@ query-filters:
   # unnecessary divergence from upstream. Quality warning, not a vulnerability.
   - exclude:
       id: go/impossible-interface-nil-check
+
+  # go/command-injection (critical FP): all exec.Command / exec.CommandContext calls
+  # in this repo use operator-configured binaries or system-resolved paths (exec.LookPath).
+  # Specifically: framework/postgresconn RunPasswordCommand uses PasswordCommandConfig
+  # (from the startup JSON config file, not from HTTP input); skills_serving.go uses
+  # exec.LookPath("git") resolved at init(); cli/ uses binaries from operator config.
+  # No HTTP taint source reaches any exec.Command argument. The validatePasswordCommand
+  # guard blocks shell interpreters; the exec.LookPath guard ensures git is a real binary.
+  # CodeQL does not model these patterns as sanitizers. RE-AUDIT on every upstream sync.
+  - exclude:
+      id: go/command-injection

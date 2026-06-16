@@ -971,7 +971,11 @@ func skillListOrder(params SkillListQueryParams) string {
 	case "created_at", "":
 		column = "created_at"
 	}
-	return column + " " + normalizedSortOrder(params.Order) + ", id ASC"
+	direction := "DESC"
+	if strings.EqualFold(params.Order, "asc") {
+		direction = "ASC"
+	}
+	return column + " " + direction + ", id ASC"
 }
 
 func skillVersionListOrder(params SkillVersionListQueryParams) string {
@@ -982,14 +986,11 @@ func skillVersionListOrder(params SkillVersionListQueryParams) string {
 	case "created_at", "":
 		column = "created_at"
 	}
-	return column + " " + normalizedSortOrder(params.Order) + ", id ASC"
-}
-
-func normalizedSortOrder(order string) string {
-	if strings.EqualFold(order, "asc") {
-		return "ASC"
+	direction := "DESC"
+	if strings.EqualFold(params.Order, "asc") {
+		direction = "ASC"
 	}
-	return "DESC"
+	return column + " " + direction + ", id ASC"
 }
 
 func skillIDs(skills []tables.TableSkill) []string {

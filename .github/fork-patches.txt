@@ -36,6 +36,8 @@ tests/e2e/api/collections/bifrost-api-management.postman_collection.json | 'prov
 
 framework/configstore/migrations.go               | raw SQL to bypass BeforeSave | bug fix: migrationAddStoreRawRequestResponseColumn used GORM Updates(map) which triggers BeforeSave hook; on Postgres RETURNING path this left config_hash as empty string for the both_false case (store_raw_request_response=false); use tx.Exec raw SQL to bypass hooks (PR #109, merged 2026-06-10)
 
+.github/codeql/codeql-config.yml               | go/sql-injection              | FP suppression: all GORM .Order() calls with caller-supplied sort fields go through double-layer allowlist validation (HTTP-layer parseSkillSortParams + exhaustive switch returning only literals in skillListOrder/skillVersionListOrder); all other GORM queries use ? placeholders; CodeQL does not model the allowlist-switch pattern as a sanitizer
+
 examples/mcps/oauth-demo-server/main.go            | redirect_uri must use http or https scheme | security fix: open-redirect guard (scheme/host validation on redirect_uri) and EscapedPath() log safety (CWE-532) — upstream removed both; -X theirs syncs wipe it
 examples/mcps/edge-case-server/package.json        | hono.*>=4.12 | security fix: hono >=4.12.23 + @hono/node-server >=1.19.13 overrides and @modelcontextprotocol/sdk ^1.25.3 range — upstream pins old insecure hono 4.12.14; same pattern applies to error-test-server, parallel-test-server, temperature, test-tools-server package.json; -X theirs syncs wipe all five
 

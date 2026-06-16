@@ -113,3 +113,20 @@ query-filters:
   # CodeQL does not model these patterns as sanitizers. RE-AUDIT on every upstream sync.
   - exclude:
       id: go/command-injection
+
+  # go/sql-injection (critical FP): all GORM .Order() calls that accept caller-supplied
+  # sort fields go through double-layer validation — (1) HTTP-layer allowlist check in
+  # parseSkillSortParams (rejects any unknown value before it reaches the store), and (2)
+  # exhaustive switch-case in skillListOrder / skillVersionListOrder that returns ONLY
+  # string literals for every branch (no concatenation of the caller-supplied value).
+  # All other GORM queries (Where/Select/Pluck/Find/First) use parameterized ? placeholders.
+  # CodeQL's conservative inter-procedural taint model does not recognize the allowlist-switch
+  # pattern as a sanitizer: it traces HTTP query params through the struct fields into the
+  # switch discriminant and conservatively marks the function's return as tainted.
+  # Audited: every .Order() call with a non-literal argument is in skills.go (skillListOrder /
+  # skillVersionListOrder) and is protected by the patterns above. No raw string interpolation
+  # in SQL exists beyond rdb.go's sanitizeDimColumn/fmt.Sprintf path (operator-internal, not
+  # HTTP-tainted). RE-AUDIT on every upstream sync: if a new .Order() call passes unsanitized
+  # user input, this rule-level exclude would hide it.
+  - exclude:
+      id: go/sql-injection

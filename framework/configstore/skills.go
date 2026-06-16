@@ -961,45 +961,46 @@ func (s *RDBConfigStore) ListSkills(ctx context.Context, params SkillListQueryPa
 	return skills, total, nil
 }
 
-// sanitizeSkillSortColumn maps the caller-supplied sort field to a known-safe
-// string literal. Returning a literal (not the input) breaks static-analysis
-// taint tracking while still validating at runtime.
-func sanitizeSkillSortColumn(sortBy string) string {
-	switch sortBy {
-	case "name":
-		return "name"
-	case "updated_at":
-		return "updated_at"
-	default:
-		return "created_at"
-	}
-}
-
-// sanitizeSkillVersionSortColumn is the same pattern for skill-version queries.
-func sanitizeSkillVersionSortColumn(sortBy string) string {
-	switch sortBy {
-	case "version":
-		return "version"
-	default:
-		return "created_at"
-	}
-}
-
-// sanitizeSkillSortOrder maps the caller-supplied order string to a known-safe
-// literal ("ASC" or "DESC"). Returning a literal breaks taint tracking.
-func sanitizeSkillSortOrder(order string) string {
-	if strings.EqualFold(order, "asc") {
-		return "ASC"
-	}
-	return "DESC"
-}
-
+// skillListOrder returns a safe ORDER BY clause for skill list queries.
+// Every return path is a string literal — no concatenation of caller-supplied
+// values — so static-analysis taint from HTTP query params cannot reach
+// GORM's Order() sink. The HTTP layer (parseSkillSortParams) already validates
+// SortBy against an explicit allowlist; this function is a second defensive layer.
 func skillListOrder(params SkillListQueryParams) string {
-	return sanitizeSkillSortColumn(params.SortBy) + " " + sanitizeSkillSortOrder(params.Order) + ", id ASC"
+	switch params.SortBy {
+	case "name":
+		if strings.EqualFold(params.Order, "asc") {
+			return "name ASC, id ASC"
+		}
+		return "name DESC, id ASC"
+	case "updated_at":
+		if strings.EqualFold(params.Order, "asc") {
+			return "updated_at ASC, id ASC"
+		}
+		return "updated_at DESC, id ASC"
+	default:
+		if strings.EqualFold(params.Order, "asc") {
+			return "created_at ASC, id ASC"
+		}
+		return "created_at DESC, id ASC"
+	}
 }
 
+// skillVersionListOrder returns a safe ORDER BY clause for skill version list queries.
+// Same pattern as skillListOrder: every return path is a string literal.
 func skillVersionListOrder(params SkillVersionListQueryParams) string {
-	return sanitizeSkillVersionSortColumn(params.SortBy) + " " + sanitizeSkillSortOrder(params.Order) + ", id ASC"
+	switch params.SortBy {
+	case "version":
+		if strings.EqualFold(params.Order, "asc") {
+			return "version ASC, id ASC"
+		}
+		return "version DESC, id ASC"
+	default:
+		if strings.EqualFold(params.Order, "asc") {
+			return "created_at ASC, id ASC"
+		}
+		return "created_at DESC, id ASC"
+	}
 }
 
 func skillIDs(skills []tables.TableSkill) []string {

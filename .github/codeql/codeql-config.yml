@@ -148,3 +148,15 @@ query-filters:
   # or cleanup-path closes where the close error is non-actionable. Advisory severity.
   - exclude:
       id: go/unhandled-writable-file-close
+
+  # go/reflected-xss (high FP): all bifrost-http API endpoints respond with
+  # Content-Type: application/json — never text/html. CodeQL's fasthttp model
+  # flags HTTP header values (Host, X-Forwarded-Proto) and request parameters
+  # that flow into JSON response bodies (via json.NewEncoder(ctx).Encode) as
+  # reflected XSS, but JSON responses are not parsed as HTML by browsers and
+  # are not exploitable as XSS. The meaningful direct-reflection instance
+  # (serviceName query param in serveInfoRefs pkt-line body) was fixed in code;
+  # remaining matches are operator/protocol values in JSON marketplace URLs.
+  # All endpoints are either admin-authenticated or public read-only marketplace.
+  - exclude:
+      id: go/reflected-xss

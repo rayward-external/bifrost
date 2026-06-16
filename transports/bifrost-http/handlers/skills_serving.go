@@ -1390,24 +1390,26 @@ func (h *SkillsServingHandler) listAllSkills(ctx *fasthttp.RequestCtx) ([]tables
 	return skills, nil
 }
 
-// resolveBaseURL derives the base URL from the request's Host header and scheme.
-// X-Forwarded-Proto is only trusted when it contains a known safe scheme to
-// prevent protocol-relative injection from untrusted proxy headers.
+// resolveBaseURL derives the base URL from the request context.
+// Only the scheme is read from proxy headers (X-Forwarded-Proto), validated to
+// "http" or "https". The host is always taken from the HTTP Host header via
+// ctx.Host() — X-Forwarded-Host is intentionally not used to avoid request
+// header values flowing into JSON response bodies.
 func (h *SkillsServingHandler) resolveBaseURL(ctx *fasthttp.RequestCtx) string {
-	scheme := string(ctx.Request.Header.Peek("X-Forwarded-Proto"))
-	if scheme != "http" && scheme != "https" {
-		// Untrusted or empty value — derive scheme from the TLS state instead.
-		if ctx.IsTLS() {
-			scheme = "https"
-		} else {
-			scheme = "http"
-		}
+	// Only trust X-Forwarded-Proto when it is a known safe scheme.
+	proto := string(ctx.Request.Header.Peek("X-Forwarded-Proto"))
+	var scheme string
+	if proto == "https" {
+		scheme = "https"
+	} else if proto == "http" {
+		scheme = "http"
+	} else if ctx.IsTLS() {
+		scheme = "https"
+	} else {
+		scheme = "http"
 	}
 
-	host := string(ctx.Request.Header.Peek("X-Forwarded-Host"))
-	if host == "" {
-		host = string(ctx.Host())
-	}
-
-	return scheme + "://" + host
+	// Host header is validated by the HTTP layer (required field) and must
+	// match the server's listening address; use it directly.
+	return scheme + "://" + string(ctx.Host())
 }

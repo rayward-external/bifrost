@@ -839,6 +839,8 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		"/api/session/login",
 		"/api/oauth/callback",
 		"/health",
+		"/livez",
+		"/readyz",
 		"/login",
 		"/favicon.ico",
 		"/assets/*",
@@ -846,7 +848,6 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		"/api/scim/oauth/callback",
 		"/api/scim/oauth/refresh",
 		"/api/scim/oauth/logout",
-		"/health",
 		"/api/version",
 	}
 	whitelistedPrefixes := []string{
@@ -858,6 +859,10 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		// /api/oauth/config/* (admin-only) and bypass the temp-token fallback
 		// in tryTempTokenOrUnauthorized.
 		"/api/dev",
+		// Skills serving endpoints are public — marketplace URLs cannot carry
+		// credentials securely. Management endpoints under /api/skills (without
+		// /serve/) remain authenticated.
+		"/api/skills/serve/",
 	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		if slices.Contains(systemWhitelistedRoutes, url) ||
@@ -869,8 +874,8 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		// Check user-configured whitelisted routes
 		if configuredRoutes := m.whitelistedRoutes.Load(); configuredRoutes != nil {
 			if slices.Contains(*configuredRoutes, url) || slices.IndexFunc(*configuredRoutes, func(route string) bool {
-				if strings.HasSuffix(route, "*") {
-					return strings.HasPrefix(url, strings.TrimSuffix(route, "*"))
+				if before, ok := strings.CutSuffix(route, "*"); ok {
+					return strings.HasPrefix(url, before)
 				}
 				return false
 			}) != -1 {

@@ -149,6 +149,26 @@ query-filters:
   - exclude:
       id: go/unhandled-writable-file-close
 
+  # go/uncontrolled-allocation-size (3 high FP): the logging-plugin writer
+  # allocates three channels/slices whose capacity comes from WriterConfig
+  # (plugins/logging/main.go writeQueue + deferredUsageSem, writer.go batch).
+  # The SARIF dataflow traces the capacity from the admin-authenticated plugin
+  # config API (handlers/plugins.go PostBody) through WriterConfig.WithDefaults.
+  # Two layers bound these values before any make() sink: validateWriterConfig
+  # rejects out-of-range writer configs at startup, and WithDefaults clamps
+  # MaxBatchSize / WriteQueueCapacity / DeferredUsageConcurrency to the
+  # MaxWriter* upper bounds (logstore/config.go, far above any sane production
+  # value). CodeQL does not model either as a barrier (the clamp returns by
+  # value and the guard is not recognized as dominating the sink — verified
+  # empirically: an identical inline clamp cleared writeQueue but not its twin
+  # deferredUsageSem across repeated runs). Same trust boundary as the
+  # go/path-injection exclude above (operator/admin-only config). Audited:
+  # these are the only sites matching this rule repo-wide (0 alerts on the
+  # default branch). RE-AUDIT on every upstream sync: if a new make() takes an
+  # unbounded user-supplied size, this rule-level exclude would hide it.
+  - exclude:
+      id: go/uncontrolled-allocation-size
+
   # go/reflected-xss (high FP): all bifrost-http API endpoints respond with
   # Content-Type: application/json — never text/html. CodeQL's fasthttp model
   # flags HTTP header values (Host, X-Forwarded-Proto) and request parameters

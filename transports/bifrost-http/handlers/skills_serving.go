@@ -17,7 +17,6 @@ import (
 	"os/exec"
 	"path"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -638,7 +637,7 @@ func serveGitRepo(ctx *fasthttp.RequestCtx, spec *GitRepoSpec, repoBase string) 
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to prepare git repository")
 		return
 	}
-	defer func() { _ = os.RemoveAll(tempDir) }()
+	defer os.RemoveAll(tempDir)
 
 	pathInfo := strings.TrimPrefix(string(ctx.Path()), repoBase)
 	if strings.HasSuffix(pathInfo, "/info/refs") {
@@ -654,10 +653,13 @@ func serveGitRepo(ctx *fasthttp.RequestCtx, spec *GitRepoSpec, repoBase string) 
 // `git upload-pack --stateless-rpc --advertise-refs` and wrapping the output
 // in the git smart HTTP advertisement format.
 func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
-	// Only upload-pack is supported (read-only serving). Validate the query
-	// parameter but never echo it back — use the literal constant in the
-	// response to prevent the request parameter from flowing into the response.
-	if svc := string(ctx.QueryArgs().Peek("service")); svc != "" && svc != "git-upload-pack" {
+	serviceName := string(ctx.QueryArgs().Peek("service"))
+	if serviceName == "" {
+		serviceName = "git-upload-pack"
+	}
+
+	// Only upload-pack is supported (read-only serving).
+	if serviceName != "git-upload-pack" {
 		SendError(ctx, fasthttp.StatusForbidden, "service not available")
 		return
 	}
@@ -682,13 +684,13 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 	}
 
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
-	ctx.SetContentType("application/x-git-upload-pack-advertisement")
+	ctx.SetContentType(fmt.Sprintf("application/x-%s-advertisement", serviceName))
 	ctx.SetStatusCode(fasthttp.StatusOK)
 
-	// Build pkt-line response body: service announcement header + flush + advertised refs.
-	// Use the literal constant — never echo the request parameter into the response.
-	body := append(pktLine("# service=git-upload-pack\n"), pktFlush()...)
-	ctx.SetBody(append(body, stdout.Bytes()...))
+	// Write pkt-line service announcement header, then the advertised refs.
+	ctx.Write(pktLine("# service=" + serviceName + "\n")) //nolint:errcheck
+	ctx.Write(pktFlush())                                 //nolint:errcheck
+	ctx.Write(stdout.Bytes())                             //nolint:errcheck
 }
 
 // serveUploadPack handles POST /git-upload-pack by piping the request body
@@ -742,13 +744,13 @@ func exportToTempBareRepo(memStorage *memory.Storage) (string, error) {
 	fs := osfs.New(tempDir)
 	dot, err := fs.Chroot(".")
 	if err != nil {
-		_ = os.RemoveAll(tempDir)
+		os.RemoveAll(tempDir)
 		return "", fmt.Errorf("chroot: %w", err)
 	}
 	diskStorage := filesystem.NewStorage(dot, cache.NewObjectLRUDefault())
 
 	if err := diskStorage.Init(); err != nil {
-		_ = os.RemoveAll(tempDir)
+		os.RemoveAll(tempDir)
 		return "", fmt.Errorf("init bare repo: %w", err)
 	}
 
@@ -762,7 +764,7 @@ func exportToTempBareRepo(memStorage *memory.Storage) (string, error) {
 			_, err := diskStorage.SetEncodedObject(obj)
 			return err
 		}); err != nil {
-			_ = os.RemoveAll(tempDir)
+			os.RemoveAll(tempDir)
 			return "", fmt.Errorf("copy %s objects: %w", objType, err)
 		}
 	}
@@ -773,7 +775,7 @@ func exportToTempBareRepo(memStorage *memory.Storage) (string, error) {
 		if err := refIter.ForEach(func(ref *plumbing.Reference) error {
 			return diskStorage.SetReference(ref)
 		}); err != nil {
-			_ = os.RemoveAll(tempDir)
+			os.RemoveAll(tempDir)
 			return "", fmt.Errorf("copy references: %w", err)
 		}
 	}
@@ -782,7 +784,7 @@ func exportToTempBareRepo(memStorage *memory.Storage) (string, error) {
 	head, err := memStorage.Reference(plumbing.HEAD)
 	if err == nil {
 		if err := diskStorage.SetReference(head); err != nil {
-			_ = os.RemoveAll(tempDir)
+			os.RemoveAll(tempDir)
 			return "", fmt.Errorf("copy HEAD: %w", err)
 		}
 	}
@@ -803,11 +805,12 @@ func writeBillyFile(fs billy.Filesystem, filePath string, data []byte) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", filePath, err)
 	}
-	if _, err = f.Write(data); err != nil {
-		_ = f.Close()
+	defer f.Close()
+	_, err = f.Write(data)
+	if err != nil {
 		return fmt.Errorf("write %s: %w", filePath, err)
 	}
-	return f.Close()
+	return nil
 }
 
 // ============================================================================
@@ -967,9 +970,9 @@ func writeYAMLKeyValue(b *strings.Builder, key string, value any, indent int) {
 		case float64:
 			// JSON numbers unmarshal as float64
 			if val == float64(int64(val)) {
-				b.WriteString(strconv.FormatInt(int64(val), 10))
+				fmt.Fprintf(b, "%d", int64(val))
 			} else {
-				b.WriteString(strconv.FormatFloat(val, 'g', -1, 64))
+				fmt.Fprintf(b, "%g", val)
 			}
 		case string:
 			b.WriteString(yamlScalar(val))
@@ -1024,9 +1027,9 @@ func writeYAMLInlineValue(b *strings.Builder, value any) {
 		}
 	case float64:
 		if v == float64(int64(v)) {
-			b.WriteString(strconv.FormatInt(int64(v), 10))
+			fmt.Fprintf(b, "%d", int64(v))
 		} else {
-			b.WriteString(strconv.FormatFloat(v, 'g', -1, 64))
+			fmt.Fprintf(b, "%g", v)
 		}
 	case string:
 		b.WriteString(yamlScalar(v))
@@ -1390,26 +1393,21 @@ func (h *SkillsServingHandler) listAllSkills(ctx *fasthttp.RequestCtx) ([]tables
 	return skills, nil
 }
 
-// resolveBaseURL derives the base URL from the request context.
-// Only the scheme is read from proxy headers (X-Forwarded-Proto), validated to
-// "http" or "https". The host is always taken from the HTTP Host header via
-// ctx.Host() — X-Forwarded-Host is intentionally not used to avoid request
-// header values flowing into JSON response bodies.
+// resolveBaseURL derives the base URL from the request's Host header and scheme.
 func (h *SkillsServingHandler) resolveBaseURL(ctx *fasthttp.RequestCtx) string {
-	// Only trust X-Forwarded-Proto when it is a known safe scheme.
-	proto := string(ctx.Request.Header.Peek("X-Forwarded-Proto"))
-	var scheme string
-	if proto == "https" {
-		scheme = "https"
-	} else if proto == "http" {
-		scheme = "http"
-	} else if ctx.IsTLS() {
-		scheme = "https"
-	} else {
-		scheme = "http"
+	scheme := string(ctx.Request.Header.Peek("X-Forwarded-Proto"))
+	if scheme == "" {
+		if ctx.IsTLS() {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
 	}
 
-	// Host header is validated by the HTTP layer (required field) and must
-	// match the server's listening address; use it directly.
-	return scheme + "://" + string(ctx.Host())
+	host := string(ctx.Request.Header.Peek("X-Forwarded-Host"))
+	if host == "" {
+		host = string(ctx.Host())
+	}
+
+	return scheme + "://" + host
 }

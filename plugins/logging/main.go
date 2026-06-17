@@ -297,6 +297,12 @@ func validateWriterConfig(config logstore.WriterConfig) error {
 	if config.MaxBatchSize <= 0 {
 		return fmt.Errorf("writer max_batch_size must be greater than 0")
 	}
+	// Fork patch: upper bounds bound make() allocation sizes derived from admin
+	// plugin config (CodeQL go/uncontrolled-allocation-size defense-in-depth,
+	// mirrors the clamps in logstore.WithDefaults). RE-AUDIT on every upstream sync.
+	if config.MaxBatchSize > logstore.MaxWriterMaxBatchSize {
+		return fmt.Errorf("writer max_batch_size must not exceed %d", logstore.MaxWriterMaxBatchSize)
+	}
 	if config.BatchInterval == "" {
 		return fmt.Errorf("writer batch_interval is required")
 	}
@@ -313,8 +319,14 @@ func validateWriterConfig(config logstore.WriterConfig) error {
 	if config.WriteQueueCapacity <= 0 {
 		return fmt.Errorf("writer write_queue_capacity must be greater than 0")
 	}
+	if config.WriteQueueCapacity > logstore.MaxWriterQueueCapacity {
+		return fmt.Errorf("writer write_queue_capacity must not exceed %d", logstore.MaxWriterQueueCapacity)
+	}
 	if config.DeferredUsageConcurrency <= 0 {
 		return fmt.Errorf("writer deferred_usage_concurrency must be greater than 0")
+	}
+	if config.DeferredUsageConcurrency > logstore.MaxWriterDeferredUsageConcurrency {
+		return fmt.Errorf("writer deferred_usage_concurrency must not exceed %d", logstore.MaxWriterDeferredUsageConcurrency)
 	}
 	return nil
 }

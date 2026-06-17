@@ -415,7 +415,11 @@ func TestCreateHandler_AnthropicRouteClears_UseRawRequestBody_WhenCatalogSelects
 
 	router.createHandler(route)(ctx)
 
-	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	// The stub converter returns a non-Bifrost error before execution; sendError
+	// now maps such errors to 400 (previously fell through to 500). The status
+	// here is just a sentinel proving the converter was reached — the real
+	// assertions are the flag-clearing checks below.
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 	require.Equal(t, false, capturedUseRaw, "UseRawRequestBody should be cleared when catalog selects Bedrock")
 	require.Equal(t, false, capturedSendRawResponse, "SendBackRawResponse should be cleared when catalog selects Bedrock")
 	require.Equal(t, false, capturedPassthroughOverrides, "PassthroughOverridesPresent should be cleared when catalog selects Bedrock")

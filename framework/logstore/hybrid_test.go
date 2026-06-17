@@ -389,7 +389,18 @@ func TestHybrid_UpdateMCPToolLogRequiresObjectHydration(t *testing.T) {
 		},
 	}
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	// Wait for both the object upload AND the subsequent has_object=true DB
+	// write to complete. Checking only objStore.Len() has a race: the upload
+	// worker sets has_object=true after Put(), so FindMCPToolLog may see
+	// HasObject=false and skip hydration, returning the string preview instead
+	// of the full map — triggering a type-assertion panic in CI.
+	waitForUploads(t, func() bool {
+		if objStore.Len() != 1 {
+			return false
+		}
+		row, rowErr := inner.FindMCPToolLog(ctx, entry.ID)
+		return rowErr == nil && row != nil && row.HasObject
+	})
 
 	objStore.GetErr = assert.AnError
 	err := hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{

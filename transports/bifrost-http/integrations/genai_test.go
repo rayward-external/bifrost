@@ -62,6 +62,10 @@ func TestExtractAndSetModelAndRequestTypePreservesRawBodyForGenerateContent(t *t
 	ctx := &fasthttp.RequestCtx{}
 	ctx.SetUserValue("model", "gemini-2.5-flash:generateContent")
 	ctx.Request.Header.SetMethod("POST")
+	// x-model-provider: gemini makes the provider explicit, triggering raw-body
+	// passthrough (explicitGemini=true). Without the header, bare model names are
+	// treated as "silent default" and passthrough is skipped (upstream #4478).
+	ctx.Request.Header.Set("x-model-provider", "gemini")
 	ctx.Request.SetBody(rawBody)
 
 	req := &gemini.GeminiGenerationRequest{}
@@ -98,6 +102,10 @@ func TestGenAIBatchCreateConverterCarriesRawBody(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.SetUserValue("model", "gemini-2.5-flash:batchGenerateContent")
 	ctx.Request.Header.SetMethod("POST")
+	// x-model-provider: gemini makes the provider explicit, triggering raw-body
+	// passthrough (explicitGemini=true). Without the header, bare model names are
+	// treated as "silent default" and passthrough is skipped (upstream #4478).
+	ctx.Request.Header.Set("x-model-provider", "gemini")
 	ctx.Request.SetBody(rawBody)
 
 	req := &gemini.GeminiBatchCreateRequest{}

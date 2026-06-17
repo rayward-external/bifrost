@@ -29,6 +29,16 @@ const (
 	DefaultWriterDeferredUsageConcurrency = 5
 )
 
+// Upper bounds for writer config values. These cap the slice/channel
+// allocations derived from the (operator-supplied) writer config so a
+// mis-configured value cannot drive an unbounded allocation. The limits are
+// far above any sane production setting.
+const (
+	MaxWriterMaxBatchSize             = 1_000_000
+	MaxWriterQueueCapacity            = 10_000_000
+	MaxWriterDeferredUsageConcurrency = 100_000
+)
+
 // WriterConfig controls the async logging plugin writer queue and batch flush behavior.
 type WriterConfig struct {
 	MaxBatchSize             int    `json:"max_batch_size,omitempty"`
@@ -58,6 +68,21 @@ func (c *WriterConfig) WithDefaults() WriterConfig {
 	}
 	if out.DeferredUsageConcurrency == 0 {
 		out.DeferredUsageConcurrency = DefaultWriterDeferredUsageConcurrency
+	}
+	// Clamp the capacities that drive channel/slice allocations to their
+	// upper bounds here, at the single point every config path flows through.
+	// This bounds the (potentially operator/request-supplied) values before
+	// they reach any make() sink, so the allocation sizes are provably bounded
+	// (CodeQL go/uncontrolled-allocation-size). validateWriterConfig still
+	// rejects out-of-range values up front; this is the defensive backstop.
+	if out.MaxBatchSize > MaxWriterMaxBatchSize {
+		out.MaxBatchSize = MaxWriterMaxBatchSize
+	}
+	if out.WriteQueueCapacity > MaxWriterQueueCapacity {
+		out.WriteQueueCapacity = MaxWriterQueueCapacity
+	}
+	if out.DeferredUsageConcurrency > MaxWriterDeferredUsageConcurrency {
+		out.DeferredUsageConcurrency = MaxWriterDeferredUsageConcurrency
 	}
 	return out
 }

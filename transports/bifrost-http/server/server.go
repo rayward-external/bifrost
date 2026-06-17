@@ -649,6 +649,21 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	} else {
 		s.RefreshLiveModelsForProvider(ctx, provider, inMemoryKeys)
 	}
+
+	// Register custom provider names in the known-providers set so that
+	// ParseModelString can recognise "myprovider/mymodel" prefixes before the
+	// first request arrives.  Without this, the provider-prefix is not yet in
+	// the set at the time the POST /api/providers response is sent, so the very
+	// next chat request fails to extract the provider from the model string and
+	// gets misrouted (e.g. to a wildcard-keyed standard provider such as
+	// HuggingFace), logging the attempt as status="error" under the original
+	// request-id even though a fallback eventually succeeds.
+	// Standard providers are pre-populated at init; calling this for them is
+	// idempotent and harmless.
+	if providerInfo.CustomProviderConfig != nil {
+		schemas.RegisterKnownProvider(provider)
+	}
+
 	return updatedProvider, nil
 }
 

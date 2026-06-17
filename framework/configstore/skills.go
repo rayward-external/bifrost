@@ -961,46 +961,35 @@ func (s *RDBConfigStore) ListSkills(ctx context.Context, params SkillListQueryPa
 	return skills, total, nil
 }
 
-// skillListOrder returns a safe ORDER BY clause for skill list queries.
-// Every return path is a string literal — no concatenation of caller-supplied
-// values — so static-analysis taint from HTTP query params cannot reach
-// GORM's Order() sink. The HTTP layer (parseSkillSortParams) already validates
-// SortBy against an explicit allowlist; this function is a second defensive layer.
 func skillListOrder(params SkillListQueryParams) string {
+	column := "created_at"
 	switch params.SortBy {
 	case "name":
-		if strings.EqualFold(params.Order, "asc") {
-			return "name ASC, id ASC"
-		}
-		return "name DESC, id ASC"
+		column = "name"
 	case "updated_at":
-		if strings.EqualFold(params.Order, "asc") {
-			return "updated_at ASC, id ASC"
-		}
-		return "updated_at DESC, id ASC"
-	default:
-		if strings.EqualFold(params.Order, "asc") {
-			return "created_at ASC, id ASC"
-		}
-		return "created_at DESC, id ASC"
+		column = "updated_at"
+	case "created_at", "":
+		column = "created_at"
 	}
+	return column + " " + normalizedSortOrder(params.Order) + ", id ASC"
 }
 
-// skillVersionListOrder returns a safe ORDER BY clause for skill version list queries.
-// Same pattern as skillListOrder: every return path is a string literal.
 func skillVersionListOrder(params SkillVersionListQueryParams) string {
+	column := "created_at"
 	switch params.SortBy {
 	case "version":
-		if strings.EqualFold(params.Order, "asc") {
-			return "version ASC, id ASC"
-		}
-		return "version DESC, id ASC"
-	default:
-		if strings.EqualFold(params.Order, "asc") {
-			return "created_at ASC, id ASC"
-		}
-		return "created_at DESC, id ASC"
+		column = "version"
+	case "created_at", "":
+		column = "created_at"
 	}
+	return column + " " + normalizedSortOrder(params.Order) + ", id ASC"
+}
+
+func normalizedSortOrder(order string) string {
+	if strings.EqualFold(order, "asc") {
+		return "ASC"
+	}
+	return "DESC"
 }
 
 func skillIDs(skills []tables.TableSkill) []string {

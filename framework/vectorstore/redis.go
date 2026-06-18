@@ -134,8 +134,16 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 		}
 	}
 
-	// Create the index
+	// Create the index. The FT.INFO check above and this FT.CREATE are not
+	// atomic, so two concurrent callers can both observe "not exists" and race
+	// to create. Treat a benign "Index already exists" error as success — it
+	// means a concurrent caller won the race, which is exactly the idempotent
+	// outcome this method promises.
 	if err := s.client.Do(ctx, args...).Err(); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "index already exists") {
+			s.cacheNamespaceFieldTypes(namespace, properties)
+			return nil
+		}
 		return fmt.Errorf("failed to create semantic vector index %s: %w", namespace, err)
 	}
 

@@ -19,8 +19,11 @@ plugins/telemetry/main.go                  | CodeQL\[go/log-injection\]    | FP 
 transports/bifrost-http/handlers/config.go | CodeQL\[go/log-injection\]    | FP suppression: pricing/model-params URLs come from the authenticated admin config API, not untrusted user input
 transports/bifrost-http/handlers/config.go | CodeQL\[go/path-injection\]   | FP suppression: file:// path in checkURLAccessibility is admin-supplied, not untrusted input
 transports/bifrost-http/handlers/config.go | CodeQL\[go/request-forgery\]  | FP suppression: URL validated by ValidateExternalURL SSRF guard before client.Get
-framework/modelcatalog/sync.go             | CodeQL\[go/path-injection\]   | FP suppression: file:// paths for pricing/model-params are operator-configured, not user input
 framework/logstore/rdb.go                  | sanitizeDimColumn(string(dimension)) | security fix: route cost/token histogram dimension through sanitizeDimColumn (literal allowlist) like the latency path, breaking go/sql-injection taint into raw SELECT/GROUP BY
+transports/bifrost-http/handlers/health.go | func.*getLivez                 | deploy feature: split liveness (/livez) and readiness (/readyz) probes for GCP Cloud Run; -X theirs syncs revert to upstream's combined /health only; REMOVAL CONDITION: remove when upstream adds /livez and /readyz
+transports/bifrost-http/handlers/middlewares.go | livez                    | deploy fix: add /livez and /readyz to systemWhitelistedRoutes so Cloud Run probes bypass auth; -X theirs syncs wipe this; REMOVAL CONDITION: remove when upstream adds livez/readyz routes
+.github/workflows/alert-bridge.yml         | Alert Bridge                  | CI/security: workflow_dispatch bridge for code-scanning alerts (list/dismiss); required because the Claude GitHub App lacks code-scanning API scopes on the fork; re-apply after every -X theirs sync
+.github/workflows/dependency-review.yml    | warn-only: true               | policy: dependency-review warns but never blocks — sync PRs bring in upstream transitive deps we cannot unilaterally patch; findings still surface in the PR for awareness
 
 # Sync log
 # 2026-06-07: upstream/main tip 7832fa061 (2026-06-04) already merged into fork main; no new upstream commits.

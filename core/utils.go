@@ -563,6 +563,24 @@ func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 	return nil
 }
 
+// NewSSRFSafeClient returns an *http.Client that re-validates every redirect
+// target through ValidateExternalURL, so a 3xx cannot bounce an outbound call
+// to an internal/link-local/private address.
+func NewSSRFSafeClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			if err := ValidateExternalURL(req.URL.String(), false); err != nil {
+				return fmt.Errorf("redirect blocked by SSRF protection: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
 // sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name.
 func sanitizeSpanName(name string) string {
 	return schemas.SanitizePluginSpanName(name)

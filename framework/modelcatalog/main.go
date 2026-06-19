@@ -13,7 +13,6 @@ package modelcatalog
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -160,14 +159,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				if err := mc.withDistributedLock(ctx, "model_catalog_pricing_startup_sync", 10, func() error {
 					return mc.runPricingSync(ctx)
 				}); err != nil {
-					if errors.Is(err, errLockHeldByPeer) {
-						// Wait for the leader to finish, then reload from DB.
-						if waitErr := mc.waitForPeerSyncAndReloadPricing(ctx); waitErr != nil {
-							pricingErr = fmt.Errorf("peer holds startup pricing lock and DB still empty after wait: %w", waitErr)
-						}
-					} else {
-						pricingErr = fmt.Errorf("failed to sync pricing data: %w", err)
-					}
+					pricingErr = fmt.Errorf("failed to sync pricing data: %w", err)
 				}
 			}
 		}()
@@ -195,22 +187,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				if err := mc.withDistributedLock(ctx, "model_catalog_params_startup_sync", 10, func() error {
 					return mc.runParamsSync(ctx)
 				}); err != nil {
-					if errors.Is(err, errLockHeldByPeer) {
-						if waitErr := mc.waitForPeerSyncAndReloadParams(ctx); waitErr != nil {
-							// Model parameters are not strictly required to
-							// serve traffic — providers fall back to defaults.
-							// Log loudly but do not fail Init: a fatal error
-							// here would crash the pod and trigger an ACA
-							// restart loop, which is exactly the symptom we
-							// are fixing.
-							mc.logger.Error("peer holds startup params lock and DB still empty after wait; continuing without fresh params (will retry next interval): %v", waitErr)
-						}
-					} else {
-						// Same rationale: even an unexpected sync failure at
-						// startup is not worth crashing for. The background
-						// sync worker will retry on its periodic interval.
-						mc.logger.Error("startup model parameters sync failed; continuing without fresh params (will retry next interval): %v", err)
-					}
+					paramsErr = fmt.Errorf("failed to sync model parameters data: %w", err)
 				}
 			}
 		}()

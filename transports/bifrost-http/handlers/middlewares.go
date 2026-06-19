@@ -847,6 +847,8 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		"/api/scim/oauth/refresh",
 		"/api/scim/oauth/logout",
 		"/health",
+		"/livez",
+		"/readyz",
 		"/api/version",
 	}
 	whitelistedPrefixes := []string{

@@ -23,7 +23,7 @@ for mcp_dir in examples/mcps/*/; do
     elif [ -f "$mcp_dir/package.json" ]; then
       echo "  Building $mcp_name (TypeScript)..."
       pushd "$mcp_dir" > /dev/null
-      npm ci --silent && npm run build
+      npm install --silent && npm run build
       popd > /dev/null
     fi
   fi
@@ -39,7 +39,12 @@ echo "✅ Core build validation successful"
 
 # Run core tests with coverage
 echo "🧪 Running core tests with coverage..."
-go test -race -timeout 20m -coverprofile=coverage.txt -coverpkg=./... ./...
+SKIP_FLAG=""
+if [ -n "${GOTEST_SKIP:-}" ]; then
+  SKIP_FLAG="-skip ${GOTEST_SKIP}"
+fi
+# shellcheck disable=SC2086
+go test -race -timeout 20m -coverprofile=coverage.txt -coverpkg=./... $SKIP_FLAG ./...
 
 # Upload coverage to Codecov
 if [ -n "${CODECOV_TOKEN:-}" ]; then

@@ -40,9 +40,19 @@ jobs:
           node-version: "25"
 
       - name: Set up Docker Compose
-        uses: docker/setup-compose-action@2fe291b7677a45ee1269ec56a42604c143505e7e # v1.3.0
-        with:
-          version: v2.40.3
+        run: |
+          docker --version
+          if ! docker compose version >/dev/null 2>&1; then
+            echo "Installing Docker Compose plugin..."
+            DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+            mkdir -p "$DOCKER_CONFIG/cli-plugins"
+            curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+            chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+            docker compose version
+          else
+            echo "Docker Compose plugin is available"
+            docker compose version
+          fi
 
       - name: Run E2E UI tests
         env:

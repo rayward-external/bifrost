@@ -47,13 +47,10 @@ jobs:
 
   publish-bifrost:
     needs: [check-skip]
-    # Fork guard: npm publish + GitHub release are upstream-only (need
-    # secrets.GH_TOKEN / NPM_TOKEN that don't exist on the fork). The upstream
-    # sync bumps npx/*/package.json, which triggers this workflow.
-    if: github.repository == 'maximhq/bifrost' && needs.check-skip.outputs.should-skip != 'true'
+    if: needs.check-skip.outputs.should-skip != 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write # Required for npm provenance
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -66,7 +63,6 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN }}
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -146,7 +142,7 @@ jobs:
       - name: Create GitHub Release
         if: steps.check-bifrost.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: bash .github/workflows/scripts/create-npx-release.sh "${{ steps.extract-version.outputs.version }}" "${{ steps.extract-version.outputs.full-tag }}"
 
       - name: Discord Notification
@@ -174,13 +170,10 @@ jobs:
 
   publish-bifrost-cli:
     needs: [check-skip]
-    # Fork guard: npm publish + GitHub release are upstream-only (need
-    # secrets.GH_TOKEN / NPM_TOKEN that don't exist on the fork). The upstream
-    # sync bumps npx/*/package.json, which triggers this workflow.
-    if: github.repository == 'maximhq/bifrost' && needs.check-skip.outputs.should-skip != 'true'
+    if: needs.check-skip.outputs.should-skip != 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write # Required for npm provenance
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -193,7 +186,6 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN }}
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -262,7 +254,7 @@ jobs:
       - name: Create GitHub Release
         if: steps.check-cli.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ steps.extract-version.outputs.version }}"
           FULL_TAG="${{ steps.extract-version.outputs.full-tag }}"

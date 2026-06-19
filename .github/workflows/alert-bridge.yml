@@ -8,32 +8,30 @@ on:
         options:
           - list
           - dismiss
-        description: 'list: upload open alerts as artifact; dismiss: patch alerts in dismissals JSON'
       dismissals:
         required: false
         default: '[]'
-        description: 'JSON array of {number,reason,comment} for dismiss mode'
+        description: 'JSON array of {number,reason,comment}'
 
 permissions:
   security-events: write
   contents: read
 
 jobs:
-  alert-bridge:
+  bridge:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: List open code-scanning alerts
+      - name: List alerts
         if: inputs.mode == 'list'
         run: |
           gh api --paginate "repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=100" > alerts.json
-          echo "## Open code-scanning alerts" >> $GITHUB_STEP_SUMMARY
-          echo "Count: $(jq length alerts.json)" >> $GITHUB_STEP_SUMMARY
+          echo "Open code-scanning alerts: $(jq length alerts.json)" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload alerts artifact
         if: inputs.mode == 'list'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: alerts
           path: alerts.json

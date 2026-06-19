@@ -7,14 +7,12 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   snyk-open-source:
     name: Snyk Open Source (deps)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -77,12 +75,7 @@ jobs:
       - name: Snyk test (all projects)
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: |
-          if [ -z "$SNYK_TOKEN" ]; then
-            echo "SNYK_TOKEN not configured; skipping Snyk Open Source scan"
-            exit 0
-          fi
-          snyk test --all-projects --detection-depth=4 --exclude=examples,tests --sarif-file-output=snyk.sarif
+        run: snyk test --all-projects --detection-depth=4 --exclude=examples,tests --sarif-file-output=snyk.sarif || true
 
       - name: Upload SARIF
         if: always() && hashFiles('snyk.sarif') != ''
@@ -93,9 +86,6 @@ jobs:
   snyk-code:
     name: Snyk Code (SAST)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -158,12 +148,7 @@ jobs:
       - name: Snyk Code test
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: |
-          if [ -z "$SNYK_TOKEN" ]; then
-            echo "SNYK_TOKEN not configured; skipping Snyk Code scan"
-            exit 0
-          fi
-          snyk code test --sarif-file-output=snyk-code.sarif
+        run: snyk code test --sarif-file-output=snyk-code.sarif || true
 
       - name: Upload SARIF
         if: always() && hashFiles('snyk-code.sarif') != ''

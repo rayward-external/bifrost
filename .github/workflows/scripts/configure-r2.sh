@@ -6,9 +6,7 @@ set -euo pipefail
 
 echo "⚙️ Configuring AWS CLI for R2..."
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-python3 -m pip install --user --require-hashes -r "$SCRIPT_DIR/../requirements/awscli.txt"
-export PATH="$HOME/.local/bin:$PATH"
+pip install awscli
 
 # Clean and trim environment variables (removing any whitespace)
 R2_ENDPOINT="$(echo "$R2_ENDPOINT" | tr -d '[:space:]')"

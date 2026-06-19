@@ -24,13 +24,10 @@ report_result() {
   
   if [ "$result" -eq 0 ]; then
     echo -e "${GREEN}✅ $test_name passed${NC}"
-    # Assignment form, not ((TESTS_PASSED++)): under `set -e` the post-increment
-    # arithmetic returns the pre-value, so ((var++)) exits 1 when var is 0 and
-    # aborts the whole script after the first passing test.
-    TESTS_PASSED=$((TESTS_PASSED + 1))
+    ((TESTS_PASSED++))
   else
     echo -e "${RED}❌ $test_name failed${NC}"
-    TESTS_FAILED=$((TESTS_FAILED + 1))
+    ((TESTS_FAILED++))
   fi
 }
 
@@ -66,7 +63,7 @@ for mcp_dir in examples/mcps/*/; do
       fi
     elif [ -f "$mcp_dir/package.json" ]; then
       echo "  Building $mcp_name (TypeScript)..."
-      if cd "$mcp_dir" && npm ci --silent && npm run build && cd - > /dev/null; then
+      if cd "$mcp_dir" && npm install --silent && npm run build && cd - > /dev/null; then
         echo -e "  ${GREEN}✓ $mcp_name${NC}"
       else
         echo -e "  ${RED}✗ $mcp_name${NC}"
@@ -91,44 +88,67 @@ fi
 cd ..
 
 # 4. Governance Tests
-# These are e2e tests: they POST to a live Bifrost server on :8080. A bare
-# `go test` here only ever got "connection refused" because nothing started a
-# server. run-governance-e2e-tests.sh builds Bifrost, boots it, runs the suite
-# and tears it down. That script requires real provider keys, so skip cleanly
-# when they are absent (e.g. fork CI without upstream secrets).
 echo ""
 echo "🛡️  4/5 - Running Governance Tests..."
 echo "-----------------------------------"
-if [ ! -f "tests/governance/go.mod" ]; then
-  echo -e "${YELLOW}⚠️  Governance tests directory not found, skipping...${NC}"
-elif [ -z "${OPENAI_API_KEY:-}" ] || [ -z "${ANTHROPIC_API_KEY:-}" ] || [ -z "${OPENROUTER_API_KEY:-}" ]; then
-  echo -e "${YELLOW}⚠️  Governance e2e tests need OPENAI_API_KEY, ANTHROPIC_API_KEY"
-  echo -e "    and OPENROUTER_API_KEY; one or more is unset — skipping.${NC}"
-else
-  if ./.github/workflows/scripts/run-governance-e2e-tests.sh; then
+if [ -d "tests/governance" ]; then
+  cd tests/governance
+  
+  # Check if virtual environment exists, create if not
+  if [ ! -d "venv" ]; then
+    echo "Creating Python virtual environment..."
+    python3 -m venv venv
+  fi
+  
+  # Activate virtual environment
+  source venv/bin/activate
+  
+  # Install dependencies
+  echo "Installing Python dependencies..."
+  pip install -q -r requirements.txt
+  
+  # Run tests
+  if pytest -v; then
     report_result "Governance Tests" 0
   else
     report_result "Governance Tests" 1
   fi
+  
+  deactivate
+  cd ../..
+else
+  echo -e "${YELLOW}⚠️  Governance tests directory not found, skipping...${NC}"
 fi
 
 # 5. Integration Tests
 echo ""
 echo "🔗 5/5 - Running Integration Tests..."
 echo "-----------------------------------"
-if [ -d "tests/integrations/python" ]; then
-  cd tests/integrations/python
-
-  if ! command -v uv >/dev/null 2>&1; then
-    echo -e "${RED}❌ uv is required for Python integration tests${NC}"
-    report_result "Integration Tests" 1
-  elif uv sync --frozen --quiet && uv run python run_all_tests.py; then
+if [ -d "tests/integrations" ]; then
+  cd tests/integrations
+  
+  # Check if virtual environment exists, create if not
+  if [ ! -d "venv" ]; then
+    echo "Creating Python virtual environment..."
+    python3 -m venv venv
+  fi
+  
+  # Activate virtual environment
+  source venv/bin/activate
+  
+  # Install dependencies
+  echo "Installing Python dependencies..."
+  pip install -q -r requirements.txt
+  
+  # Run tests
+  if python run_all_tests.py; then
     report_result "Integration Tests" 0
   else
     report_result "Integration Tests" 1
   fi
-
-  cd ../../..
+  
+  deactivate
+  cd ../..
 else
   echo -e "${YELLOW}⚠️  Integration tests directory not found, skipping...${NC}"
 fi
@@ -149,3 +169,4 @@ else
   echo -e "${GREEN}✅ All tests passed successfully!${NC}"
   exit 0
 fi
+

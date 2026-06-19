@@ -3385,7 +3385,7 @@ func (provider *GeminiProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 			return resp, nil
 		}
 		lastError = err
-		provider.logger.Debug("BatchResults failed for key %s: %v", schemas.SanitizeLogValue(key.Name), err.Error.Message)
+		provider.logger.Debug("BatchResults failed for key %s: %v", key.Name, err.Error.Message)
 	}
 
 	// All keys failed, return the last error

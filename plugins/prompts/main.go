@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -492,10 +491,6 @@ func parseNumberFromContext(ctx *schemas.BifrostContext, key schemas.BifrostCont
 	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
 		return 0, err
-	}
-	// Bounds-check before narrowing int64 → int to prevent silent overflow on 32-bit platforms.
-	if n < math.MinInt || n > math.MaxInt {
-		return 0, fmt.Errorf("value %d overflows int", n)
 	}
 	return int(n), nil
 }

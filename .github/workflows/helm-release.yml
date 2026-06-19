@@ -10,14 +10,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   release:
-    # Helm chart releases (publishes to maximhq.github.io/helm-charts) only
-    # make sense on the upstream repo, which has the GH_TOKEN secret. The
-    # fork doesn't publish helm charts; skip the job here.
-    if: github.repository == 'maximhq/bifrost'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -96,7 +92,7 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Package Helm chart
         run: |
@@ -112,7 +108,7 @@ jobs:
             --title "Helm Chart v${{ steps.chart-version.outputs.version }}" \
             --notes "Helm chart release for Bifrost v${{ steps.chart-version.outputs.version }}"
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Helm repository index
         run: |
@@ -130,7 +126,7 @@ jobs:
         uses: step-security/actions-gh-pages@db28a5e317d585916043c4acc5a4319ab3da9275 # v4.0.1
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v1.5.0'
         with:
-          github_token: ${{ secrets.GH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./helm-charts
           destination_dir: helm-charts
           keep_files: false

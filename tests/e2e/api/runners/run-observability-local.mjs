@@ -253,7 +253,7 @@ async function assertOtelMetricsReceived() {
     "provider",
     providerName,
     "model",
-    requestedModel,
+    modelName,
     "method",
     "chat_completion",
   ]);
@@ -301,7 +301,7 @@ async function assertPrometheusScrape() {
     return null;
   });
 
-  const labels = { provider: providerName, model: requestedModel, method: "chat_completion" };
+  const labels = { provider: providerName, model: modelName, method: "chat_completion" };
   const successLine = findPrometheusSample(metrics, "bifrost_success_requests_total", labels);
   const upstreamLine = findPrometheusSample(metrics, "bifrost_upstream_requests_total", labels);
   const inputLine = findPrometheusSample(metrics, "bifrost_input_tokens_total", labels);

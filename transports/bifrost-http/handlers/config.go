@@ -43,20 +43,6 @@ var securityHeaders = []string{
 	"x-bf-vk",
 }
 
-func validatePricingURL(pricingURL string) error {
-	if pricingURL == modelcatalog.DefaultPricingURL {
-		return nil
-	}
-	return bifrost.ValidateExternalURL(pricingURL, false)
-}
-
-func validateModelParametersURL(modelParametersURL string) error {
-	if modelParametersURL == modelcatalog.DefaultModelParametersURL {
-		return nil
-	}
-	return bifrost.ValidateExternalURL(modelParametersURL, false)
-}
-
 // ConfigManager is the interface for the config manager
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
@@ -1053,7 +1039,7 @@ func checkURLAccessibility(rawURL string) error {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 	if parsed.Scheme == "file" {
-		// CodeQL[go/path-injection] False positive: rawURL is operator-supplied via the authenticated admin config API, not untrusted user input; admins have filesystem access by design.
+		// CodeQL[go/path-injection] False positive: rawURL is operator-supplied via the authenticated admin config API, not untrusted input; admins have filesystem access by design.
 		info, err := os.Stat(parsed.Path)
 		if err != nil {
 			return fmt.Errorf("file not accessible: %w", err)

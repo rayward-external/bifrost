@@ -3,9 +3,9 @@ package server
 
 import (
 	"context"
+	"embed"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"os"
 	"os/signal"
@@ -133,7 +133,7 @@ type BifrostHTTPServer struct {
 	cancel context.CancelFunc
 
 	Version   string
-	UIContent fs.FS
+	UIContent embed.FS
 
 	Port   string
 	Host   string
@@ -144,9 +144,8 @@ type BifrostHTTPServer struct {
 	LogsCleaner     *logstore.LogsCleaner
 	AsyncJobCleaner *logstore.AsyncJobCleaner
 
-	Client      *bifrost.Bifrost
-	Config      *lib.Config
-	KeySelector schemas.KeySelector
+	Client *bifrost.Bifrost
+	Config *lib.Config
 
 	Server *fasthttp.Server
 	Router *router.Router
@@ -173,7 +172,7 @@ func SetLogger(l schemas.Logger) {
 }
 
 // NewBifrostHTTPServer creates a new instance of BifrostHTTPServer.
-func NewBifrostHTTPServer(version string, uiContent fs.FS) *BifrostHTTPServer {
+func NewBifrostHTTPServer(version string, uiContent embed.FS) *BifrostHTTPServer {
 	return &BifrostHTTPServer{
 		Version:        version,
 		UIContent:      uiContent,
@@ -650,6 +649,21 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	} else {
 		s.RefreshLiveModelsForProvider(ctx, provider, inMemoryKeys)
 	}
+
+	// Register custom provider names in the known-providers set so that
+	// ParseModelString can recognise "myprovider/mymodel" prefixes before the
+	// first request arrives.  Without this, the provider-prefix is not yet in
+	// the set at the time the POST /api/providers response is sent, so the very
+	// next chat request fails to extract the provider from the model string and
+	// gets misrouted (e.g. to a wildcard-keyed standard provider such as
+	// HuggingFace), logging the attempt as status="error" under the original
+	// request-id even though a fallback eventually succeeds.
+	// Standard providers are pre-populated at init; calling this for them is
+	// idempotent and harmless.
+	if providerInfo.CustomProviderConfig != nil {
+		schemas.RegisterKnownProvider(provider)
+	}
+
 	return updatedProvider, nil
 }
 
@@ -1674,7 +1688,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		MCPHeadersProvider: s.Config.MCPHeadersProvider,
 		Logger:             logger,
 		KVStore:            s.Config.KVStore,
-		KeySelector:        s.KeySelector,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)

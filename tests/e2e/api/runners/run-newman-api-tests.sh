@@ -21,11 +21,6 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-if [ -d "$API_DIR/node_modules/.bin" ]; then
-    export PATH="$API_DIR/node_modules/.bin:$PATH"
-    export NODE_PATH="$API_DIR/node_modules${NODE_PATH:+:$NODE_PATH}"
-fi
-
 # Configuration
 COLLECTION="$API_DIR/collections/bifrost-api-management.postman_collection.json"
 REPORT_DIR="$API_DIR/newman-reports/api-management"
@@ -45,7 +40,7 @@ echo ""
 # Check if Newman is installed
 if ! command -v newman &> /dev/null; then
     echo -e "${RED}Error: Newman is not installed${NC}"
-    echo "Run npm ci in tests/e2e/api before starting this runner"
+    echo "Install it with: npm install -g newman newman-reporter-htmlextra"
     exit 1
 fi
 
@@ -224,7 +219,7 @@ fi
 if [[ "$REPORTERS" == *"htmlextra"* ]]; then
     if ! node -e 'require.resolve("newman-reporter-htmlextra")' >/dev/null 2>&1; then
         echo -e "${RED}Error: newman-reporter-htmlextra is not installed${NC}"
-        echo "Run npm ci in tests/e2e/api before starting this runner"
+        echo "Install it with: npm install -g newman-reporter-htmlextra"
         exit 1
     fi
 fi
@@ -366,9 +361,11 @@ if [ -n "$DB_VERIFY" ]; then
     # Install dependencies for the dbverify reporter if not already present
     if [ ! -d "$API_DIR/node_modules" ]; then
         echo "Installing DB verify reporter dependencies..."
-        (cd "$API_DIR" && npm ci --silent)
+        (cd "$API_DIR" && npm install --silent)
     fi
-    # Prepend local node_modules so Newman can find newman-reporter-dbverify.
+    # Newman (global) resolves reporters via Node's module search. Prepend the
+    # local node_modules so it can find newman-reporter-dbverify without a
+    # global install.
     export NODE_PATH="$API_DIR/node_modules${NODE_PATH:+:$NODE_PATH}"
 fi
 

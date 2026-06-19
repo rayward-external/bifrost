@@ -124,54 +124,6 @@ func sanitizeErrorForLogging(err *schemas.BifrostError, contentLoggingEnabled, s
 	return &cloned
 }
 
-// maxLogErrLen is the maximum number of characters from an error message
-// included in log output. Errors originating from HTTP request/response
-// processing may embed sensitive payload data; truncating prevents
-// inadvertent clear-text logging of that data (CWE-532).
-const maxLogErrLen = 256
-
-// sanitizeLogErr returns a truncated, single-line string representation of
-// an error suitable for operational log messages. It caps the output at
-// maxLogErrLen characters to avoid leaking sensitive HTTP request/response
-// content that may be wrapped inside the error chain.
-func sanitizeLogErr(err error) string {
-	if err == nil {
-		return "<nil>"
-	}
-	s := err.Error()
-	if len(s) > maxLogErrLen {
-		return s[:maxLogErrLen] + "...[truncated]"
-	}
-	return s
-}
-
-// sanitizeLogValue makes a caller-controlled string safe to embed in log
-// lines. It strips ASCII control characters (<0x20 plus DEL) so a value
-// containing newlines or terminal escape sequences can't inject fake log
-// entries, and truncates to 128 runes. Closes CodeQL go/log-injection.
-func sanitizeLogValue(value string) string {
-	if value == "" {
-		return ""
-	}
-	const maxLen = 128
-	var b strings.Builder
-	b.Grow(len(value))
-	count := 0
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			b.WriteByte('?')
-		} else {
-			b.WriteRune(r)
-		}
-		count++
-		if count >= maxLen {
-			b.WriteString("...[truncated]")
-			break
-		}
-	}
-	return b.String()
-}
-
 // contentLoggingEnabled returns true if content (messages, params, tool results) should be
 // recorded for this request. The BifrostContextKeyDisableContentLogging per-request override is
 // only honored when BifrostContextKeyAllowPerRequestStorageOverride is true in context (set by
@@ -235,7 +187,7 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		case p.deferredUsageSem <- struct{}{}:
 			defer func() { <-p.deferredUsageSem }()
 		default:
-			p.logger.Warn("deferred usage update dropped for request %s: semaphore full", schemas.SanitizeLogValue(requestID))
+			p.logger.Warn("deferred usage update dropped for request %s: semaphore full", requestID)
 			return
 		}
 		usageUpdates := map[string]interface{}{
@@ -257,7 +209,7 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		for i := 0; i < 3; i++ {
 			found, findErr = p.store.IsLogEntryPresent(p.ctx, requestID)
 			if findErr != nil {
-				p.logger.Warn("failed to check if log entry is present for request %s: %s", schemas.SanitizeLogValue(requestID), sanitizeLogErr(findErr))
+				p.logger.Warn("failed to check if log entry is present for request %s: %v", requestID, findErr)
 				continue
 			}
 			if found {
@@ -266,11 +218,11 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 			time.Sleep(time.Duration(math.Pow(2, float64(i))) * time.Second * 2)
 		}
 		if !found {
-			p.logger.Warn("log entry not found for request %s after 3 retries. failed to update deferred usage for large payload request", schemas.SanitizeLogValue(requestID))
+			p.logger.Warn("log entry not found for request %s after 3 retries. failed to update deferred usage for large payload request", requestID)
 			return
 		}
 		if updErr := p.store.Update(p.ctx, requestID, usageUpdates); updErr != nil {
-			p.logger.Warn("failed to update deferred usage for request %s: %s", schemas.SanitizeLogValue(requestID), sanitizeLogErr(updErr))
+			p.logger.Warn("failed to update deferred usage for request %s: %v", requestID, updErr)
 		}
 	}()
 }
@@ -345,6 +297,12 @@ func validateWriterConfig(config logstore.WriterConfig) error {
 	if config.MaxBatchSize <= 0 {
 		return fmt.Errorf("writer max_batch_size must be greater than 0")
 	}
+	// Fork patch: upper bounds bound make() allocation sizes derived from admin
+	// plugin config (CodeQL go/uncontrolled-allocation-size defense-in-depth,
+	// mirrors the clamps in logstore.WithDefaults). RE-AUDIT on every upstream sync.
+	if config.MaxBatchSize > logstore.MaxWriterMaxBatchSize {
+		return fmt.Errorf("writer max_batch_size must not exceed %d", logstore.MaxWriterMaxBatchSize)
+	}
 	if config.BatchInterval == "" {
 		return fmt.Errorf("writer batch_interval is required")
 	}
@@ -361,8 +319,14 @@ func validateWriterConfig(config logstore.WriterConfig) error {
 	if config.WriteQueueCapacity <= 0 {
 		return fmt.Errorf("writer write_queue_capacity must be greater than 0")
 	}
+	if config.WriteQueueCapacity > logstore.MaxWriterQueueCapacity {
+		return fmt.Errorf("writer write_queue_capacity must not exceed %d", logstore.MaxWriterQueueCapacity)
+	}
 	if config.DeferredUsageConcurrency <= 0 {
 		return fmt.Errorf("writer deferred_usage_concurrency must be greater than 0")
+	}
+	if config.DeferredUsageConcurrency > logstore.MaxWriterDeferredUsageConcurrency {
+		return fmt.Errorf("writer deferred_usage_concurrency must not exceed %d", logstore.MaxWriterDeferredUsageConcurrency)
 	}
 	return nil
 }
@@ -623,7 +587,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	createdTimestamp := time.Now().UTC()
 
-	p.logger.Debug("PreLLMHook: request %s type=%q", schemas.SanitizeLogValue(requestID), req.RequestType)
+	p.logger.Debug("PreLLMHook: request %s type=%q", requestID, req.RequestType)
 
 	// If request type is streaming we create a stream accumulator via the tracer
 	if bifrost.IsStreamRequestType(req.RequestType) {
@@ -898,7 +862,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
-	p.logger.Debug("PostLLMHook: request %s type=%q isFinalChunk=%v hasError=%v", schemas.SanitizeLogValue(requestID), requestType, isFinalChunk, bifrostErr != nil)
+	p.logger.Debug("PostLLMHook: request %s type=%q isFinalChunk=%v hasError=%v", requestID, requestType, isFinalChunk, bifrostErr != nil)
 
 	// Retrieve pending input data from PreLLMHook
 	var pendingVal any
@@ -909,14 +873,14 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		pendingVal, hasPending = p.pendingLogsEntries.Load(requestID)
 	}
 
-	p.logger.Debug("PostLLMHook: pending data lookup for request %s: found=%v", schemas.SanitizeLogValue(requestID), hasPending)
+	p.logger.Debug("PostLLMHook: pending data lookup for request %s: found=%v", requestID, hasPending)
 
 	if !hasPending {
 		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
 		// so the error is visible in logs. Without PreLLMHook's DB insert, silently returning
 		// here means the error is completely lost.
 		if bifrostErr != nil {
-			p.logger.Warn("no pending log data found for request %s, writing minimal error entry", schemas.SanitizeLogValue(requestID))
+			p.logger.Warn("no pending log data found for request %s, writing minimal error entry", requestID)
 			entry := &logstore.Log{
 				ID:        requestID,
 				Provider:  string(bifrostErr.ExtraFields.Provider),
@@ -945,7 +909,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 			p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		} else {
-			p.logger.Warn("no pending log data found for request %s, skipping log write", schemas.SanitizeLogValue(requestID))
+			p.logger.Warn("no pending log data found for request %s, skipping log write", requestID)
 		}
 		return result, bifrostErr, nil
 	}
@@ -962,7 +926,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Fallback to request type from pending data if request type is not set
 	if requestType == "" {
 		requestType = schemas.RequestType(pending.InitialData.Object)
-		p.logger.Warn("PostLLMHook: request type missing from response extra fields for request %s, falling back to pre-hook value %q", schemas.SanitizeLogValue(requestID), requestType)
+		p.logger.Warn("PostLLMHook: request type missing from response extra fields for request %s, falling back to pre-hook value %q", requestID, requestType)
 	}
 
 	var tracer schemas.Tracer
@@ -1598,7 +1562,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		if pricingEntry, ok := p.mcpCatalog.GetPricingData(resp.ExtraFields.ClientName, resp.ExtraFields.ToolName); ok {
 			toolCost := pricingEntry.CostPerExecution
 			entry.Cost = &toolCost
-			p.logger.Debug("MCP tool cost for %s.%s: $%.6f", sanitizeLogValue(resp.ExtraFields.ClientName), sanitizeLogValue(resp.ExtraFields.ToolName), toolCost)
+			p.logger.Debug("MCP tool cost for %s.%s: $%.6f", resp.ExtraFields.ClientName, resp.ExtraFields.ToolName, toolCost)
 		}
 	}
 

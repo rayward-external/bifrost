@@ -134,6 +134,11 @@ func (req *BedrockRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostCont
 
 	modelARN := req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.ModelARN
 	provider, model := schemas.ParseModelString(modelARN, "")
+	// ParseModelString returns empty provider for ARN strings (e.g. "arn:aws:bedrock:...") since
+	// "arn" is not a registered Bifrost provider prefix. Fall back to Bedrock explicitly.
+	if provider == "" {
+		provider = schemas.Bedrock
+	}
 
 	bifrostReq := &schemas.BifrostRerankRequest{
 		Provider: provider,

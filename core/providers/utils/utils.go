@@ -451,11 +451,6 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
-	// Fall back to the package noop logger when callers pass a nil logger,
-	// mirroring ConfigureProxy and preventing a nil-pointer dereference.
-	if logger == nil {
-		logger = getLogger()
-	}
 	if networkConfig.CACertPEM != nil && networkConfig.CACertPEM.IsFromEnv() && networkConfig.CACertPEM.GetValue() == "" {
 		errMsg := fmt.Sprintf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", networkConfig.CACertPEM.EnvVar)
 		logger.Error(errMsg)
@@ -2356,11 +2351,7 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 		}
 	}()
 
-	// Checking if stream is already closed. Return the same error the
-	// panic-recovery path above produces (ErrStreamClosed, or
-	// ErrStreamIdleTimeout once the idle timer has fired) so both
-	// close-detection paths are consistent — a bare nil here looks to the
-	// caller like a clean zero-byte read rather than a closed stream.
+	// Checking if stream is already closed
 	if r.connectionClosed() {
 		return 0, r.closedReadError()
 	}

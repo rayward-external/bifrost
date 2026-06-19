@@ -18,38 +18,6 @@ func Ptr[T any](v T) *T {
 	return &v
 }
 
-// maxLogValueLen bounds a sanitized log value so a pathological input cannot
-// bloat a single log entry.
-const maxLogValueLen = 256
-
-// SanitizeLogValue makes a client-controlled string safe to embed in a log
-// line. It replaces ASCII control characters (anything below space, plus DEL)
-// with '?' so an attacker cannot inject newlines, carriage returns, or terminal
-// escape sequences to forge or corrupt log entries, and truncates the result to
-// maxLogValueLen runes. It is the canonical sanitizer for CodeQL's
-// go/log-injection sink across all modules.
-func SanitizeLogValue(value string) string {
-	if value == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.Grow(len(value))
-	count := 0
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			b.WriteByte('?')
-		} else {
-			b.WriteRune(r)
-		}
-		count++
-		if count >= maxLogValueLen {
-			b.WriteString("...[truncated]")
-			break
-		}
-	}
-	return b.String()
-}
-
 // GetRandomString generates a random alphanumeric string of the given length.
 func GetRandomString(length int) string {
 	if length <= 0 {
@@ -126,13 +94,6 @@ func IsKnownProvider(provider string) bool {
 // Only splits on "/" when the prefix is a known Bifrost provider, so model
 // namespaces like "meta-llama/Llama-3.1-8B" are preserved as-is.
 func ParseModelString(model string, defaultProvider ModelProvider) (ModelProvider, string) {
-	// Strip any query-string suffix (e.g. "?key_id=...") — routing hints are not
-	// part of the model identity. Leaving them in pollutes logs/the model filter
-	// and breaks provider catalog lookups. Fallback specs extract key_id via
-	// parseFallbackOptions BEFORE calling this, so their option is not lost.
-	if i := strings.IndexByte(model, '?'); i >= 0 {
-		model = model[:i]
-	}
 	// Check if model contains a provider prefix (only split on first "/" to preserve model names with "/")
 	if strings.Contains(model, "/") {
 		parts := strings.SplitN(model, "/", 2)
@@ -158,56 +119,33 @@ func IsAllDigitsASCII(s string) bool {
 	return true
 }
 
-// FormatFallback formats a fallback as provider/model with an optional key_id query parameter.
-func FormatFallback(provider ModelProvider, model string, keyID string) string {
-	fallback := strings.TrimSpace(string(provider)) + "/" + strings.TrimSpace(model)
-	keyID = strings.TrimSpace(keyID)
-	if keyID == "" {
-		return fallback
-	}
-	values := url.Values{}
-	values.Set("key_id", keyID)
-	return fallback + "?" + values.Encode()
-}
-
-// ParseFallbacks parses a slice of strings into a slice of Fallback structs
+// ParseFallbacks parses a slice of strings into a slice of Fallback structs.
+// Strings may carry a "?key_id=<value>" query suffix that is extracted into
+// Fallback.KeyID (e.g. "azure/gpt-4o?key_id=standby-key-xyz").
 func ParseFallbacks(fallbacks []string) []Fallback {
 	if len(fallbacks) == 0 {
 		return nil
 	}
 	parsedFallbacks := make([]Fallback, 0, len(fallbacks))
 	for _, fallback := range fallbacks {
-		fallback = strings.TrimSpace(fallback)
 		if fallback == "" {
 			continue
 		}
-		// Extract the ?key_id= option BEFORE provider/model splitting so it
-		// survives ParseModelString's query-suffix stripping.
-		fallbackSpec, keyID := parseFallbackOptions(fallback)
-		fallbackProvider, fallbackModel := ParseModelString(fallbackSpec, "")
+		var keyID string
+		if idx := strings.Index(fallback, "?"); idx != -1 {
+			for _, kv := range strings.Split(fallback[idx+1:], "&") {
+				if strings.HasPrefix(kv, "key_id=") {
+					keyID = strings.TrimPrefix(kv, "key_id=")
+				}
+			}
+			fallback = fallback[:idx]
+		}
+		fallbackProvider, fallbackModel := ParseModelString(fallback, "")
 		if fallbackProvider != "" && fallbackModel != "" {
 			parsedFallbacks = append(parsedFallbacks, Fallback{Provider: fallbackProvider, Model: fallbackModel, KeyID: keyID})
 		}
 	}
 	return parsedFallbacks
-}
-
-func parseFallbackOptions(modelSpec string) (string, string) {
-	modelSpec = strings.TrimSpace(modelSpec)
-	model, rawQuery, ok := strings.Cut(modelSpec, "?")
-	if !ok {
-		return modelSpec, ""
-	}
-
-	values, err := url.ParseQuery(rawQuery)
-	if err != nil {
-		return modelSpec, ""
-	}
-	keyID := strings.TrimSpace(values.Get("key_id"))
-	if keyID == "" {
-		keyID = strings.TrimSpace(values.Get("keyID"))
-	}
-	return strings.TrimSpace(model), keyID
 }
 
 //* IMAGE UTILS *//

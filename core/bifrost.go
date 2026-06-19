@@ -3540,7 +3540,6 @@ func (bifrost *Bifrost) GetDropExcessRequests() bool {
 // This allows for hot-reloading of this configuration value.
 func (bifrost *Bifrost) UpdateDropExcessRequests(value bool) {
 	bifrost.dropExcessRequests.Store(value)
-	// CodeQL[go/log-injection] FP: value is a bool, which cannot carry newlines or control characters to forge a log entry.
 	bifrost.logger.Info("drop_excess_requests updated to: %v", value)
 }
 
@@ -4080,7 +4079,7 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*Pr
 		pq := pqValue.(*ProviderQueue)
 		return pq, nil
 	}
-	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", schemas.SanitizeLogValue(string(providerKey))))
+	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config for provider %s: %v", providerKey, err)
@@ -4448,7 +4447,7 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil || config == nil {
 		if slices.Contains(dynamicallyConfigurableProviders, providerKey) {
-			bifrost.logger.Info(fmt.Sprintf("initializing provider %s with default config", schemas.SanitizeLogValue(string(providerKey))))
+			bifrost.logger.Info(fmt.Sprintf("initializing provider %s with default config", providerKey))
 			// If no config found, use default config
 			config = &schemas.ProviderConfig{
 				NetworkConfig:            schemas.DefaultNetworkConfig,
@@ -4616,17 +4615,6 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 	return &fallbackReq
 }
 
-func applyFallbackKeyToContext(ctx *schemas.BifrostContext, fallback schemas.Fallback) {
-	if ctx == nil {
-		return
-	}
-	keyID := strings.TrimSpace(fallback.KeyID)
-	if keyID == "" {
-		return
-	}
-	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
-}
-
 // shouldContinueWithFallbacks processes errors from fallback attempts
 // Returns true if we should continue with more fallbacks, false if we should stop
 func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, fallbackErr *schemas.BifrostError) bool {
@@ -4687,9 +4675,9 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
-			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", schemas.SanitizeLogValue(string(provider)), schemas.SanitizeLogValue(model), schemas.SanitizeLogValue(primaryErr.Error.Message)))
+			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
 		} else {
-			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %v", schemas.SanitizeLogValue(string(provider)), schemas.SanitizeLogValue(model), primaryErr))
+			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %v", provider, model, primaryErr))
 		}
 		if len(fallbacks) > 0 {
 			bifrost.logger.Debug(fmt.Sprintf("check if we should try %d fallbacks", len(fallbacks)))
@@ -4720,7 +4708,6 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
-		applyFallbackKeyToContext(ctx, fallback)
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
@@ -4845,7 +4832,6 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
-		applyFallbackKeyToContext(ctx, fallback)
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()

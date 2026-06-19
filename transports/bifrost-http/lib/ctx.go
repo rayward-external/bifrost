@@ -217,8 +217,6 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		requestID := string(ctx.Request.Header.Peek("x-request-id"))
 		if requestID == "" {
 			requestID = uuid.New().String()
-		} else {
-			requestID = sanitizeRequestID(requestID)
 		}
 		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
@@ -797,24 +795,4 @@ func BuildHTTPResponseFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPRespon
 		resp.Headers[string(key)] = string(value)
 	}
 	return resp
-}
-
-const maxRequestIDLen = 128
-
-// sanitizeRequestID strips control characters and truncates caller-supplied
-// request IDs so that secrets accidentally placed in x-request-id are not
-// persisted verbatim in operational logs.
-func sanitizeRequestID(id string) string {
-	if len(id) > maxRequestIDLen {
-		id = id[:maxRequestIDLen]
-	}
-	var b strings.Builder
-	b.Grow(len(id))
-	for _, r := range id {
-		if r < 0x20 || r == 0x7f {
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
 }

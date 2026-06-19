@@ -87,7 +87,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
 		})
 		if upgradeErr != nil {
-			logger.Warn("websocket upgrade failed for %s: %v", sanitizeLogValue(path), upgradeErr)
+			logger.Warn("websocket upgrade failed for %s: %v", path, upgradeErr)
 		}
 		return
 	}
@@ -179,7 +179,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "provider does not support realtime: "+string(providerKey)))
 		})
 		if upgradeErr != nil {
-			logger.Warn("websocket upgrade failed for %s: %v", sanitizeLogValue(path), upgradeErr)
+			logger.Warn("websocket upgrade failed for %s: %v", path, upgradeErr)
 		}
 		return
 	}
@@ -206,7 +206,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		h.runRealtimeSession(clientConn, session, auth, path, providerKey, model, middlewareContextValues)
 	})
 	if err != nil {
-		logger.Warn("websocket upgrade failed for %s: %v", sanitizeLogValue(path), err)
+		logger.Warn("websocket upgrade failed for %s: %v", path, err)
 	}
 }
 

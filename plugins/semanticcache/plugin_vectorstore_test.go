@@ -30,18 +30,6 @@ func skipIfNoAPIKey(t *testing.T, storeType vectorstore.VectorStoreType) {
 	}
 }
 
-// requireOpenAIKey skips the test if OPENAI_API_KEY is not set. Semantic-cache
-// tests that exercise the embedding path need a real OpenAI key — the mocker
-// plugin only handles chat completions, so embedding requests fall through to
-// OpenAI and fail with "no keys found that support model" when the key is
-// missing, causing semantic-match assertions to fail in CI.
-func requireOpenAIKey(t *testing.T) {
-	t.Helper()
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("Skipping: OPENAI_API_KEY not set (semantic cache tests need real embeddings)")
-	}
-}
-
 // VectorStoreTestCase defines a test case for a specific vector store
 type VectorStoreTestCase struct {
 	Name      string
@@ -398,12 +386,10 @@ func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 
 // TestSemanticCache_AllVectorStores_EmbeddingRequest tests embedding request caching across all vector stores
 func TestSemanticCache_AllVectorStores_EmbeddingRequest(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set (required for embedding generation)")
-	}
 	t.Parallel()
 	for _, tc := range getVectorStoreTestCases() {
 		t.Run(tc.Name, func(t *testing.T) {
+			skipIfNoAPIKey(t, tc.StoreType)
 			setup := NewTestSetupWithVectorStore(t, getDefaultTestConfig(), tc.StoreType)
 			defer setup.Cleanup()
 

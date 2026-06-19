@@ -268,10 +268,6 @@ func TestPoolGetSkipsStaleIdleConnection(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, freshConn)
 	assert.NotSame(t, conn, freshConn)
-	// The server increments connectionCount asynchronously after the upgrade
-	// handshake completes, so poll rather than asserting immediately.
-	require.Eventually(t, func() bool {
-		return connectionCount.Load() == 2
-	}, 2*time.Second, 10*time.Millisecond, "server should accept exactly 2 connections")
+	assert.EqualValues(t, 2, connectionCount.Load())
 	pool.Discard(freshConn)
 }

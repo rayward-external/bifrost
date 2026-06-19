@@ -17,7 +17,6 @@ import (
 // least 1.5× speedup). Running this in parallel with other integration tests
 // causes CPU/network contention that flakes those ratios.
 func TestSemanticCacheBasicFunctionality(t *testing.T) {
-	requireOpenAIKey(t)
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
@@ -112,7 +111,6 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 
 // TestSemanticSearch tests the semantic similarity search functionality
 func TestSemanticSearch(t *testing.T) {
-	requireOpenAIKey(t)
 	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
@@ -254,7 +252,6 @@ func TestFlattenToFloat32Embedding(t *testing.T) {
 
 // TestDirectVsSemanticSearch tests the difference between direct hash matching and semantic search
 func TestDirectVsSemanticSearch(t *testing.T) {
-	requireOpenAIKey(t)
 	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()

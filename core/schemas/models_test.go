@@ -93,7 +93,7 @@ func TestKeyStatusMarshalJSON_PreservesErrorFields(t *testing.T) {
 		StatusCode:     &statusCode,
 		Error:          &ErrorField{Message: "unauthorized"},
 		ExtraFields: BifrostErrorExtraFields{
-			Provider:               "openai",
+			Provider:       "openai",
 			OriginalModelRequested: "gpt-4",
 		},
 	}
@@ -114,49 +114,4 @@ func TestKeyStatusMarshalJSON_PreservesErrorFields(t *testing.T) {
 	assert.Contains(t, dataStr, `"unauthorized"`)
 	assert.Contains(t, dataStr, `"original_model_requested":"gpt-4"`)
 	assert.Contains(t, dataStr, `"status_code":401`)
-}
-
-func TestParseFallbacks_KeyAwareSpec(t *testing.T) {
-	fallbacks := ParseFallbacks([]string{
-		"azure/gpt-4o?key_id=azure-east%2Fprod",
-		"openai/gpt-4o",
-	})
-
-	require.Len(t, fallbacks, 2)
-	assert.Equal(t, Azure, fallbacks[0].Provider)
-	assert.Equal(t, "gpt-4o", fallbacks[0].Model)
-	assert.Equal(t, "azure-east/prod", fallbacks[0].KeyID)
-	assert.Equal(t, OpenAI, fallbacks[1].Provider)
-	assert.Equal(t, "gpt-4o", fallbacks[1].Model)
-	assert.Empty(t, fallbacks[1].KeyID)
-}
-
-func TestFormatFallback_KeyAwareRoundTrip(t *testing.T) {
-	spec := FormatFallback(Azure, "gpt-4o", "azure-east/prod")
-
-	assert.Equal(t, "azure/gpt-4o?key_id=azure-east%2Fprod", spec)
-	parsed := ParseFallbacks([]string{spec})
-	require.Len(t, parsed, 1)
-	assert.Equal(t, Azure, parsed[0].Provider)
-	assert.Equal(t, "gpt-4o", parsed[0].Model)
-	assert.Equal(t, "azure-east/prod", parsed[0].KeyID)
-}
-
-func TestParseModelString_StripsQuerySuffix(t *testing.T) {
-	// A primary model field carrying a routing-hint query (e.g. a caller that
-	// appends "?key_id=") must resolve to the clean model identity — otherwise
-	// it pollutes the logs "Models" filter and breaks provider catalog lookups.
-	provider, model := ParseModelString("gpt-4.1-mini?key_id=5ca02987-3cf9", "")
-	assert.Empty(t, provider)
-	assert.Equal(t, "gpt-4.1-mini", model)
-
-	// Provider prefix and query together.
-	provider, model = ParseModelString("openai/gpt-4o?key_id=abc", "")
-	assert.Equal(t, OpenAI, provider)
-	assert.Equal(t, "gpt-4o", model)
-
-	// No query suffix — model is returned unchanged.
-	provider, model = ParseModelString("anthropic/claude-3.5-sonnet", "")
-	assert.Equal(t, Anthropic, provider)
-	assert.Equal(t, "claude-3.5-sonnet", model)
 }

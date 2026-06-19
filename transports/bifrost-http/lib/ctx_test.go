@@ -18,20 +18,20 @@ type testHandlerStore struct {
 	allowDirectKeys bool
 }
 
-func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
-func (s testHandlerStore) GetProvidersForModel(_ string) []schemas.ModelProvider { return nil }
-func (s testHandlerStore) GetStreamChunkInterceptor() StreamChunkInterceptor     { return nil }
-func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor       { return nil }
-func (s testHandlerStore) GetAsyncJobResultTTL() int                             { return 0 }
-func (s testHandlerStore) GetKVStore() *kvstore.Store                            { return nil }
+func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                    { return s.matcher }
+func (s testHandlerStore) GetStreamChunkInterceptor() StreamChunkInterceptor   { return nil }
+func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor     { return nil }
+func (s testHandlerStore) GetAsyncJobResultTTL() int                           { return 0 }
+func (s testHandlerStore) GetKVStore() *kvstore.Store                          { return nil }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return schemas.WhiteList{}
 }
-func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
-func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return false }
-func (s testHandlerStore) ShouldAllowDirectKeys() bool                { return s.allowDirectKeys }
-func (s testHandlerStore) GetMCPExternalServerURL() string            { return "" }
-func (s testHandlerStore) GetMCPExternalClientURL() string            { return "" }
+func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool          { return false }
+func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool              { return false }
+func (s testHandlerStore) ShouldAllowDirectKeys() bool                         { return s.allowDirectKeys }
+func (s testHandlerStore) GetMCPExternalServerURL() string                     { return "" }
+func (s testHandlerStore) GetMCPExternalClientURL() string                     { return "" }
+func (s testHandlerStore) GetAvailableProviders() []schemas.ModelProvider      { return nil }
 
 func TestParseSessionIDFromBaggage(t *testing.T) {
 	tests := []struct {

@@ -61,7 +61,7 @@ echo ""
 
 if ! command -v newman &> /dev/null; then
     echo -e "${RED}Error: Newman is not installed${NC}"
-    echo "Run npm ci in tests/e2e/api before starting this runner"
+    echo "Install it with: npm install -g newman"
     exit 1
 fi
 

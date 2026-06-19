@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 	"math"
-	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -120,13 +119,6 @@ func MaterializeStreamErrorBody(ctx *schemas.BifrostContext, resp *fasthttp.Resp
 		if readErr != nil {
 			return
 		}
-		// Ensure the Content-Type is not text/html to prevent reflected XSS
-		// when error bodies are echoed back from upstream providers. Override
-		// both an empty header and any HTML content type the upstream set.
-		if ct := resp.Header.ContentType(); len(ct) == 0 || strings.Contains(strings.ToLower(string(ct)), "html") {
-			resp.Header.SetContentType("application/json")
-		}
-		// CodeQL[go/reflected-xss] FP: any html/empty Content-Type is forced to application/json immediately above, so the echoed upstream error body cannot be rendered as HTML.
 		resp.SetBody(bodyBytes)
 	}
 }
@@ -234,7 +226,6 @@ func FinalizeResponseWithLargeDetection(
 	if bodyStream == nil {
 		// No stream available — fall back to buffered read
 		if logger != nil {
-			// CodeQL[go/log-injection] FP: contentLength and responseThreshold are integers, which cannot carry newlines or control characters to forge a log entry.
 			logger.Warn("large-response fallback to buffered path: content_length=%d threshold=%d body_stream_nil=true", contentLength, responseThreshold)
 		}
 		body, err := CheckAndDecodeBody(resp)
@@ -251,15 +242,10 @@ func FinalizeResponseWithLargeDetection(
 		contentLength = -1 // decompressed size unknown; transport will use chunked encoding
 	}
 
-	const maxPrefetchSize = 10 * 1024 * 1024 // 10 MB hard cap to prevent uncontrolled allocation
-	prefetchSize := 64 * 1024                // default
+	prefetchSize := 64 * 1024 // default
 	if ps, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadPrefetchSize).(int); ok && ps > 0 {
 		prefetchSize = ps
 	}
-	if prefetchSize > maxPrefetchSize {
-		prefetchSize = maxPrefetchSize
-	}
-	// CodeQL[go/uncontrolled-allocation-size] FP: prefetchSize is clamped to maxPrefetchSize (10 MB) immediately above before this allocation.
 	prefetchBuf := make([]byte, prefetchSize)
 	n, readErr := io.ReadFull(decompressedStream, prefetchBuf)
 	if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {

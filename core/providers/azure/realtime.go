@@ -226,7 +226,6 @@ func (provider *AzureProvider) CreateRealtimeClientSecret(
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// CodeQL[go/request-forgery] FP: upstreamURL is built from key.AzureKeyConfig.Endpoint, an operator-configured provider endpoint, not untrusted request input.
 	req.SetRequestURI(upstreamURL)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")

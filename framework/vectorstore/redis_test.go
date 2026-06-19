@@ -1815,3 +1815,44 @@ func TestRedisStore_NamespaceDimensionHandling(t *testing.T) {
 		assert.Empty(t, setup.Store.getNamespaceFieldTypes(testNamespace))
 	})
 }
+
+// TestRedisStore_CreateNamespace_ConcurrentIsIdempotent guards the TOCTOU race
+// between CreateNamespace's FT.INFO existence check and its FT.CREATE: under
+// parallel load (e.g. the semanticcache plugin suite, which fans out one Init
+// per vector store) multiple callers can both observe "not exists" and race to
+// create the same index. FT.CREATE fails the loser with "Index already exists";
+// the driver must treat that as the idempotent success it already promises for
+// the FT.INFO-hit path, not surface it as an error.
+func TestRedisStore_CreateNamespace_ConcurrentIsIdempotent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewRedisTestSetup(t)
+	defer setup.Cleanup(t)
+
+	ns := "TestRedisConcurrentCreate-" + generateUUID()
+	properties := map[string]VectorStoreProperties{
+		"key": {DataType: VectorStorePropertyTypeString},
+	}
+
+	// Drop any leftover index, then race many creates against the empty store.
+	_ = setup.Store.DeleteNamespace(setup.ctx, ns)
+	defer func() { _ = setup.Store.DeleteNamespace(setup.ctx, ns) }()
+
+	const goroutines = 16
+	var wg sync.WaitGroup
+	errs := make([]error, goroutines)
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = setup.Store.CreateNamespace(setup.ctx, ns, RedisTestDimension, properties)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoError(t, err, "concurrent CreateNamespace #%d must succeed idempotently", i)
+	}
+}

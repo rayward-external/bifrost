@@ -483,7 +483,6 @@ func TestBoundaryParameterValues(t *testing.T) {
 
 // TestSemanticSimilarityEdgeCases tests edge cases in semantic similarity matching
 func TestSemanticSimilarityEdgeCases(t *testing.T) {
-	requireOpenAIKey(t)
 	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()

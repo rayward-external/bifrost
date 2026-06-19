@@ -336,8 +336,35 @@ type LogCallback func(ctx context.Context, logEntry *logstore.Log)
 type MCPToolLogCallback func(*logstore.MCPToolLog)
 
 type Config struct {
-	DisableContentLogging *bool     `json:"disable_content_logging"`
-	LoggingHeaders        *[]string `json:"logging_headers"` // Pointer to live config slice; changes are reflected immediately without restart
+	DisableContentLogging *bool                  `json:"disable_content_logging"`
+	LoggingHeaders        *[]string              `json:"logging_headers"` // Pointer to live config slice; changes are reflected immediately without restart
+	Writer                *logstore.WriterConfig `json:"writer,omitempty"`
+}
+
+func validateWriterConfig(config logstore.WriterConfig) error {
+	if config.MaxBatchSize <= 0 {
+		return fmt.Errorf("writer max_batch_size must be greater than 0")
+	}
+	if config.BatchInterval == "" {
+		return fmt.Errorf("writer batch_interval is required")
+	}
+	batchInterval, err := time.ParseDuration(config.BatchInterval)
+	if err != nil {
+		return fmt.Errorf("writer batch_interval must be a valid Go duration: %w", err)
+	}
+	if batchInterval <= 0 {
+		return fmt.Errorf("writer batch_interval must be greater than 0")
+	}
+	if config.MaxBatchBytes <= 0 {
+		return fmt.Errorf("writer max_batch_bytes must be greater than 0")
+	}
+	if config.WriteQueueCapacity <= 0 {
+		return fmt.Errorf("writer write_queue_capacity must be greater than 0")
+	}
+	if config.DeferredUsageConcurrency <= 0 {
+		return fmt.Errorf("writer deferred_usage_concurrency must be greater than 0")
+	}
+	return nil
 }
 
 // LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
@@ -362,6 +389,7 @@ type LoggerPlugin struct {
 	pendingLogsEntries     sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
 	pendingLogsToInject    sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
 	pendingMCPLogsToInject sync.Map              // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
+	writerConfig           logstore.WriterConfig // Resolved async writer queue and batch settings
 	writeQueue             chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                 atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
 	deferredUsageSem       chan struct{}         // Limits concurrent deferred usage DB updates
@@ -387,6 +415,18 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		logger.Warn("logging plugin requires MCP catalog to calculate cost, all MCP cost calculations will be skipped.")
 	}
 
+	writerConfig := config.Writer.WithDefaults()
+	if err := validateWriterConfig(writerConfig); err != nil {
+		return nil, err
+	}
+	logger.Info("initializing logging writer settings: max_batch_size=%d batch_interval=%s max_batch_bytes=%d write_queue_capacity=%d deferred_usage_concurrency=%d",
+		writerConfig.MaxBatchSize,
+		writerConfig.BatchInterval,
+		writerConfig.MaxBatchBytes,
+		writerConfig.WriteQueueCapacity,
+		writerConfig.DeferredUsageConcurrency,
+	)
+
 	batchCtx, batchCancel := context.WithCancel(ctx)
 	plugin := &LoggerPlugin{
 		ctx:                   ctx,
@@ -397,8 +437,9 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		loggingHeaders:        config.LoggingHeaders,
 		done:                  make(chan struct{}),
 		logger:                logger,
-		writeQueue:            make(chan *writeQueueEntry, writeQueueCapacity),
-		deferredUsageSem:      make(chan struct{}, maxDeferredUsageConcurrency),
+		writerConfig:          writerConfig,
+		writeQueue:            make(chan *writeQueueEntry, writerConfig.WriteQueueCapacity),
+		deferredUsageSem:      make(chan struct{}, writerConfig.DeferredUsageConcurrency),
 		batchCtx:              batchCtx,
 		batchCancel:           batchCancel,
 		batchWriterDone:       make(chan struct{}),
@@ -549,6 +590,11 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 	}
 
 	return metadata
+}
+
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (p *LoggerPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
 }
 
 // PreLLMHook is called before a request is processed - FULLY ASYNC, NO DATABASE I/O
@@ -784,6 +830,9 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		CreatedAt:          time.Now(),
 		Status:             "processing",
 	}
+	// Seed LastActivity so the first idle-eviction check has a baseline even if no
+	// PostLLMHook chunk has fired yet.
+	pending.LastActivity.Store(pending.CreatedAt.UnixNano())
 	p.pendingLogsEntries.Store(effectiveRequestID, pending)
 	// Call callback synchronously for immediate UI feedback (WebSocket "processing" notification).
 	// The entry does not exist in the DB yet - it will be written when PostLLMHook fires.
@@ -843,6 +892,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	attemptTrail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
 
 	requestType, _, originalModelRequested, resolvedModelUsed := bifrost.GetResponseFields(result, bifrostErr)
+	resolvedKeyAlias := bifrost.GetResponseRoutingInfo(result, bifrostErr).ResolvedKeyAlias
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
 
@@ -884,6 +934,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				entry.MetadataParsed["isAsyncRequest"] = true
 			}
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
+			applyResolvedAliasInfo(entry, resolvedKeyAlias)
 			if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
 				entry.ErrorDetails = string(data)
 			}
@@ -900,6 +951,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 
 	pending := pendingVal.(*PendingLogData)
+
+	// Refresh the idle clock on every PostLLMHook call (notably each streaming
+	// chunk) so a long-running stream is not evicted by cleanupStalePendingLogs
+	// before it finishes. Safe to mutate in place: pending is a pointer held in
+	// the sync.Map, and LastActivity is atomic.
+	pending.LastActivity.Store(time.Now().UnixNano())
 
 	// Should never happen, but just in case
 	// Fallback to request type from pending data if request type is not set
@@ -957,6 +1014,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, attemptTrail)
+	applyResolvedAliasInfo(entry, resolvedKeyAlias)
 	// Attach cluster governance metadata for disconnected node usage recovery
 	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
 		entry.ClusterNodeID = &nodeID
@@ -1214,8 +1272,9 @@ func (p *LoggerPlugin) Cleanup() error {
 		}
 		// Signal the cleanup worker to stop.
 		close(p.done)
-		// Block new producers BEFORE killing batchWriter so the channel does
-		// not grow further while we drain it ourselves.
+		// Stop new producers before killing batchWriter so the channel does
+		// not grow further while we drain it ourselves. Any producer that raced
+		// past this check is absorbed by the enqueue recover path.
 		p.closed.Store(true)
 		// Kill batchWriter. Its current in-memory batch is handed back via
 		// p.recoveredBatch; it does not issue any further DB writes.
@@ -1259,7 +1318,7 @@ drainQueue:
 		}
 	}
 
-	// Process in chunks of maxBatchSize, checking the wall-clock deadline
+	// Process in chunks of writerConfig.MaxBatchSize, checking the wall-clock deadline
 	// between chunks so a single slow processBatch cannot consume the whole
 	// budget and starve later chunks.
 	for len(batch) > 0 {
@@ -1268,7 +1327,7 @@ drainQueue:
 			p.logger.Warn("logging plugin cleanup deadline reached; dropping %d entries", len(batch))
 			return
 		}
-		chunkSize := maxBatchSize
+		chunkSize := p.writerConfig.MaxBatchSize
 		if chunkSize > len(batch) {
 			chunkSize = len(batch)
 		}

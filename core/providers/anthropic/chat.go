@@ -255,8 +255,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxCompletionTokens
 		}
 
-		// Opus 4.7+ rejects temperature, top_p, and top_k with a 400 error.
-		if !IsOpus47Plus(bifrostReq.Model) {
+		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
+		// top_k with a 400 error.
+		if !IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 			// Anthropic doesn't allow both temperature and top_p to be specified.
 			// If both are present, prefer temperature (more commonly used).
 			if bifrostReq.Params.Temperature != nil {
@@ -268,14 +269,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		anthropicReq.StopSequences = bifrostReq.Params.Stop
 
 		// TopK — prefer the promoted neutral field; fall back to ExtraParams.
-		// Opus 4.7+ rejects top_k with a 400 error.
+		// Opus 4.7+ and the Fable/Mythos family reject top_k with a 400 error.
 		if bifrostReq.Params.TopK != nil {
-			if !IsOpus47Plus(bifrostReq.Model) {
+			if !IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 				anthropicReq.TopK = bifrostReq.Params.TopK
 			}
 		} else if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
 			delete(anthropicReq.ExtraParams, "top_k")
-			if !IsOpus47Plus(bifrostReq.Model) {
+			if !IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 				anthropicReq.TopK = topK
 			}
 		}
@@ -348,6 +349,33 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// Top-level CacheControl on the request.
 		if bifrostReq.Params.CacheControl != nil {
 			anthropicReq.CacheControl = bifrostReq.Params.CacheControl
+		}
+
+		// Diagnostics — cache diagnostics opt-in (Anthropic API only). Promote
+		// the raw/typed form from ExtraParams onto the typed field so it is
+		// always serialized (parity with cache_control), not gated behind the
+		// ExtraParams passthrough flag.
+		if dVal := bifrostReq.Params.ExtraParams["diagnostics"]; dVal != nil {
+			parsed := false
+			switch v := dVal.(type) {
+			case *AnthropicDiagnostics:
+				anthropicReq.Diagnostics = v
+				parsed = true
+			case AnthropicDiagnostics:
+				anthropicReq.Diagnostics = &v
+				parsed = true
+			default:
+				if data, err := providerUtils.MarshalSorted(v); err == nil {
+					var d AnthropicDiagnostics
+					if sonic.Unmarshal(data, &d) == nil {
+						anthropicReq.Diagnostics = &d
+						parsed = true
+					}
+				}
+			}
+			if parsed {
+				delete(anthropicReq.ExtraParams, "diagnostics")
+			}
 		}
 
 		// TaskBudget — maps onto output_config.task_budget. If an OutputConfig
@@ -476,8 +504,8 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// Convert reasoning
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				if IsOpus47Plus(bifrostReq.Model) {
-					// Opus 4.7+: budget_tokens removed; adaptive thinking is the only thinking-on mode.
+				if IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 				} else {
 					budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
@@ -522,7 +550,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						BudgetTokens: schemas.Ptr(budgetTokens),
 					}
 				}
-			} else {
+			} else if !IsFableFamily(bifrostReq.Model) {
+				// Fable/Mythos reject thinking:{type:"disabled"} with a 400 —
+				// adaptive thinking is always on and cannot be disabled. Omit
+				// the thinking param entirely for that family; all other models
+				// take the explicit disabled path.
 				anthropicReq.Thinking = &AnthropicThinking{
 					Type: "disabled",
 				}
@@ -534,12 +566,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// nothing to display", per the extended-thinking doc). We attach
 			// on non-disabled modes and let the upstream provider enforce
 			// model-level support.
-			// Opus 4.7+ omits reasoning text by default; default to "summarized"
-			// so the text is visible unless the caller explicitly requests "omitted".
+			// Opus 4.7+ and the Fable/Mythos family omit reasoning text by
+			// default; default to "summarized" so the text is visible unless
+			// the caller explicitly requests "omitted".
 			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
 				if bifrostReq.Params.Reasoning.Display != nil {
 					anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
-				} else if IsOpus47Plus(bifrostReq.Model) {
+				} else if IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
 			}
@@ -978,6 +1011,16 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
 			bifrostResponse.ServiceTier = &mapped
 		}
+		// Forward the speed actually served (fast mode) — drives fast-mode billing.
+		if response.Usage.Speed != nil {
+			bifrostResponse.Speed = response.Usage.Speed
+		}
+	}
+
+	// Forward cache diagnostics (cache-diagnosis-2026-04-07) — top-level on the
+	// message, not under usage.
+	if response.Diagnostics != nil {
+		bifrostResponse.Diagnostics = response.Diagnostics
 	}
 
 	return bifrostResponse
@@ -1025,6 +1068,15 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 			mapped := MapBifrostServiceTierToAnthropicResponse(*bifrostResp.ServiceTier)
 			anthropicResp.Usage.ServiceTier = &mapped
 		}
+		// Forward the speed actually served (fast mode)
+		if bifrostResp.Speed != nil {
+			anthropicResp.Usage.Speed = bifrostResp.Speed
+		}
+	}
+
+	// Forward cache diagnostics (cache-diagnosis-2026-04-07) — top-level, not under usage.
+	if bifrostResp.Diagnostics != nil {
+		anthropicResp.Diagnostics = bifrostResp.Diagnostics
 	}
 
 	// Convert choices to content
@@ -1142,6 +1194,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 						},
 					},
 				},
+			}
+			// Cache diagnostics arrives on message_start (cache-diagnosis-2026-04-07).
+			if chunk.Message.Diagnostics != nil {
+				streamResponse.Diagnostics = chunk.Message.Diagnostics
 			}
 			return streamResponse, nil, false
 		}
@@ -1429,6 +1485,10 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 			}
 
 			streamMessage.Content = content
+			// Cache diagnostics arrives on message_start (cache-diagnosis-2026-04-07).
+			if bifrostResp.Diagnostics != nil {
+				streamMessage.Diagnostics = bifrostResp.Diagnostics
+			}
 			streamResp.Message = streamMessage
 		}
 	}

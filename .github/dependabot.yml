@@ -314,4 +314,8 @@ updates:
     directory: /tests/cmd/seedvks
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+
+  - package-ecosystem: gomod
+    directory: /plugins/modelcatalogresolver
+    schedule:
+      interval: weekly

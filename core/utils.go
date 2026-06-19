@@ -565,11 +565,7 @@ func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 
 // NewSSRFSafeClient returns an *http.Client that re-validates every redirect
 // target through ValidateExternalURL, so a 3xx cannot bounce an outbound call
-// to an internal/link-local/private address. Redirects to private networks are
-// blocked (allowPrivateNetwork=false) regardless of the initial request's
-// policy — an attacker-influenced redirect target must not reach internal IPs.
-// Fork patch: this is relied on by framework/oauth2 and framework/plugins; the
-// upstream -X theirs sync wiped it, so it is restored here (see fork-patches.txt).
+// to an internal/link-local/private address.
 func NewSSRFSafeClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,

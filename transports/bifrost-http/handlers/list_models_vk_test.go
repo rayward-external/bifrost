@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -29,7 +30,7 @@ func TestApplyListModelsVirtualKeyProviderFilterSetsActiveVKProviders(t *testing
 		config: &lib.Config{
 			ConfigStore: &mockListModelsVKConfigStore{vk: &configstoreTables.TableVirtualKey{
 				Value:    "sk-bf-active",
-				IsActive: true,
+				IsActive: bifrost.Ptr(true),
 				ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 					{Provider: "openai"},
 					{Provider: " anthropic "},
@@ -125,7 +126,7 @@ func TestApplyListModelsVirtualKeyProviderFilterSkipsInactiveVK(t *testing.T) {
 		config: &lib.Config{
 			ConfigStore: &mockListModelsVKConfigStore{vk: &configstoreTables.TableVirtualKey{
 				Value:    "sk-bf-inactive",
-				IsActive: false,
+				IsActive: bifrost.Ptr(false),
 				ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 					{Provider: "openai"},
 				},

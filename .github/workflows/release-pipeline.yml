@@ -643,6 +643,7 @@ jobs:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
     runs-on: ubuntu-latest
+    continue-on-error: true # fork quarantine: v1.5.22 added VK list-models test (#3187 flow) that calls provider list_models API; fork API key lacks that scope → 4/501 assertions fail; see fork-patches.txt
     permissions:
       contents: read
     steps:
@@ -791,6 +792,7 @@ jobs:
         needs.detect-changes.outputs.docker-needs-release == 'true'
       )
     runs-on: ubuntu-latest
+    continue-on-error: true # fork quarantine: v1.5.22 new job checks out maximhq/bifrost-benchmarking; mocker build fails ("not one of the workspace modules listed in go.work"); always fails on fork; see fork-patches.txt
     permissions:
       contents: read
     steps:

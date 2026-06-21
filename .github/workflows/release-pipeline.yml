@@ -556,8 +556,8 @@ jobs:
           MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
-          # Fork patch: skip 5 upstream-broken tests — see fork-patches.txt; remove when upstream fixes
-          GOTEST_SKIP: 'TestConfigSchemaSync$|TestGetVirtualKeys_FromMemoryUsesConfigStore$|TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore$|TestSQLite_Customer_HashMismatch_FileSync$|TestSQLite_Governance_FullReconciliation$'
+          # Fork patch: skip 3 upstream-broken tests — see fork-patches.txt; remove when upstream fixes
+          GOTEST_SKIP: 'TestConfigSchemaSync$|TestSQLite_Customer_HashMismatch_FileSync$|TestSQLite_Governance_FullReconciliation$'
         run: ./.github/workflows/scripts/test-bifrost-http.sh
 
   # Migration tests - validates database migrations from previous versions

@@ -5644,6 +5644,9 @@ func (c *Config) AddProviderKey(ctx context.Context, provider schemas.ModelProvi
 			if errors.Is(err, configstore.ErrNotFound) {
 				return ErrNotFound
 			}
+			if errors.Is(err, configstore.ErrAlreadyExists) {
+				return ErrAlreadyExists
+			}
 			return fmt.Errorf("failed to create provider key in store: %w", err)
 		}
 	}
@@ -5697,6 +5700,9 @@ func (c *Config) UpdateProviderKey(ctx context.Context, provider schemas.ModelPr
 		if err := c.ConfigStore.UpdateProviderKey(ctx, provider, keyID, key); err != nil {
 			if errors.Is(err, configstore.ErrNotFound) {
 				return ErrNotFound
+			}
+			if errors.Is(err, configstore.ErrAlreadyExists) {
+				return ErrAlreadyExists
 			}
 			return fmt.Errorf("failed to update provider key in store: %w", err)
 		}

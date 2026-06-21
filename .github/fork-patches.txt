@@ -61,6 +61,10 @@ tests/e2e/api/runners/run-observability-local.mjs   | model.*modelName          
 
 framework/vectorstore/redis.go                      | index already exists       | bug fix: CreateNamespace's FT.INFO existence check and FT.CREATE are not atomic, so concurrent callers (the semanticcache suite fans out one Plugin.Init per vector store under t.Parallel) both observe "not exists" and race to FT.CREATE; the loser failed test-plugins with "failed to create semantic vector index BifrostSemanticCachePluginTest: Index already exists". Fix: treat the benign "Index already exists" FT.CREATE error as the idempotent success the FT.INFO-hit path already returns. Guarded by TestRedisStore_CreateNamespace_ConcurrentIsIdempotent. REMOVAL CONDITION: remove when upstream makes Redis CreateNamespace tolerate the racing-create case
 
+.github/workflows/openapi-bundle.yml               | github.repository == 'maximhq/bifrost' | infra fix: bundle-openapi job uses `token: ${{ secrets.GH_TOKEN }}` for checkout to push back the regenerated openapi.json; fork has no GH_TOKEN secret → checkout fails on every push to main that touches docs/openapi/**; add job-level `if: github.repository == 'maximhq/bifrost'` guard; -X theirs syncs wipe this; REMOVAL CONDITION: remove when fork configures GH_TOKEN secret or upstream adds its own fork guard
+
+.github/workflows/release-bifrost-migration-cli.yml | github.repository == 'maximhq/bifrost' | infra fix: new upstream workflow (added in v1.5.22 sync); release-bifrost-migration-cli job uses GH_TOKEN + R2 secrets the fork does not have; add job-level `if: github.repository == 'maximhq/bifrost'` guard; -X theirs syncs wipe this; REMOVAL CONDITION: remove when fork configures required secrets or upstream adds its own fork guard
+
 # Sync log
 # 2026-06-07: upstream/main tip 7832fa061 (2026-06-04) already merged into fork main; no new upstream commits.
 # 2026-06-08: security sweep — all 10 patches intact; CodeQL Analyze (Go) passed; Snyk skipped (no token configured).

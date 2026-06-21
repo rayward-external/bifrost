@@ -1116,41 +1116,6 @@ func (h *GovernanceHandler) reloadComplexityAnalyzerConfig(ctx context.Context, 
 
 // getVirtualKeys handles GET /api/governance/virtual-keys - Get all virtual keys with relationships
 func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		// Convert map to slice to match the non-memory response format (array)
-		virtualKeys := make([]*configstoreTables.TableVirtualKey, 0, len(data.VirtualKeys))
-		for _, vk := range data.VirtualKeys {
-			virtualKeys = append(virtualKeys, vk)
-		}
-		sort.Slice(virtualKeys, func(i, j int) bool {
-			return virtualKeys[i].CreatedAt.Before(virtualKeys[j].CreatedAt)
-		})
-		byKey := buildVKModelConfigIndex(data.ModelConfigs)
-		hydratedVKs := make([]*configstoreTables.TableVirtualKey, len(virtualKeys))
-		for i, vk := range virtualKeys {
-			clone := *vk
-			pcs := make([]configstoreTables.TableVirtualKeyProviderConfig, len(vk.ProviderConfigs))
-			copy(pcs, vk.ProviderConfigs)
-			clone.ProviderConfigs = pcs
-			applyVKGovernanceFromModelConfigs(&clone, byKey)
-			hydratedVKs[i] = &clone
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"virtual_keys": hydratedVKs,
-			"count":        len(hydratedVKs),
-			"total_count":  len(hydratedVKs),
-			"limit":        len(hydratedVKs),
-			"offset":       0,
-		})
-		return
-	}
 	// Check for pagination/filter parameters
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))

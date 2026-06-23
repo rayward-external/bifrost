@@ -176,9 +176,11 @@ func TestBedrockRerankRequestToBifrostRerankRequest(t *testing.T) {
 
 	require.NotNil(t, result)
 	// A Bedrock rerank ModelARN has no Bifrost provider prefix, so ParseModelString
-	// returns the empty default provider (intentional — provider routing is resolved
-	// elsewhere) and the full ARN as the model.
-	assert.Equal(t, schemas.ModelProvider(""), result.Provider)
+	// returns the empty default provider and the full ARN as the model. The fork's
+	// converter then falls back to schemas.Bedrock explicitly (see rerank.go), so the
+	// resolved provider is "bedrock" rather than the empty string upstream asserts.
+	// Fork patch — see .github/fork-patches.txt (same pattern as the Cohere fallback).
+	assert.Equal(t, schemas.Bedrock, result.Provider)
 	assert.Equal(t, "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0", result.Model)
 	assert.Equal(t, "capital of france", result.Query)
 	require.Len(t, result.Documents, 2)

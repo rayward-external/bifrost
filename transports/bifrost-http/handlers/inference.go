@@ -903,6 +903,20 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
 		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	}
+	// Expose bare upstream model IDs in the listing (strip the "<provider>/"
+	// prefix that each provider's ToBifrostListModelsResponse prepends). Done
+	// here as a single, provider-agnostic pass AFTER pricing resolution above
+	// (which relies on the prefix via ParseModelString) so nothing upstream
+	// breaks. ParseModelString only splits on KNOWN providers, so model
+	// namespaces like "meta-llama/Llama-3.1-8B" are preserved as-is. Routing
+	// is unaffected: Bifrost already accepts bare model names on inference.
+	if resp != nil {
+		for i := range resp.Data {
+			if _, bare := schemas.ParseModelString(resp.Data[i].ID, ""); bare != "" {
+				resp.Data[i].ID = bare
+			}
+		}
+	}
 	// Send successful response
 	SendJSON(ctx, resp)
 }

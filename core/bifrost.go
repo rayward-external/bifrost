@@ -4718,6 +4718,14 @@ func isInvalidEncryptedContentError(err *schemas.BifrostError) bool {
 		(strings.Contains(message, "encrypted content") && strings.Contains(message, "could not be decrypted"))
 }
 
+func effectiveRetryLimitForError(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, requestType schemas.RequestType, err *schemas.BifrostError, hasKeyProvider bool) int {
+	retryLimit := config.NetworkConfig.MaxRetries
+	if hasKeyProvider && isResponsesEncryptedContentError(requestType, err) {
+		retryLimit = max(retryLimit, getResponsesAffinityRecoveryRetries(ctx))
+	}
+	return retryLimit
+}
+
 // handleRequest handles the request to the provider based on the request type
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
@@ -5699,6 +5707,7 @@ func executeRequestWithRetries[T any](
 		}
 
 		if attempts > 0 {
+			retryLimit := effectiveRetryLimitForError(ctx, config, requestType, bifrostError, keyProvider != nil)
 			// Log retry attempt
 			var retryMsg string
 			if bifrostError != nil && bifrostError.Error != nil {
@@ -5709,7 +5718,7 @@ func executeRequestWithRetries[T any](
 					retryMsg += ", type=" + *bifrostError.Type
 				}
 			}
-			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, model, retryMsg)
+			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, retryLimit, model, retryMsg)
 
 			// Skip backoff only when (a) we genuinely rotated to a different credential AND
 			// (b) the previous failure was a *permanent* per-key error (401/402/403) where
@@ -5739,7 +5748,7 @@ func executeRequestWithRetries[T any](
 				}
 				keyNote = fmt.Sprintf("; %s=%s", rotationNote, currentKey.Name)
 			}
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, config.NetworkConfig.MaxRetries, providerKey, model, routingErrorSummary(bifrostError), keyNote))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, retryLimit, providerKey, model, routingErrorSummary(bifrostError), keyNote))
 
 			if !(lastWasPermanentKeyFailure && keyChanged) {
 				backoff := calculateBackoff(attempts-1, config)
@@ -6002,10 +6011,7 @@ func executeRequestWithRetries[T any](
 			break
 		}
 
-		retryLimit := config.NetworkConfig.MaxRetries
-		if isInvalidEncryptedContentKeyFailure {
-			retryLimit = max(retryLimit, getResponsesAffinityRecoveryRetries(ctx))
-		}
+		retryLimit := effectiveRetryLimitForError(ctx, config, requestType, bifrostError, keyProvider != nil)
 		if attempts >= retryLimit {
 			break
 		}
@@ -8029,6 +8035,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	if affinityKey, ok := bifrost.getResponsesAffinityKey(ctx, providerKey, supportedKeys); ok {
 		return []schemas.Key{affinityKey}, false, nil
 	}
+	responsesAffinityLookupActive := hasResponsesAffinityLookup(ctx)
 
 	// Explicit key ID takes priority over key name — pin to that key, no rotation.
 	if ctx != nil {
@@ -8073,7 +8080,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	if ctx != nil {
 		fallbackIndex, _ = ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
 	}
-	stickinessActive := sessionID != "" && bifrost.kvStore != nil && fallbackIndex == 0
+	stickinessActive := sessionID != "" && bifrost.kvStore != nil && fallbackIndex == 0 && !responsesAffinityLookupActive
 
 	if stickinessActive {
 		kvKey := buildSessionKey(providerKey, sessionID, model)
@@ -8121,7 +8128,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	}
 
 	// Normal case: return the full filtered pool with rotation enabled.
-	if hasResponsesAffinityLookup(ctx) {
+	if responsesAffinityLookupActive {
 		setResponsesAffinityRecoveryRetries(ctx, len(supportedKeys)-1)
 	}
 	return supportedKeys, true, nil

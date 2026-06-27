@@ -29,7 +29,7 @@ jobs:
       skip-tests: ${{ steps.skip_tests.outputs.skip-tests }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >+
@@ -82,7 +82,7 @@ jobs:
       transport-version: ${{ steps.detect.outputs.transport-version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -106,7 +106,7 @@ jobs:
             sum.golang.org:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -117,7 +117,7 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
@@ -149,7 +149,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -184,18 +184,18 @@ jobs:
             sum.golang.org:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "25"
 
@@ -258,7 +258,7 @@ jobs:
       approved: ${{ steps.approve.outputs.approved }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >+
@@ -280,7 +280,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -306,13 +306,13 @@ jobs:
             uploader.codecov.io:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
@@ -374,7 +374,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -408,7 +408,7 @@ jobs:
             uploader.codecov.io:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -419,7 +419,7 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
@@ -481,7 +481,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           # bifrost-http binary runs on the host and connects to Postgres via
@@ -522,18 +522,18 @@ jobs:
             www.getbifrost.ai:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "25"
 
@@ -569,7 +569,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           # Migration test binary runs on the host (not in a container) and
@@ -603,18 +603,18 @@ jobs:
             sum.golang.org:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "25"
 
@@ -648,7 +648,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           # API integrations test compiles bifrost-http and runs it on the host
@@ -705,18 +705,18 @@ jobs:
             www.getbifrost.ai:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "25"
 
@@ -772,7 +772,7 @@ jobs:
 
       - name: Upload Newman reports
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: newman-reports-api-integrations
           path: tests/e2e/api/newman-reports/
@@ -797,7 +797,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -821,21 +821,21 @@ jobs:
             www.getbifrost.ai:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
 
       - name: Checkout bifrost-benchmarking
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: maximhq/bifrost-benchmarking
           path: bifrost-benchmarking
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
@@ -848,7 +848,7 @@ jobs:
 
       - name: Upload cost accuracy artifacts
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cost-accuracy-results
           path: tmp/cost-accuracy/
@@ -874,7 +874,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -892,21 +892,21 @@ jobs:
             www.getbifrost.ai:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
 
       - name: Checkout bifrost-benchmarking
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: maximhq/bifrost-benchmarking
           path: bifrost-benchmarking
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
@@ -927,7 +927,7 @@ jobs:
 
       - name: Upload load test artifacts
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: load-performance-results
           path: |
@@ -944,7 +944,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           # 172.28.0.16:5432 is the pinned postgres IP from
@@ -994,18 +994,18 @@ jobs:
             www.getbifrost.ai:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "25"
 
@@ -1013,7 +1013,7 @@ jobs:
         run: npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
 
       - name: Setup Docker Buildx
-        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
+        uses: step-security/setup-buildx-action@6997872a55d77391e51b87609556578131f44402 # v4.1.0
 
       - name: Test Docker image (amd64)
         env:
@@ -1051,7 +1051,7 @@ jobs:
 
       - name: Upload Newman reports
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: newman-reports-amd64
           path: tests/e2e/api/newman-reports/
@@ -1066,7 +1066,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           # 172.28.0.16:5432 is the pinned postgres IP from
@@ -1116,18 +1116,18 @@ jobs:
             www.getbifrost.ai:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "25"
 
@@ -1135,7 +1135,7 @@ jobs:
         run: npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
 
       - name: Setup Docker Buildx
-        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
+        uses: step-security/setup-buildx-action@6997872a55d77391e51b87609556578131f44402 # v4.1.0
 
       - name: Test Docker image (arm64)
         env:
@@ -1173,7 +1173,7 @@ jobs:
 
       - name: Upload Newman reports
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: newman-reports-arm64
           path: tests/e2e/api/newman-reports/
@@ -1204,7 +1204,7 @@ jobs:
       version: ${{ needs.detect-changes.outputs.core-version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1214,19 +1214,19 @@ jobs:
             release-assets.githubusercontent.com:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
           token: ${{ secrets.GH_TOKEN }}
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "25"
 
@@ -1305,7 +1305,7 @@ jobs:
       version: ${{ needs.detect-changes.outputs.framework-version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1317,14 +1317,14 @@ jobs:
             sum.golang.org:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
           token: ${{ secrets.GH_TOKEN }}
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
@@ -1416,7 +1416,7 @@ jobs:
       success: ${{ steps.release.outputs.success }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1436,7 +1436,7 @@ jobs:
             sum.golang.org:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -1448,12 +1448,12 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "25"
 
@@ -1547,7 +1547,7 @@ jobs:
       success: ${{ steps.prep.outputs.success }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1563,19 +1563,19 @@ jobs:
             sum.golang.org:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
           token: ${{ secrets.GH_TOKEN }}
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "25"
 
@@ -1599,7 +1599,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1624,7 +1624,7 @@ jobs:
             storage.googleapis.com:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -1634,12 +1634,12 @@ jobs:
         run: git pull origin ${{ github.ref_name }}
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "25"
 
@@ -1675,7 +1675,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1693,7 +1693,7 @@ jobs:
             storage.googleapis.com:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -1703,12 +1703,12 @@ jobs:
         run: git pull origin ${{ github.ref_name }}
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.4"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "25"
 
@@ -1744,7 +1744,7 @@ jobs:
       version: ${{ needs.detect-changes.outputs.transport-version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1755,7 +1755,7 @@ jobs:
             pypi.org:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -1810,7 +1810,7 @@ jobs:
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1829,7 +1829,7 @@ jobs:
             storage.googleapis.com:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -1844,16 +1844,16 @@ jobs:
           echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Setup Docker Buidx
-        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
+        uses: step-security/setup-buildx-action@6997872a55d77391e51b87609556578131f44402 # v4.1.0
 
       - name: Log in to Docker Hub
-        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        uses: step-security/docker-login-action@164e21d7e52229904128e2f946001cb88278c33d # v4.2.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Log in to GitHub Container Registry
-        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        uses: step-security/docker-login-action@164e21d7e52229904128e2f946001cb88278c33d # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1872,7 +1872,7 @@ jobs:
           echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push AMD64 Docker image
-        uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
+        uses: step-security/docker-build-push-action@9af9b5acc1751dcec2aa5375a068979fa526bc9a # v7.2.0
         with:
           context: .
           build-args: |
@@ -1923,7 +1923,7 @@ jobs:
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1942,7 +1942,7 @@ jobs:
             storage.googleapis.com:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -1957,16 +1957,16 @@ jobs:
           echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Setup Docker Buidx
-        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
+        uses: step-security/setup-buildx-action@6997872a55d77391e51b87609556578131f44402 # v4.1.0
 
       - name: Log in to Docker Hub
-        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        uses: step-security/docker-login-action@164e21d7e52229904128e2f946001cb88278c33d # v4.2.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Log in to GitHub Container Registry
-        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        uses: step-security/docker-login-action@164e21d7e52229904128e2f946001cb88278c33d # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1985,7 +1985,7 @@ jobs:
           echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push ARM64 Docker image
-        uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
+        uses: step-security/docker-build-push-action@9af9b5acc1751dcec2aa5375a068979fa526bc9a # v7.2.0
         with:
           context: .
           file: ./transports/Dockerfile
@@ -2019,7 +2019,7 @@ jobs:
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -2032,16 +2032,16 @@ jobs:
             registry-1.docker.io:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Log in to Docker Hub
-        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        uses: step-security/docker-login-action@164e21d7e52229904128e2f946001cb88278c33d # v4.2.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Log in to GitHub Container Registry
-        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        uses: step-security/docker-login-action@164e21d7e52229904128e2f946001cb88278c33d # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -2082,7 +2082,7 @@ jobs:
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -2103,7 +2103,7 @@ jobs:
             storage.googleapis.com:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -2118,16 +2118,16 @@ jobs:
           echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Setup Docker Buildx
-        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
+        uses: step-security/setup-buildx-action@6997872a55d77391e51b87609556578131f44402 # v4.1.0
 
       - name: Log in to Docker Hub
-        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        uses: step-security/docker-login-action@164e21d7e52229904128e2f946001cb88278c33d # v4.2.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Log in to GitHub Container Registry
-        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        uses: step-security/docker-login-action@164e21d7e52229904128e2f946001cb88278c33d # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -2146,7 +2146,7 @@ jobs:
           echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push UBI9 AMD64 Docker image
-        uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
+        uses: step-security/docker-build-push-action@9af9b5acc1751dcec2aa5375a068979fa526bc9a # v7.2.0
         with:
           context: .
           build-args: |
@@ -2199,7 +2199,7 @@ jobs:
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -2220,7 +2220,7 @@ jobs:
             storage.googleapis.com:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -2235,16 +2235,16 @@ jobs:
           echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Setup Docker Buildx
-        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
+        uses: step-security/setup-buildx-action@6997872a55d77391e51b87609556578131f44402 # v4.1.0
 
       - name: Log in to Docker Hub
-        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        uses: step-security/docker-login-action@164e21d7e52229904128e2f946001cb88278c33d # v4.2.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Log in to GitHub Container Registry
-        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        uses: step-security/docker-login-action@164e21d7e52229904128e2f946001cb88278c33d # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -2263,7 +2263,7 @@ jobs:
           echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push UBI9 ARM64 Docker image
-        uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
+        uses: step-security/docker-build-push-action@9af9b5acc1751dcec2aa5375a068979fa526bc9a # v7.2.0
         with:
           context: .
           file: ./transports/Dockerfile.redhat
@@ -2299,7 +2299,7 @@ jobs:
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -2312,16 +2312,16 @@ jobs:
             registry-1.docker.io:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Log in to Docker Hub
-        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        uses: step-security/docker-login-action@164e21d7e52229904128e2f946001cb88278c33d # v4.2.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Log in to GitHub Container Registry
-        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        uses: step-security/docker-login-action@164e21d7e52229904128e2f946001cb88278c33d # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -2357,14 +2357,14 @@ jobs:
       contents: write
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
             github.com:443
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -2399,7 +2399,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >

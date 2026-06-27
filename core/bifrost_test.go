@@ -1401,6 +1401,109 @@ func TestExecuteRequestWithRetries_InvalidEncryptedContentRotatesAcrossKeysWitho
 	}
 }
 
+func TestExecuteRequestWithRetries_InvalidEncryptedContentBypassesSessionStickinessOnAffinityMiss(t *testing.T) {
+	kvStore := newMockKVStore()
+	account := NewMockAccount()
+	account.AddProvider(schemas.Azure, 5, 1000)
+	account.SetKeysForProvider(schemas.Azure, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1, AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://key-a.openai.azure.com")}},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1, AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://key-b.openai.azure.com")}},
+	})
+
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+		KVStore: kvStore,
+		KeySelector: func(_ *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
+			return keys[0], nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	encryptedContent := "gAAAAABencrypted-state-with-session"
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	bfCtx.SetValue(schemas.BifrostContextKeySessionID, "sess-continue")
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Azure,
+			Model:    "gpt-5.5",
+			Input: []schemas.ResponsesMessage{
+				{
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						EncryptedContent: &encryptedContent,
+					},
+				},
+			},
+		},
+	}
+	setResponsesAffinityLookup(bfCtx, req)
+
+	pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ResponsesStreamRequest, schemas.Azure, "gpt-5.5", schemas.Azure)
+	if err != nil {
+		t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
+	}
+	if !canRotate {
+		t.Fatal("responses encrypted-content recovery should rotate on affinity miss even when session stickiness is active")
+	}
+	if got := getResponsesAffinityRecoveryRetries(bfCtx); got != 1 {
+		t.Fatalf("expected one encrypted-content recovery retry, got %d", got)
+	}
+	if _, err := kvStore.Get(buildSessionKey(schemas.Azure, "sess-continue", "gpt-5.5")); err == nil {
+		t.Fatal("encrypted-content affinity miss should not create a session-sticky key")
+	}
+
+	keyProvider := func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+		available := make([]schemas.Key, 0, len(pool))
+		for _, key := range pool {
+			if deadKeyIDs[key.ID] || usedKeyIDs[key.ID] {
+				continue
+			}
+			available = append(available, key)
+		}
+		if len(available) == 0 {
+			return schemas.Key{}, errAllKeysDead
+		}
+		return bifrost.keySelector(bfCtx, available, schemas.Azure, "gpt-5.5")
+	}
+
+	var usedKeyIDs []string
+	handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+		usedKeyIDs = append(usedKeyIDs, k.ID)
+		if k.ID == "key-a" {
+			encryptedContentErr := createBifrostError("encrypted content could not be decrypted or parsed", Ptr(400), Ptr("invalid_request_error"), false)
+			encryptedContentErr.Error.Code = Ptr("invalid_encrypted_content")
+			return "", encryptedContentErr
+		}
+		return "ok", nil
+	}
+
+	result, retryErr := executeRequestWithRetries(
+		bfCtx,
+		createTestConfig(0, 0, 0),
+		handler,
+		keyProvider,
+		schemas.ResponsesStreamRequest,
+		schemas.Azure,
+		"gpt-5.5",
+		req,
+		NewDefaultLogger(schemas.LogLevelError),
+	)
+
+	if retryErr != nil {
+		t.Fatalf("expected encrypted-content key recovery with session id to succeed, got %v", retryErr)
+	}
+	if result != "ok" {
+		t.Fatalf("expected recovery result ok, got %q", result)
+	}
+	if got := strings.Join(usedKeyIDs, ","); got != "key-a,key-b" {
+		t.Fatalf("expected retry to rotate from key-a to key-b, got %s", got)
+	}
+}
+
 func TestRememberResponsesAffinityStoresResponseIDAndEncryptedContent(t *testing.T) {
 	kvStore := newMockKVStore()
 	bifrost := &Bifrost{

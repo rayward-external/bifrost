@@ -166,8 +166,12 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if cohereReq, ok := req.(*cohere.CohereRerankRequest); ok {
+				rerankReq := cohereReq.ToBifrostRerankRequest(ctx)
+				if rerankReq != nil && rerankReq.Provider == "" {
+					rerankReq.Provider = schemas.Cohere
+				}
 				return &schemas.BifrostRequest{
-					RerankRequest: cohereReq.ToBifrostRerankRequest(ctx),
+					RerankRequest: rerankReq,
 				}, nil
 			}
 			return nil, errors.New("invalid rerank request type")

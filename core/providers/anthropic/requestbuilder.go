@@ -204,6 +204,13 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			}
 		}
 
+		if cfg.Provider == schemas.Anthropic && !cfg.IsCountTokens {
+			jsonBody, _, err = ApplyAnthropicPromptCacheControlToRawBody(ctx, jsonBody)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+
 		// Probe-unmarshal to auto-inject beta headers required by fields that
 		// survived stripping, so raw-body callers don't need to supply headers
 		// manually.
@@ -252,6 +259,10 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 		if cfg.IsStreaming {
 			reqBody.Stream = schemas.Ptr(true)
+		}
+
+		if cfg.Provider == schemas.Anthropic && !cfg.IsCountTokens {
+			ApplyAnthropicPromptCacheControl(ctx, reqBody)
 		}
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)

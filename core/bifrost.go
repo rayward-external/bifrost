@@ -40,8 +40,8 @@ import (
 	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
 	"github.com/maximhq/bifrost/core/providers/replicate"
-	"github.com/maximhq/bifrost/core/providers/runway"
 	"github.com/maximhq/bifrost/core/providers/runware"
+	"github.com/maximhq/bifrost/core/providers/runway"
 	"github.com/maximhq/bifrost/core/providers/sgl"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
@@ -4560,6 +4560,11 @@ func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryE
 		return false
 	}
 
+	if isResponsesEncryptedContentError(req.RequestType, primaryErr) {
+		bifrost.logger.Debug("responses encrypted content error, we should not try fallbacks")
+		return false
+	}
+
 	// Check if this is a short-circuit error that doesn't allow fallbacks
 	// Note: AllowFallbacks = nil is treated as true (allow fallbacks by default)
 	if primaryErr.AllowFallbacks != nil && !*primaryErr.AllowFallbacks {
@@ -4685,8 +4690,32 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 		return false
 	}
 
+	if isInvalidEncryptedContentError(fallbackErr) {
+		return false
+	}
+
 	bifrost.logger.Debug(fmt.Sprintf("Fallback provider %s failed: %s", fallback.Provider, fallbackErr.Error.Message))
 	return true
+}
+
+func isResponsesEncryptedContentError(requestType schemas.RequestType, err *schemas.BifrostError) bool {
+	if requestType != schemas.ResponsesRequest && requestType != schemas.ResponsesStreamRequest {
+		return false
+	}
+	return isInvalidEncryptedContentError(err)
+}
+
+func isInvalidEncryptedContentError(err *schemas.BifrostError) bool {
+	if err == nil || err.Error == nil {
+		return false
+	}
+	if err.Error.Code != nil && strings.EqualFold(strings.TrimSpace(*err.Error.Code), "invalid_encrypted_content") {
+		return true
+	}
+
+	message := strings.ToLower(err.Error.Message)
+	return strings.Contains(message, "invalid_encrypted_content") ||
+		(strings.Contains(message, "encrypted content") && strings.Contains(message, "could not be decrypted"))
 }
 
 // handleRequest handles the request to the provider based on the request type
@@ -4766,6 +4795,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		applyFallbackKeySelection(ctx, fallback)
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
@@ -4890,6 +4920,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		applyFallbackKeySelection(ctx, fallback)
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
@@ -6246,6 +6277,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// Build the key pool for this request. Selection and rotation are deferred to
 					// executeRequestWithRetries via keyProvider so that each retry attempt can use
 					// a different key (on rate-limit errors) without re-running the full filtering.
+					setResponsesAffinityLookup(req.Context, &req.BifrostRequest)
 					supportedKeys, canRotate, keyPoolErr := bifrost.selectKeyFromProviderForModelWithPool(req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
 					if keyPoolErr != nil {
 						bifrost.logger.Debug("error building key pool for model %s: %v", model, keyPoolErr)
@@ -6419,6 +6451,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					} else if resp != nil {
 						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
+						bifrost.rememberResponsesAffinity(attemptRequestType, provider.GetProviderKey(), k, resp)
 					}
 					return resp, nil
 				}
@@ -6499,6 +6532,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			if result != nil {
 				result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
 				result.PopulateRoutingInfo(attemptRoutingInfo)
+				if selectedKeyID, ok := req.Context.Value(schemas.BifrostContextKeySelectedKeyID).(string); ok && selectedKeyID != "" {
+					bifrost.rememberResponsesAffinity(req.RequestType, provider.GetProviderKey(), schemas.Key{ID: selectedKeyID}, result)
+				}
 			}
 			if IsStreamRequestType(req.RequestType) {
 				// Send stream with context awareness to prevent deadlock
@@ -7976,6 +8012,10 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	}
 	if len(supportedKeys) == 0 {
 		return nil, false, fmt.Errorf("no keys found that support model: %s", model)
+	}
+
+	if affinityKey, ok := bifrost.getResponsesAffinityKey(ctx, providerKey, supportedKeys); ok {
+		return []schemas.Key{affinityKey}, false, nil
 	}
 
 	// Explicit key ID takes priority over key name — pin to that key, no rotation.

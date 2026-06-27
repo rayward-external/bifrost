@@ -49,6 +49,61 @@ func createBifrostError(message string, statusCode *int, errorType *string, isBi
 	}
 }
 
+func TestShouldTryFallbacks_InvalidEncryptedContentDisablesFallbacks(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Azure,
+			Model:    "gpt-5.5",
+			Fallbacks: []schemas.Fallback{
+				{Provider: schemas.Azure, Model: "gpt-5.5", KeyID: "lawgic-east"},
+			},
+		},
+	}
+
+	encryptedContentErr := createBifrostError("encrypted content could not be decrypted or parsed", Ptr(400), Ptr("invalid_request_error"), false)
+	encryptedContentErr.Error.Code = Ptr("invalid_encrypted_content")
+	if bifrost.shouldTryFallbacks(req, encryptedContentErr) {
+		t.Fatal("invalid_encrypted_content must not try fallbacks across Azure keys")
+	}
+
+	ordinaryBadRequest := createBifrostError("ordinary provider bad request", Ptr(400), Ptr("invalid_request_error"), false)
+	if !bifrost.shouldTryFallbacks(req, ordinaryBadRequest) {
+		t.Fatal("ordinary provider errors with configured fallbacks should retain existing fallback behavior")
+	}
+}
+
+func TestShouldContinueWithFallbacks_InvalidEncryptedContentStopsFallbackChain(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	encryptedContentErr := createBifrostError("encrypted content could not be decrypted or parsed", Ptr(400), Ptr("invalid_request_error"), false)
+	encryptedContentErr.Error.Code = Ptr("invalid_encrypted_content")
+
+	if bifrost.shouldContinueWithFallbacks(schemas.Fallback{Provider: schemas.Azure, Model: "gpt-5.5"}, encryptedContentErr) {
+		t.Fatal("invalid_encrypted_content from a fallback attempt must stop the fallback chain")
+	}
+}
+
+func TestApplyFallbackKeySelectionPinsFallbackKeyID(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "primary-key")
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "primary-name")
+
+	clearCtxForFallback(ctx)
+	applyFallbackKeySelection(ctx, schemas.Fallback{
+		Provider: schemas.Azure,
+		Model:    "gpt-5.5",
+		KeyID:    "lawgic-scus",
+	})
+
+	if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != "lawgic-scus" {
+		t.Fatalf("expected fallback key id to be pinned, got %q", got)
+	}
+	if got, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); ok {
+		t.Fatalf("fallback KeyID should not preserve primary key name, got %q", got)
+	}
+}
+
 // Test executeRequestWithRetries - success scenarios
 func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	config := createTestConfig(3, 100*time.Millisecond, 1*time.Second)
@@ -1128,6 +1183,136 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 		if id != "key-a" {
 			t.Errorf("attempt %d: expected sticky key-a, got %s (full sequence: %v)", i, id, usedKeyIDs)
 		}
+	}
+}
+
+func TestSelectKeyFromProviderForModel_ResponsesAffinityUsesPreviousResponseID(t *testing.T) {
+	kvStore := newMockKVStore()
+	account := NewMockAccount()
+	account.AddProvider(schemas.Azure, 5, 1000)
+	account.SetKeysForProvider(schemas.Azure, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1, AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://key-a.openai.azure.com")}},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1, AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://key-b.openai.azure.com")}},
+	})
+
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+		KVStore: kvStore,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	if err := kvStore.SetWithTTL(buildResponsesAffinityKey("response", schemas.Azure, "resp_123"), "key-b", time.Hour); err != nil {
+		t.Fatalf("seed response affinity: %v", err)
+	}
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Azure,
+			Model:    "gpt-5.5",
+			Params:   &schemas.ResponsesParameters{PreviousResponseID: Ptr("resp_123")},
+		},
+	}
+	setResponsesAffinityLookup(bfCtx, req)
+	bfCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, "key-a")
+
+	pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ResponsesStreamRequest, schemas.Azure, "gpt-5.5", schemas.Azure)
+	if err != nil {
+		t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
+	}
+	if canRotate {
+		t.Fatal("responses affinity should pin to one key")
+	}
+	if len(pool) != 1 || pool[0].ID != "key-b" {
+		t.Fatalf("expected response affinity pool=[key-b], got %v", pool)
+	}
+}
+
+func TestSelectKeyFromProviderForModel_ResponsesAffinityUsesEncryptedContentHash(t *testing.T) {
+	kvStore := newMockKVStore()
+	account := NewMockAccount()
+	account.AddProvider(schemas.Azure, 5, 1000)
+	account.SetKeysForProvider(schemas.Azure, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1, AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://key-a.openai.azure.com")}},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1, AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://key-b.openai.azure.com")}},
+	})
+
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+		KVStore: kvStore,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	encryptedContent := "gAAAAABencrypted-state"
+	if err := kvStore.SetWithTTL(buildResponsesAffinityKey("encrypted", schemas.Azure, encryptedContent), "key-b", time.Hour); err != nil {
+		t.Fatalf("seed encrypted-content affinity: %v", err)
+	}
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Azure,
+			Model:    "gpt-5.5",
+			Input: []schemas.ResponsesMessage{
+				{
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						EncryptedContent: &encryptedContent,
+					},
+				},
+			},
+		},
+	}
+	setResponsesAffinityLookup(bfCtx, req)
+
+	pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ResponsesStreamRequest, schemas.Azure, "gpt-5.5", schemas.Azure)
+	if err != nil {
+		t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
+	}
+	if canRotate {
+		t.Fatal("responses encrypted-content affinity should pin to one key")
+	}
+	if len(pool) != 1 || pool[0].ID != "key-b" {
+		t.Fatalf("expected encrypted-content affinity pool=[key-b], got %v", pool)
+	}
+}
+
+func TestRememberResponsesAffinityStoresResponseIDAndEncryptedContent(t *testing.T) {
+	kvStore := newMockKVStore()
+	bifrost := &Bifrost{
+		kvStore: kvStore,
+		logger:  NewDefaultLogger(schemas.LogLevelError),
+	}
+
+	responseID := "resp_123"
+	encryptedContent := "gAAAAABencrypted-state"
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			ID: &responseID,
+			Output: []schemas.ResponsesMessage{
+				{
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						EncryptedContent: &encryptedContent,
+					},
+				},
+			},
+		},
+	}
+
+	bifrost.rememberResponsesAffinity(schemas.ResponsesRequest, schemas.Azure, schemas.Key{ID: "key-b"}, resp)
+
+	if raw, err := kvStore.Get(buildResponsesAffinityKey("response", schemas.Azure, responseID)); err != nil || raw != "key-b" {
+		t.Fatalf("expected response ID affinity to key-b, got raw=%v err=%v", raw, err)
+	}
+	if raw, err := kvStore.Get(buildResponsesAffinityKey("encrypted", schemas.Azure, encryptedContent)); err != nil || raw != "key-b" {
+		t.Fatalf("expected encrypted-content affinity to key-b, got raw=%v err=%v", raw, err)
 	}
 }
 

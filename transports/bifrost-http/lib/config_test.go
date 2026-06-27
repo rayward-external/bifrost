@@ -14686,7 +14686,7 @@ func TestGenerateProviderHash_RuntimeVsMigrationParity(t *testing.T) {
 	t.Run("ProxyConfig_GORMRoundTrip", func(t *testing.T) {
 		proxyConfig := &schemas.ProxyConfig{
 			Type: schemas.HTTPProxy,
-			URL:  schemas.NewSecretVar("http://proxy.example.com:8080"),
+			URL:  plainTextSecretVarForHashTest(t, "http://proxy.example.com:8080"),
 		}
 
 		providerToSave := tables.TableProvider{
@@ -14818,7 +14818,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 	// Test case 2: AzureKeyConfig
 	t.Run("AzureKeyConfig_GORMRoundTrip", func(t *testing.T) {
 		azureConfig := &schemas.AzureKeyConfig{
-			Endpoint: *schemas.NewSecretVar("https://myresource.openai.azure.com"),
+			Endpoint: *plainTextSecretVarForHashTest(t, "https://myresource.openai.azure.com"),
 		}
 
 		keyToSave := tables.TableKey{
@@ -15140,6 +15140,13 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 // ptrFloat64 is a helper function to create a pointer to a float64 value
 func ptrFloat64(v float64) *float64 {
 	return &v
+}
+
+func plainTextSecretVarForHashTest(t *testing.T, value string) *schemas.SecretVar {
+	t.Helper()
+	var secret schemas.SecretVar
+	require.NoError(t, secret.Scan(value))
+	return &secret
 }
 
 // TestVKProviderConfig_WeightZeroPreserved verifies that a virtual key provider config
@@ -16755,6 +16762,7 @@ var enterpriseSchemaPaths = map[string]bool{
 	"load_balancer_config":       true,
 	"guardrails_config":          true,
 	"large_payload_optimization": true,
+	"circuit_breaker_config":     true,
 }
 
 // excludedGoFields are Go struct fields that should not be in the schema (internal use only)
@@ -16872,6 +16880,7 @@ var excludedSchemaFields = map[string]map[string]bool{
 	},
 	"governance": {
 		"business_units": true, // Enterprise feature; not in OSS GovernanceConfig
+		"roles":          true, // Enterprise RBAC feature; not in OSS GovernanceConfig
 	},
 	"auth_config": {
 		"disable_auth_on_inference": true, // Deprecated and ignored; kept in schema for backward-compatible config.json validation. Use enforce_auth_on_inference.
@@ -17149,6 +17158,7 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 		"load_balancer_config":       true,
 		"guardrails_config":          true,
 		"large_payload_optimization": true,
+		"circuit_breaker_config":     true,
 	}
 
 	schema := loadJSONSchema(t)

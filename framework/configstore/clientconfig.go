@@ -606,7 +606,7 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 
 	// Hash ProxyConfig
 	if p.ProxyConfig != nil {
-		data, err := sonic.Marshal(p.ProxyConfig)
+		data, err := p.ProxyConfig.MarshalForStorage()
 		if err != nil {
 			return "", err
 		}
@@ -693,11 +693,27 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	hash.Write(data)
 	// Hash AzureKeyConfig
 	if key.AzureKeyConfig != nil {
-		data, err := sonic.Marshal(key.AzureKeyConfig)
-		if err != nil {
-			return "", err
+		hash.Write([]byte("azureKeyConfig:"))
+		hash.Write([]byte("endpoint:" + schemas.SecretVarAsString(&key.AzureKeyConfig.Endpoint)))
+		if key.AzureKeyConfig.ClientID != nil {
+			hash.Write([]byte("clientID:" + schemas.SecretVarAsString(key.AzureKeyConfig.ClientID)))
 		}
-		hash.Write(data)
+		if key.AzureKeyConfig.ClientSecret != nil {
+			hash.Write([]byte("clientSecret:" + schemas.SecretVarAsString(key.AzureKeyConfig.ClientSecret)))
+		}
+		if key.AzureKeyConfig.TenantID != nil {
+			hash.Write([]byte("tenantID:" + schemas.SecretVarAsString(key.AzureKeyConfig.TenantID)))
+		}
+		if len(key.AzureKeyConfig.Scopes) > 0 {
+			scopes := append([]string(nil), key.AzureKeyConfig.Scopes...)
+			sort.Strings(scopes)
+			data, err := sonic.Marshal(scopes)
+			if err != nil {
+				return "", err
+			}
+			hash.Write([]byte("scopes:"))
+			hash.Write(data)
+		}
 	}
 	// Hash VertexKeyConfig
 	if key.VertexKeyConfig != nil {

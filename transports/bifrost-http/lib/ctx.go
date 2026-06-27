@@ -274,6 +274,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		if keyStr == "baggage" {
 			if sessionID := ParseSessionIDFromBaggage(string(value)); sessionID != "" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyParentRequestID, sessionID)
+				if existing, _ := bifrostCtx.Value(schemas.BifrostContextKeySessionID).(string); strings.TrimSpace(existing) == "" {
+					bifrostCtx.SetValue(schemas.BifrostContextKeySessionID, sessionID)
+				}
 			}
 			return true
 		}

@@ -40,8 +40,8 @@ import (
 	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
 	"github.com/maximhq/bifrost/core/providers/replicate"
-	"github.com/maximhq/bifrost/core/providers/runway"
 	"github.com/maximhq/bifrost/core/providers/runware"
+	"github.com/maximhq/bifrost/core/providers/runway"
 	"github.com/maximhq/bifrost/core/providers/sgl"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
@@ -4560,6 +4560,11 @@ func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryE
 		return false
 	}
 
+	if isResponsesEncryptedContentError(req.RequestType, primaryErr) {
+		bifrost.logger.Debug("responses encrypted content error, we should not try fallbacks")
+		return false
+	}
+
 	// Check if this is a short-circuit error that doesn't allow fallbacks
 	// Note: AllowFallbacks = nil is treated as true (allow fallbacks by default)
 	if primaryErr.AllowFallbacks != nil && !*primaryErr.AllowFallbacks {
@@ -4685,8 +4690,40 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 		return false
 	}
 
+	if isInvalidEncryptedContentError(fallbackErr) {
+		return false
+	}
+
 	bifrost.logger.Debug(fmt.Sprintf("Fallback provider %s failed: %s", fallback.Provider, fallbackErr.Error.Message))
 	return true
+}
+
+func isResponsesEncryptedContentError(requestType schemas.RequestType, err *schemas.BifrostError) bool {
+	if requestType != schemas.ResponsesRequest && requestType != schemas.ResponsesStreamRequest && requestType != schemas.CompactionRequest {
+		return false
+	}
+	return isInvalidEncryptedContentError(err)
+}
+
+func isInvalidEncryptedContentError(err *schemas.BifrostError) bool {
+	if err == nil || err.Error == nil {
+		return false
+	}
+	if err.Error.Code != nil && strings.EqualFold(strings.TrimSpace(*err.Error.Code), "invalid_encrypted_content") {
+		return true
+	}
+
+	message := strings.ToLower(err.Error.Message)
+	return strings.Contains(message, "invalid_encrypted_content") ||
+		(strings.Contains(message, "encrypted content") && strings.Contains(message, "could not be decrypted"))
+}
+
+func effectiveRetryLimitForError(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, requestType schemas.RequestType, err *schemas.BifrostError, hasKeyProvider bool) int {
+	retryLimit := config.NetworkConfig.MaxRetries
+	if hasKeyProvider && isResponsesEncryptedContentError(requestType, err) {
+		retryLimit = max(retryLimit, getResponsesAffinityRecoveryRetries(ctx))
+	}
+	return retryLimit
 }
 
 // handleRequest handles the request to the provider based on the request type
@@ -4766,6 +4803,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		applyFallbackKeySelection(ctx, fallback)
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
@@ -4890,6 +4928,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		applyFallbackKeySelection(ctx, fallback)
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
@@ -5548,7 +5587,7 @@ func executeRequestWithRetries[T any](
 	// to learn whether the *next* key selection actually picks a different key. -1 = no pending.
 	pendingRotationAttemptIdx := -1
 
-	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
+	for attempts = 0; ; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
 
 		// Reset the trail on the first attempt so a reused or shared context (bifrost.ctx)
@@ -5668,6 +5707,7 @@ func executeRequestWithRetries[T any](
 		}
 
 		if attempts > 0 {
+			retryLimit := effectiveRetryLimitForError(ctx, config, requestType, bifrostError, keyProvider != nil)
 			// Log retry attempt
 			var retryMsg string
 			if bifrostError != nil && bifrostError.Error != nil {
@@ -5678,7 +5718,7 @@ func executeRequestWithRetries[T any](
 					retryMsg += ", type=" + *bifrostError.Type
 				}
 			}
-			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, model, retryMsg)
+			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, retryLimit, model, retryMsg)
 
 			// Skip backoff only when (a) we genuinely rotated to a different credential AND
 			// (b) the previous failure was a *permanent* per-key error (401/402/403) where
@@ -5708,7 +5748,7 @@ func executeRequestWithRetries[T any](
 				}
 				keyNote = fmt.Sprintf("; %s=%s", rotationNote, currentKey.Name)
 			}
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, config.NetworkConfig.MaxRetries, providerKey, model, routingErrorSummary(bifrostError), keyNote))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, retryLimit, providerKey, model, routingErrorSummary(bifrostError), keyNote))
 
 			if !(lastWasPermanentKeyFailure && keyChanged) {
 				backoff := calculateBackoff(attempts-1, config)
@@ -5918,12 +5958,14 @@ func executeRequestWithRetries[T any](
 
 		// Classify the failure to decide whether to retry and whether to rotate the key.
 		//
-		// isPerKeyFailure: failure is bound to this specific key/account (401/402/403/429, or a
-		//   rate-limit error surfaced via message text instead of a 429 status). The same key
-		//   won't help — try a different one.
+		// isPerKeyFailure: failure is bound to this specific key/account (401/402/403/429,
+		//   invalid encrypted Responses content, or a rate-limit error surfaced via message
+		//   text instead of a 429 status). The same key won't help — try a different one.
 		// retryable 5xx / network errors: transient server issues — retry with the same key.
 		shouldRetry := false
-		isPerKeyFailure := (bifrostError.StatusCode != nil && perKeyFailureStatusCodes[*bifrostError.StatusCode]) ||
+		isInvalidEncryptedContentKeyFailure := isResponsesEncryptedContentError(requestType, bifrostError) && keyProvider != nil
+		isPerKeyFailure := isInvalidEncryptedContentKeyFailure ||
+			(bifrostError.StatusCode != nil && perKeyFailureStatusCodes[*bifrostError.StatusCode]) ||
 			(bifrostError.Error != nil &&
 				(IsRateLimitErrorMessage(bifrostError.Error.Message) ||
 					(bifrostError.Error.Type != nil && IsRateLimitErrorMessage(*bifrostError.Error.Type)) ||
@@ -5956,6 +5998,8 @@ func executeRequestWithRetries[T any](
 				reason = "authentication_error"
 			case bifrostError.StatusCode != nil && *bifrostError.StatusCode == 402:
 				reason = "billing_error"
+			case isInvalidEncryptedContentKeyFailure:
+				reason = "invalid_encrypted_content"
 			case bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type != "":
 				reason = *bifrostError.Error.Type
 			}
@@ -5964,6 +6008,11 @@ func executeRequestWithRetries[T any](
 		}
 
 		if !shouldRetry {
+			break
+		}
+
+		retryLimit := effectiveRetryLimitForError(ctx, config, requestType, bifrostError, keyProvider != nil)
+		if attempts >= retryLimit {
 			break
 		}
 
@@ -6000,7 +6049,7 @@ func executeRequestWithRetries[T any](
 		// different key — this avoids false positives for fixed-key providers whose keyProvider
 		// is non-nil but returns the same key. Network-error retries reuse the same key, and
 		// terminal attempts (attempts == MaxRetries) won't run another iteration.
-		if lastWasPerKeyFailure && keyProvider != nil && attempts < config.NetworkConfig.MaxRetries {
+		if lastWasPerKeyFailure && keyProvider != nil && attempts < retryLimit {
 			if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok && len(trail) > 0 {
 				pendingRotationAttemptIdx = len(trail) - 1
 			}
@@ -6246,6 +6295,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// Build the key pool for this request. Selection and rotation are deferred to
 					// executeRequestWithRetries via keyProvider so that each retry attempt can use
 					// a different key (on rate-limit errors) without re-running the full filtering.
+					setResponsesAffinityLookup(req.Context, &req.BifrostRequest)
 					supportedKeys, canRotate, keyPoolErr := bifrost.selectKeyFromProviderForModelWithPool(req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
 					if keyPoolErr != nil {
 						bifrost.logger.Debug("error building key pool for model %s: %v", model, keyPoolErr)
@@ -6419,6 +6469,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					} else if resp != nil {
 						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
+						bifrost.rememberResponsesAffinity(attemptRequestType, provider.GetProviderKey(), k, resp)
 					}
 					return resp, nil
 				}
@@ -6499,6 +6550,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			if result != nil {
 				result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
 				result.PopulateRoutingInfo(attemptRoutingInfo)
+				if selectedKeyID, ok := req.Context.Value(schemas.BifrostContextKeySelectedKeyID).(string); ok && selectedKeyID != "" {
+					bifrost.rememberResponsesAffinity(req.RequestType, provider.GetProviderKey(), schemas.Key{ID: selectedKeyID}, result)
+				}
 			}
 			if IsStreamRequestType(req.RequestType) {
 				// Send stream with context awareness to prevent deadlock
@@ -7978,6 +8032,11 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		return nil, false, fmt.Errorf("no keys found that support model: %s", model)
 	}
 
+	if affinityKey, ok := bifrost.getResponsesAffinityKey(ctx, providerKey, supportedKeys); ok {
+		return []schemas.Key{affinityKey}, false, nil
+	}
+	responsesAffinityLookupActive := hasResponsesAffinityLookup(ctx)
+
 	// Explicit key ID takes priority over key name — pin to that key, no rotation.
 	if ctx != nil {
 		if keyID, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); ok {
@@ -8021,7 +8080,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	if ctx != nil {
 		fallbackIndex, _ = ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
 	}
-	stickinessActive := sessionID != "" && bifrost.kvStore != nil && fallbackIndex == 0
+	stickinessActive := sessionID != "" && bifrost.kvStore != nil && fallbackIndex == 0 && !responsesAffinityLookupActive
 
 	if stickinessActive {
 		kvKey := buildSessionKey(providerKey, sessionID, model)
@@ -8069,6 +8128,9 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	}
 
 	// Normal case: return the full filtered pool with rotation enabled.
+	if responsesAffinityLookupActive {
+		setResponsesAffinityRecoveryRetries(ctx, len(supportedKeys)-1)
+	}
 	return supportedKeys, true, nil
 }
 

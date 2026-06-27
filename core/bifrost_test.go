@@ -74,6 +74,26 @@ func TestShouldTryFallbacks_InvalidEncryptedContentDisablesFallbacks(t *testing.
 	}
 }
 
+func TestShouldTryFallbacks_CompactionInvalidEncryptedContentDisablesFallbacks(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.CompactionRequest,
+		CompactionRequest: &schemas.BifrostCompactionRequest{
+			Provider: schemas.Azure,
+			Model:    "gpt-5.5",
+			Fallbacks: []schemas.Fallback{
+				{Provider: schemas.Azure, Model: "gpt-5.5", KeyID: "lawgic-east"},
+			},
+		},
+	}
+
+	encryptedContentErr := createBifrostError("encrypted content could not be decrypted or parsed", Ptr(400), Ptr("invalid_request_error"), false)
+	encryptedContentErr.Error.Code = Ptr("invalid_encrypted_content")
+	if bifrost.shouldTryFallbacks(req, encryptedContentErr) {
+		t.Fatal("compaction invalid_encrypted_content must not try fallbacks across Azure keys")
+	}
+}
+
 func TestShouldContinueWithFallbacks_InvalidEncryptedContentStopsFallbackChain(t *testing.T) {
 	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
 	encryptedContentErr := createBifrostError("encrypted content could not be decrypted or parsed", Ptr(400), Ptr("invalid_request_error"), false)
@@ -1313,6 +1333,39 @@ func TestRememberResponsesAffinityStoresResponseIDAndEncryptedContent(t *testing
 	}
 	if raw, err := kvStore.Get(buildResponsesAffinityKey("encrypted", schemas.Azure, encryptedContent)); err != nil || raw != "key-b" {
 		t.Fatalf("expected encrypted-content affinity to key-b, got raw=%v err=%v", raw, err)
+	}
+}
+
+func TestRememberResponsesAffinityStoresCompactionResponseIDAndEncryptedContent(t *testing.T) {
+	kvStore := newMockKVStore()
+	bifrost := &Bifrost{
+		kvStore: kvStore,
+		logger:  NewDefaultLogger(schemas.LogLevelError),
+	}
+
+	responseID := "resp_compact_123"
+	encryptedContent := "gAAAAABcompacted-state"
+	resp := &schemas.BifrostResponse{
+		CompactionResponse: &schemas.BifrostCompactionResponse{
+			ID:     &responseID,
+			Object: "response.compaction",
+			Output: []schemas.ResponsesMessage{
+				{
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						EncryptedContent: &encryptedContent,
+					},
+				},
+			},
+		},
+	}
+
+	bifrost.rememberResponsesAffinity(schemas.CompactionRequest, schemas.Azure, schemas.Key{ID: "key-b"}, resp)
+
+	if raw, err := kvStore.Get(buildResponsesAffinityKey("response", schemas.Azure, responseID)); err != nil || raw != "key-b" {
+		t.Fatalf("expected compaction response ID affinity to key-b, got raw=%v err=%v", raw, err)
+	}
+	if raw, err := kvStore.Get(buildResponsesAffinityKey("encrypted", schemas.Azure, encryptedContent)); err != nil || raw != "key-b" {
+		t.Fatalf("expected compaction encrypted-content affinity to key-b, got raw=%v err=%v", raw, err)
 	}
 }
 

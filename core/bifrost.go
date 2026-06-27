@@ -4699,7 +4699,7 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 }
 
 func isResponsesEncryptedContentError(requestType schemas.RequestType, err *schemas.BifrostError) bool {
-	if requestType != schemas.ResponsesRequest && requestType != schemas.ResponsesStreamRequest {
+	if requestType != schemas.ResponsesRequest && requestType != schemas.ResponsesStreamRequest && requestType != schemas.CompactionRequest {
 		return false
 	}
 	return isInvalidEncryptedContentError(err)

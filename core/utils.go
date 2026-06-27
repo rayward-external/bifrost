@@ -521,6 +521,12 @@ func collectResponsesAffinityFromResponse(resp *schemas.BifrostResponse) ([]stri
 			collectFromMessage(&resp.ResponsesResponse.Output[i])
 		}
 	}
+	if resp.CompactionResponse != nil {
+		addResponseID(resp.CompactionResponse.ID)
+		for i := range resp.CompactionResponse.Output {
+			collectFromMessage(&resp.CompactionResponse.Output[i])
+		}
+	}
 	if resp.ResponsesStreamResponse != nil {
 		if resp.ResponsesStreamResponse.Response != nil {
 			addResponseID(resp.ResponsesStreamResponse.Response.ID)

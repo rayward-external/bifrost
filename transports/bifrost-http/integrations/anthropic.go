@@ -312,6 +312,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 	}
 
 	headers := extractHeadersFromRequest(ctx)
+	anthropic.StripAnthropicPromptCacheControlHeaders(headers)
 	schemas.ExtractAndSetUserAgentFromHeaders(headers, bifrostCtx)
 
 	// Check if anthropic oauth headers are present

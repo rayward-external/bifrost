@@ -431,6 +431,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 			if convErr != nil {
 				return nil, convErr
 			}
+			ApplyAnthropicPromptCacheControl(ctx, anthropicReq)
 			AddMissingBetaHeadersToContext(ctx, anthropicReq, schemas.Anthropic)
 			return anthropicReq, nil
 		})
@@ -451,6 +452,11 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr)
 		}
 		jsonData = sanitized
+		promptCacheBody, _, promptCacheErr := ApplyAnthropicPromptCacheControlToRawBody(ctx, jsonData)
+		if promptCacheErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, promptCacheErr)
+		}
+		jsonData = promptCacheBody
 		// Auto-inject matching anthropic-beta headers for fields the sanitizer
 		// preserved. Probe-unmarshal reuses the typed path's header walker so
 		// the two paths stay in lockstep.
@@ -526,6 +532,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 				return nil, convErr
 			}
 			anthropicReq.Stream = schemas.Ptr(true)
+			ApplyAnthropicPromptCacheControl(ctx, anthropicReq)
 			AddMissingBetaHeadersToContext(ctx, anthropicReq, schemas.Anthropic)
 			return anthropicReq, nil
 		})
@@ -544,6 +551,11 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr)
 		}
 		jsonData = sanitized
+		promptCacheBody, _, promptCacheErr := ApplyAnthropicPromptCacheControlToRawBody(ctx, jsonData)
+		if promptCacheErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, promptCacheErr)
+		}
+		jsonData = promptCacheBody
 		// Auto-inject matching anthropic-beta headers for fields the sanitizer
 		// preserved. Probe-unmarshal reuses the typed path's header walker.
 		var probe AnthropicMessageRequest

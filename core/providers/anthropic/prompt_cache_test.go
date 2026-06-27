@@ -143,3 +143,20 @@ func TestApplyAnthropicPromptCacheControlToRawBody(t *testing.T) {
 		t.Fatalf("cache_control = %#v, want ephemeral 1h", got.CacheControl)
 	}
 }
+
+func TestApplyAnthropicPromptCacheControlToRawBodyPreservesNestedClientControl(t *testing.T) {
+	t.Setenv(anthropicPromptCacheTTLEnv, "1h")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	body := []byte(`{"model":"claude-sonnet-4-20250514","max_tokens":1024,"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}]}`)
+
+	out, changed, err := ApplyAnthropicPromptCacheControlToRawBody(ctx, body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if changed {
+		t.Fatal("expected nested client cache_control to prevent gateway injection")
+	}
+	if string(out) != string(body) {
+		t.Fatalf("body changed unexpectedly: %s", string(out))
+	}
+}

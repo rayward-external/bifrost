@@ -18,20 +18,20 @@ type testHandlerStore struct {
 	allowDirectKeys bool
 }
 
-func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                    { return s.matcher }
-func (s testHandlerStore) GetStreamChunkInterceptor() StreamChunkInterceptor   { return nil }
-func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor     { return nil }
-func (s testHandlerStore) GetAsyncJobResultTTL() int                           { return 0 }
-func (s testHandlerStore) GetKVStore() *kvstore.Store                          { return nil }
+func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                  { return s.matcher }
+func (s testHandlerStore) GetStreamChunkInterceptor() StreamChunkInterceptor { return nil }
+func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor   { return nil }
+func (s testHandlerStore) GetAsyncJobResultTTL() int                         { return 0 }
+func (s testHandlerStore) GetKVStore() *kvstore.Store                        { return nil }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return schemas.WhiteList{}
 }
-func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool          { return false }
-func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool              { return false }
-func (s testHandlerStore) ShouldAllowDirectKeys() bool                         { return s.allowDirectKeys }
-func (s testHandlerStore) GetMCPExternalServerURL() string                     { return "" }
-func (s testHandlerStore) GetMCPExternalClientURL() string                     { return "" }
-func (s testHandlerStore) GetAvailableProviders() []schemas.ModelProvider      { return nil }
+func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool     { return false }
+func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool         { return false }
+func (s testHandlerStore) ShouldAllowDirectKeys() bool                    { return s.allowDirectKeys }
+func (s testHandlerStore) GetMCPExternalServerURL() string                { return "" }
+func (s testHandlerStore) GetMCPExternalClientURL() string                { return "" }
+func (s testHandlerStore) GetAvailableProviders() []schemas.ModelProvider { return nil }
 
 func TestParseSessionIDFromBaggage(t *testing.T) {
 	tests := []struct {
@@ -53,6 +53,21 @@ func TestParseSessionIDFromBaggage(t *testing.T) {
 				t.Fatalf("ParseSessionIDFromBaggage(%q) = %q, want %q", tt.header, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestConvertToBifrostContext_BaggageSessionIDEnablesSessionStickiness(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("baggage", "foo=bar, session-id=sess-abc123, baz=qux")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); got != "sess-abc123" {
+		t.Fatalf("expected parent request id from baggage session-id, got %q", got)
+	}
+	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeySessionID).(string); got != "sess-abc123" {
+		t.Fatalf("expected session stickiness id from baggage session-id, got %q", got)
 	}
 }
 

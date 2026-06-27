@@ -338,6 +338,7 @@ func applyFallbackKeySelection(ctx *schemas.BifrostContext, fallback schemas.Fal
 }
 
 type responsesAffinityLookupKey struct{}
+type responsesAffinityRecoveryRetriesKey struct{}
 
 type responsesAffinityLookup struct {
 	PreviousResponseID     string
@@ -374,6 +375,29 @@ func collectResponsesAffinityLookup(req *schemas.BifrostRequest) responsesAffini
 		lookup.EncryptedContentHashes = collectEncryptedContentHashes(req.CompactionRequest.Input)
 	}
 	return lookup
+}
+
+func hasResponsesAffinityLookup(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	lookup, _ := ctx.Value(responsesAffinityLookupKey{}).(responsesAffinityLookup)
+	return lookup.PreviousResponseID != "" || len(lookup.EncryptedContentHashes) > 0
+}
+
+func setResponsesAffinityRecoveryRetries(ctx *schemas.BifrostContext, retries int) {
+	if ctx == nil || retries <= 0 {
+		return
+	}
+	ctx.SetValue(responsesAffinityRecoveryRetriesKey{}, retries)
+}
+
+func getResponsesAffinityRecoveryRetries(ctx *schemas.BifrostContext) int {
+	if ctx == nil {
+		return 0
+	}
+	retries, _ := ctx.Value(responsesAffinityRecoveryRetriesKey{}).(int)
+	return retries
 }
 
 func collectEncryptedContentHashes(messages []schemas.ResponsesMessage) []string {

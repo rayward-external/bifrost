@@ -30,6 +30,10 @@ jobs:
           echo "Open code-scanning alerts: $(jq length alerts.json)" >> $GITHUB_STEP_SUMMARY
           jq -c '[.[] | {number, rule: .rule.id, severity: .rule.security_severity_level, path: .most_recent_instance.location.path, line: .most_recent_instance.location.start_line}]' alerts.json
 
+          gh api --paginate "repos/${{ github.repository }}/dependabot/alerts?state=open&per_page=100" > dependabot-alerts.json
+          echo "Open dependabot alerts: $(jq length dependabot-alerts.json)" >> $GITHUB_STEP_SUMMARY
+          jq -c '[.[] | {number, package: .dependency.package.name, ecosystem: .dependency.package.ecosystem, severity: .security_advisory.severity, ghsa: .security_advisory.ghsa_id, vulnerable_range: .security_vulnerability.vulnerable_version_range, patched: .security_vulnerability.first_patched_version.identifier, manifest: .dependency.manifest_path}]' dependabot-alerts.json
+
       - name: Upload alerts artifact
         if: inputs.mode == 'list'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

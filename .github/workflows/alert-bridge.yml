@@ -39,8 +39,10 @@ jobs:
 
       - name: Dismiss alerts
         if: inputs.mode == 'dismiss'
+        env:
+          DISMISSALS: ${{ inputs.dismissals }}
         run: |
-          echo '${{ inputs.dismissals }}' | jq -c '.[]' | while read d; do
+          echo "$DISMISSALS" | jq -c '.[]' | while read d; do
             n=$(jq -r .number <<<"$d")
             r=$(jq -r .reason <<<"$d")
             c=$(jq -r .comment <<<"$d")

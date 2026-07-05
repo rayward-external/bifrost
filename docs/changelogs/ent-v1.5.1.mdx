@@ -1,63 +1,33 @@
 ---
-title: "v1.5.0"
-description: "Enterprise v1.5.0 changelog - 2026-06-25"
+title: "v1.5.1"
+description: "Enterprise v1.5.1 changelog - 2026-06-30"
 ---
 
-<Update label="Bifrost Enterprise" description="v1.5.0">
+<Update label="Bifrost Enterprise" description="v1.5.1">
 
 ## Changelog
 
-Release on `transports/v1.6.0`. Adds Runware and Runway providers (image and video generation), streaming pause/resume, customer attribution via `x-bf-customer-id` / `x-bf-customer-name`, and typed `SecretVar` env references replacing `EnvVar` across config and UI.
+Release on `transports/v1.6.1`. Decouples the IdP-assigned identity from Bifrost's local user primary key for SCIM and OIDC users (with a backfill migration), enriches BigQuery storage-API exports with full token, response, and trace detail, and scopes gossip cluster membership with an explicit cluster identifier.
 
 ## ✨ Features
 
-- **Runware Provider** - Added Runware as a supported provider, covering both image and video generation operations through the standard provider configuration. Connect it like any other provider via `config.json` or the UI. [Docs](https://docs.getbifrost.ai/providers/supported-providers/runware)
-- **Runway Provider** - Added Runway image generation operations, so Runway can be routed and load-balanced alongside other image providers. [Docs](https://docs.getbifrost.ai/providers/supported-providers/runway)
-- **Customer Attribution** - Added `x-bf-customer-id` and `x-bf-customer-name` request headers so usage, cost, and traces can be attributed per end customer, in addition to the existing user, team, and business-unit dimensions.
-- **Enriched Model Listing** - `list models` now returns `ContextLength`, `MaxInputTokens`, `MaxOutputTokens`, `Architecture`, and `WebSearch` pricing sourced from the pricing catalog, so clients can size requests and estimate cost without a second lookup.
-- **Streaming Pause/Resume** - Added pause and resume flows for streaming calls, allowing an in-flight stream to be held and continued rather than torn down and restarted. [Docs](https://docs.getbifrost.ai/quickstart/gateway/streaming)
-- **Session Trace Grouping** - Added `group_traces_by_session` to the OTEL and Datadog plugins so spans from the same session roll up under one trace, plus a toggle to disable root-span content logging for noisy or sensitive payloads. [Docs](https://docs.getbifrost.ai/features/observability/default)
-- **Password Policy** - Added password-policy validation in the security view, with inline field errors and a sticky save button so policy violations are caught before submission.
-- **Error Sanitization** - Internal error details such as stack traces and raw SQL are now sanitized before responses are returned to clients, preventing implementation details from leaking to callers.
-- **Cluster Discovery Env Refs** - Added `env.VAR_NAME` support to `dns_names` in cluster discovery config, so peer addresses can be supplied from the environment instead of being hard-coded.
-- **Server Logs Config** - Added configurable server logging so log verbosity and output can be tuned per deployment.
-- **Bedrock Streaming Errors** - Bedrock errors on streaming paths now carry the `__type` field, so clients receive a typed error instead of an opaque stream failure.
-- **Secret Provider Support** - Connect AWS Secrets Manager, GCP Secret Manager, or HashiCorp Vault so Bifrost can store and read from secrets manager. [Docs](https://docs.getbifrost.ai/enterprise/secret-management)
-- **Generic OIDC Provider and SCIM Support** - Added a standards-compliant OIDC provider (`provider: "generic"`) for SSO and user provisioning with any OIDC-compliant IdP. [Docs](https://docs.getbifrost.ai/enterprise/user-provisioning)
+- **Stable Local User Identity for SCIM/OIDC** - Added `source_id` and `source_name` columns to `governance_users` so the IdP-assigned identifier is stored separately from Bifrost's stable local primary key. A new `ent_add_user_source_fields` migration backfills existing IdP-managed users, all SCIM import paths (Okta, Entra, SailPoint, Zitadel, Keycloak, Google Workspace, Auth0) now resolve users via `GetUserBySourceID`, and status reconciliation compares against `source_id` so manually-created users are no longer disturbed.
+- **Enriched BigQuery Trace Exports** - The BigQuery Storage Write API writer now serializes additional fields on each trace row, including `request_id`, prompt/completion token breakdowns (cached read/write, reasoning, accepted/rejected prediction tokens), response metadata (`response_id`, `response_object`, `response_created`, `system_fingerprint`, `service_tier`), and `dimensions` plus `request_headers`.
+- **Cluster Identifier in Gossip** - Added an explicit cluster identifier to the gossip and memberlist join flow so nodes only form membership with peers belonging to the same logical cluster, preventing cross-cluster gossip when deployments share a network.
 
 ## 🐞 Fixed
 
-- **Streaming Memory** - Reduced memory usage on streaming request/response paths.
-- **Provider Config Sync** - `allow_all_keys` and `blacklisted_models` now sync from the `config.json` source of truth (closes #4640).
-- **Provider Keys Payload** - `PUT /api/providers/{provider}` no longer silently discards `keys` / blocked-model edits (closes #4648).
-- **Custom Header Base URL** - Fixed base-URL protocol handling when a custom header is set.
-- **VK Quota Usage** - Fixed the start time for virtual-key quota model usage.
-- **Model Budgets** - Fixed model budget attachment from virtual keys.
-- **Structured Streaming Errors** - Preserved structured errors for streaming plugin blocks.
-- **Log Hygiene** - Removed leaking request bodies from console logs.
-
-## 🐙 Closed OSS Issues
-
-Resolved upstream in `transports/v1.6.0`:
-
-- [#2347](https://github.com/maximhq/bifrost/issues/2347) - MCP tool ordering is non-deterministic, breaking prefix-based prompt caching.
-- [#3443](https://github.com/maximhq/bifrost/issues/3443) - Anthropic to OpenAI streaming tool_call deltas violated the OpenAI spec on continuation chunks.
-- [#4068](https://github.com/maximhq/bifrost/issues/4068) - Bedrock: mid-conversation system messages hoisted into the top-level `system` block broke prompt caching.
-- [#4413](https://github.com/maximhq/bifrost/issues/4413) - OpenAI Responses streaming returned an empty `error.message` on context_length_exceeded.
-- [#4460](https://github.com/maximhq/bifrost/issues/4460) - GLM-5.2 `reasoning_effort` "max" was silently downgraded to "high".
-- [#4496](https://github.com/maximhq/bifrost/issues/4496) - Frequent intermittent broken pipe / closed connection errors with the vllm provider.
-- [#4544](https://github.com/maximhq/bifrost/issues/4544) - Cerebras with the `/anthropic` endpoint failed after the first turn with a 400 provider API error.
-- [#4606](https://github.com/maximhq/bifrost/issues/4606) - Realtime socket request observability logs were not recorded since v1.5.2.
-- [#4608](https://github.com/maximhq/bifrost/issues/4608) - ResponsesMessage dropped author/recipient/encrypted_content, breaking Codex multi_agent_v2 subagent spawning.
-- [#4617](https://github.com/maximhq/bifrost/issues/4617) - Idle-timeout timer goroutine could panic in `closeBodyStream` and crash the process.
-- [#4622](https://github.com/maximhq/bifrost/issues/4622) - Bedrock Converse document blocks with format xlsx/xls/doc/docx were silently rewritten to pdf.
-- [#4627](https://github.com/maximhq/bifrost/issues/4627) - Gemini video reference fields were sent under `parameters`.
-- [#4640](https://github.com/maximhq/bifrost/issues/4640) - Provider config `key_ids:["*"]` was not synced to `allow_all_keys` for existing virtual keys.
-- [#4648](https://github.com/maximhq/bifrost/issues/4648) - `PUT /api/providers/{provider}` silently discarded `payload.Keys`.
+- **BigQuery Writer Shutdown Panic** - Extracted managed-stream teardown into a `closeManaged` method with panic recovery, so the Storage Write API client no longer crashes the process during shutdown under certain error conditions.
+- **BigQuery Service Account Auth** - The `managedwriter.NewClient` call now receives the same credential options as the primary client, so an explicitly configured `service_account_key` is honored instead of silently falling back to ADC.
+- **OIDC Source ID Resolution** - The OAuth callback and `NotifyUserTeamMembershipsChange` now resolve the IdP subject to the local primary key, so session rows and team membership notifications reference the correct `governance_users` ID instead of the raw IdP subject.
+- **Team ID Migration Safety** - Removed the destructive UUID reassignment phase from the `migrateTeamIDsToUUID` migration; it now only applies `ON UPDATE CASCADE` constraints and leaves existing team primary keys untouched.
+- **Logs Page URL Parsing** - Array query parameters on the logs page now use `parseAsSafeArrayOf`, correctly handling special characters in URLs.
+- **Bedrock Usage Calculation** - Fixed token usage calculation for the Bedrock provider.
+- **Hybrid Log Token Usage** - Token usage is now rebuilt from denormalized columns in the hybrid log list.
 
 ## 📀 Base OSS version
 
-`transports/v1.6.0`
+`transports/v1.6.1`
 
 ## 🔌 If you are compiling plugin against this release - use following deps
 
@@ -74,7 +44,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
 	github.com/DataDog/datadog-go/v5 v5.6.0
 	github.com/DataDog/dd-trace-go/v2 v2.4.0
-	github.com/aws/aws-sdk-go-v2 v1.41.12
+	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.11
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.6
@@ -92,13 +62,13 @@ require (
 	github.com/hashicorp/memberlist v0.5.4
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/klauspost/compress v1.18.6
-	github.com/maximhq/bifrost/core v1.6.0
-	github.com/maximhq/bifrost/framework v1.4.0
-	github.com/maximhq/bifrost/plugins/governance v1.6.0
-	github.com/maximhq/bifrost/plugins/logging v1.5.23
-	github.com/maximhq/bifrost/plugins/prompts v1.0.23
-	github.com/maximhq/bifrost/plugins/semanticcache v1.5.23
-	github.com/maximhq/bifrost/transports v1.6.0
+	github.com/maximhq/bifrost/core v1.6.1
+	github.com/maximhq/bifrost/framework v1.4.1
+	github.com/maximhq/bifrost/plugins/governance v1.6.1
+	github.com/maximhq/bifrost/plugins/logging v1.5.24
+	github.com/maximhq/bifrost/plugins/prompts v1.0.24
+	github.com/maximhq/bifrost/plugins/semanticcache v1.5.24
+	github.com/maximhq/bifrost/transports v1.6.1
 	github.com/nakabonne/tstorage v0.3.6
 	github.com/segmentio/kafka-go v0.4.47
 	github.com/stretchr/testify v1.11.1
@@ -128,7 +98,7 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.7.0 // indirect
 	cloud.google.com/go/monitoring v1.24.3 // indirect
-	cloud.google.com/go/storage v1.61.3 // indirect
+	cloud.google.com/go/storage v1.62.1 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
@@ -164,8 +134,8 @@ require (
 	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.21 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.28 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.28 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.29 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.29 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.5 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.22 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.7 // indirect
@@ -305,12 +275,12 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/compat v0.1.22 // indirect
-	github.com/maximhq/bifrost/plugins/maxim v1.6.23 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.5.23 // indirect
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.4 // indirect
-	github.com/maximhq/bifrost/plugins/otel v1.3.0 // indirect
-	github.com/maximhq/bifrost/plugins/telemetry v1.5.23 // indirect
+	github.com/maximhq/bifrost/plugins/compat v0.1.23 // indirect
+	github.com/maximhq/bifrost/plugins/maxim v1.6.24 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.5.24 // indirect
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.5 // indirect
+	github.com/maximhq/bifrost/plugins/otel v1.3.1 // indirect
+	github.com/maximhq/bifrost/plugins/telemetry v1.5.24 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/mholt/archives v0.1.2 // indirect
 	github.com/miekg/dns v1.1.68 // indirect

@@ -36,6 +36,7 @@ jobs:
           node-version: "21"
 
       - name: Check for broken links
+        continue-on-error: true # fork quarantine: upstream ships broken image links in enterprise/setting-up-entra/scim.mdx (9 missing /media/user-provisioning/entra/*.png); maximhq/bifrost main also fails Docs Validation for the same reason; see fork-patches.txt; REMOVAL CONDITION: remove when upstream adds the missing images and Docs Validation passes on upstream/main
         working-directory: ./docs
         run: |
           echo "Checking for broken links in documentation..."

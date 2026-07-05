@@ -21,10 +21,19 @@ jobs:
 
       - name: Create issues from Dependabot alerts
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The default GITHUB_TOKEN cannot read the Dependabot alerts API (no
+          # `permissions:` key grants that scope). Set a repo secret
+          # DEPENDABOT_ALERTS_TOKEN (fine-grained PAT with Dependabot alerts:
+          # read) to enable this job; until then it reports the gap instead of
+          # failing outright.
+          GH_TOKEN: ${{ secrets.DEPENDABOT_ALERTS_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          alerts=$(gh api repos/${{ github.repository }}/dependabot/alerts \
-            --jq '[.[] | select(.state == "open")]')
+          if ! alerts=$(gh api repos/${{ github.repository }}/dependabot/alerts \
+            --jq '[.[] | select(.state == "open")]' 2>err.log); then
+            echo "::warning::Could not read Dependabot alerts ($(cat err.log)). Add a DEPENDABOT_ALERTS_TOKEN repo secret (fine-grained PAT with 'Dependabot alerts: read') to enable this workflow."
+            echo "Dependabot alerts sync skipped: missing DEPENDABOT_ALERTS_TOKEN secret or insufficient token scope." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
           echo "$alerts" | jq -c '.[]' | while read -r alert; do
             pkg=$(echo "$alert" | jq -r '.dependency.package.name')

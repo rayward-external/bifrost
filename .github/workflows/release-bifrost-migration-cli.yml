@@ -83,7 +83,7 @@ jobs:
     if: github.repository == 'maximhq/bifrost' && needs.check-version.outputs.tag_exists == 'false'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     outputs:
       success: ${{ steps.release.outputs.success }}
     steps:

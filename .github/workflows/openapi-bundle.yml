@@ -9,7 +9,7 @@ on:
       - "!docs/openapi/openapi.json"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   bundle-openapi:

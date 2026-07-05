@@ -467,7 +467,8 @@
                 "icon": "microsoft",
                 "collapsed": true,
                 "pages": [
-                  "enterprise/setting-up-entra/oidc"
+                  "enterprise/setting-up-entra/oidc",
+                  "enterprise/setting-up-entra/scim"
                 ]
               },
               {

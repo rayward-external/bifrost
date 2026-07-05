@@ -19,9 +19,6 @@ SCIM (System for Cross-domain Identity Management) keeps Bifrost in sync with En
 
 In your Bifrost dashboard, go to **Governance** → **User Provisioning** and open your configured Microsoft Entra provider.
 
-<Frame caption="The Microsoft Entra provider dashboard showing your connection details and attribute mappings.">
-  <img src="/media/user-provisioning/entra/bifrost-provider-setting.png" alt="Bifrost Microsoft Entra provider dashboard showing connection details and attribute mappings" />
-</Frame>
 
 </Step>
 
@@ -31,9 +28,6 @@ Click the settings icon to open **Provider Configuration**.
 
 Toggle on **Enable SCIM Provisioning** and click **Save & Enable**.
 
-<Frame caption="Enable SCIM Provisioning in Provider Configuration - the SCIM endpoint URL and token are generated after saving.">
-  <img src="/media/user-provisioning/entra/bifrost-enable-scim.png" alt="Bifrost Provider Configuration with Enable SCIM Provisioning toggle turned on" />
-</Frame>
 
 </Step>
 
@@ -46,9 +40,6 @@ After saving, Bifrost shows a **Setup Complete** dialog with:
 
 Copy both values now - you will need them in [Step 2](#step-2-configure-entra-provisioning).
 
-<Frame caption="Setup Complete dialog showing the SCIM Endpoint URL and Provisioning Token.">
-  <img src="/media/user-provisioning/entra/bifrost-scim-provisioning-token-dialog.png" alt="Bifrost Setup Complete dialog displaying the SCIM Endpoint URL and one-time Provisioning Token" />
-</Frame>
 
 <Warning>
   The provisioning token is only shown once. Store it somewhere safe before closing this dialog. You can always rotate it later, but the previous token will immediately become invalid.
@@ -70,9 +61,6 @@ In the [Azure Portal](https://portal.azure.com), go to **Microsoft Entra ID → 
 
 Open the **Provisioning** tab and click **Get started**.
 
-<Frame caption="Enterprise Application Provisioning tab - click Get started to configure the SCIM connection.">
-  <img src="/media/user-provisioning/entra/entra-provisioning-get-started.png" alt="Microsoft Entra Enterprise Application Provisioning tab with Get started button" />
-</Frame>
 
 </Step>
 
@@ -89,9 +77,6 @@ Under **Admin Credentials**, enter:
 
 Click **Test Connection** to verify, then **Save**.
 
-<Frame caption="Admin Credentials - enter the SCIM Endpoint URL as Tenant URL and the Provisioning Token as Secret Token, then test the connection.">
-  <img src="/media/user-provisioning/entra/entra-scim-admin-credentials.png" alt="Entra Provisioning admin credentials form with Tenant URL and Secret Token fields filled in and Test Connection button highlighted" />
-</Frame>
 
 </Step>
 
@@ -111,9 +96,6 @@ To include a custom attribute in the SCIM payload Entra sends to Bifrost:
 4. Set the **Target attribute** to the corresponding SCIM attribute name (e.g. `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:employeeNumber`)
 5. Click **Ok** and **Save**
 
-<Frame caption="Add New Mapping - map an Entra user attribute to the SCIM attribute Bifrost will receive.">
-  <img src="/media/user-provisioning/entra/entra-scim-attribute-mapping.png" alt="Entra provisioning attribute mapping dialog showing Source attribute and Target attribute dropdowns" />
-</Frame>
 
 Back in Bifrost, go to **Attribute Mapping** in the provider setup and add a **SCIM Attribute** entry using the same attribute name. The name must match exactly - including case.
 
@@ -125,9 +107,6 @@ Back in Bifrost, go to **Attribute Mapping** in the provider setup and add a **S
 
 Back on the main Provisioning settings page, set **Provisioning Status** to **On** and click **Save**.
 
-<Frame caption="Set Provisioning Status to On to start the SCIM sync cycle.">
-  <img src="/media/user-provisioning/entra/entra-scim-provisioning-on.png" alt="Entra Provisioning settings page with Provisioning Status toggle set to On" />
-</Frame>
 
 </Step>
 
@@ -145,9 +124,6 @@ Go to **Enterprise applications → Bifrost Enterprise → Users and groups**.
 
 Click **Add user/group** and select the users or groups you want to provision into Bifrost.
 
-<Frame caption="Users and groups - only users and groups assigned here are included in the SCIM provisioning scope.">
-  <img src="/media/user-provisioning/entra/entra-scim-user-assignments.png" alt="Entra Enterprise Application Users and groups page with Add user/group button highlighted" />
-</Frame>
 
 <Note>
   Only users and groups explicitly assigned to the application are provisioned when the provisioning scope is set to **Sync only assigned users and groups** (the default). Set scope to **Sync all users and groups** only if you want to provision your entire directory.
@@ -163,9 +139,6 @@ To provision a specific user immediately without waiting for the next cycle, go 
 
 Search for the user, select them, and click **Provision**.
 
-<Frame caption="Provision on demand - push a specific user to Bifrost immediately for testing or urgent onboarding.">
-  <img src="/media/user-provisioning/entra/entra-scim-provision-on-demand.png" alt="Entra Provision on demand screen with a user selected and Provision button" />
-</Frame>
 
 </Step>
 

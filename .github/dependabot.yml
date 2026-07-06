@@ -170,12 +170,6 @@ updates:
     open-pull-requests-limit: 0
 
   - package-ecosystem: gomod
-    directory: /plugins/litellmcompat
-    schedule:
-      interval: daily
-    open-pull-requests-limit: 0
-
-  - package-ecosystem: gomod
     directory: /plugins/logging
     schedule:
       interval: daily
@@ -237,6 +231,12 @@ updates:
 
   - package-ecosystem: npm
     directory: /tests/integrations/typescript
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: uv
+    directory: /tests/integrations/python
     schedule:
       interval: daily
     open-pull-requests-limit: 0

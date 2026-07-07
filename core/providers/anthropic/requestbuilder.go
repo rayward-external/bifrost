@@ -512,6 +512,13 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			}
 		}
 
+		if cfg.Provider == schemas.Anthropic {
+			jsonBody, _, err = ApplyAnthropicPromptCacheControlToRawBody(ctx, jsonBody)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+
 		var probe AnthropicMessageRequest
 		if unmarshalErr := schemas.Unmarshal(jsonBody, &probe); unmarshalErr == nil {
 			AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
@@ -542,6 +549,10 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 		if cfg.IsStreaming {
 			reqBody.Stream = schemas.Ptr(true)
+		}
+
+		if cfg.Provider == schemas.Anthropic {
+			ApplyAnthropicPromptCacheControl(ctx, reqBody)
 		}
 
 		// Re-strip with cfg.Provider (canonical) in case the request was

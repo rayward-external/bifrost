@@ -17047,7 +17047,6 @@ var enterpriseSchemaPaths = map[string]bool{
 	"load_balancer_config":       true,
 	"guardrails_config":          true,
 	"large_payload_optimization": true,
-	"circuit_breaker_config":     true,
 }
 
 // excludedGoFields are Go struct fields that should not be in the schema (internal use only)
@@ -17444,7 +17443,6 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 		"load_balancer_config":       true,
 		"guardrails_config":          true,
 		"large_payload_optimization": true,
-		"circuit_breaker_config":     true,
 	}
 
 	schema := loadJSONSchema(t)

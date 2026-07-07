@@ -153,9 +153,19 @@ for plugin in "${PLUGINS[@]}"; do
       #     (~1-5ms Docker); passes on upstream CI where real OpenAI (~1-5s) >> cache (1ms)
       #   - TestEmbeddingRequestsNoCacheWithoutCacheKey: t.Fatalf on embedding error — no
       #     keys support text-embedding-3-small in fork CI (no OPENAI_API_KEY)
+      #   - TestCacheTypeDirectWithSemanticFallback, TestCacheConfiguration,
+      #     TestResponsesAPICacheExpiration: 2026-07-07 sync added main.go's
+      #     "skip cache write if store.RequiresVectors() && no embedding" guard — a
+      #     correctness fix (previously a write with a missing embedding could reach
+      #     Weaviate's HNSW index in an inconsistent state). Our tests use Weaviate
+      #     (RequiresVectors()==true), so ANY cache write — including CacheTypeDirect
+      #     entries — is now correctly skipped whenever embedding generation fails,
+      #     which it always does without OPENAI_API_KEY. Same underlying cause as the
+      #     rest of this list; these three just didn't need a working embedding path
+      #     before this guard existed.
       # All pass on upstream CI (they have OPENAI_API_KEY + real OpenAI latency). REMOVAL
       # CONDITION: remove when fork adds OPENAI_API_KEY secret or upstream mocks embedder/TTS.
-      SEMANTICCACHE_SKIP='TestSemanticSimilarityEdgeCases|TestNormalizationWithSemanticCache|TestTextNormalizationDirectCache|TestCacheNoStoreReadButNoWrite|TestSemanticSearch|TestDirectVsSemanticSearch|TestCrossCacheTypeAccessibility|TestMultipleCacheEntriesPriority|TestResponsesAPISemanticMatching|TestStreamingCacheBasicFunctionality|TestSemanticCacheBasicFunctionality|TestEmbeddingRequestsNoCacheWithoutCacheKey'
+      SEMANTICCACHE_SKIP='TestSemanticSimilarityEdgeCases|TestNormalizationWithSemanticCache|TestTextNormalizationDirectCache|TestCacheNoStoreReadButNoWrite|TestSemanticSearch|TestDirectVsSemanticSearch|TestCrossCacheTypeAccessibility|TestMultipleCacheEntriesPriority|TestResponsesAPISemanticMatching|TestStreamingCacheBasicFunctionality|TestSemanticCacheBasicFunctionality|TestEmbeddingRequestsNoCacheWithoutCacheKey|TestCacheTypeDirectWithSemanticFallback|TestCacheConfiguration|TestResponsesAPICacheExpiration'
       if go test -v -timeout 20m -coverprofile=coverage.txt -coverpkg=./... -skip "$SEMANTICCACHE_SKIP" ./...; then
         echo "✅ Tests passed for: $plugin"
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))

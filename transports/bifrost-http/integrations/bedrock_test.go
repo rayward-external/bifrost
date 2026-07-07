@@ -79,6 +79,10 @@ func (m *mockHandlerStore) GetModelCatalog() *modelcatalog.ModelCatalog {
 	return m.modelCatalog
 }
 
+func (m *mockHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
+	return m.availableProviders
+}
+
 // Ensure mockHandlerStore implements lib.HandlerStore
 var _ lib.HandlerStore = (*mockHandlerStore)(nil)
 

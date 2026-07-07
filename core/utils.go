@@ -84,8 +84,10 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Anthropic,
 	schemas.Azure,
 	schemas.Bedrock,
+	schemas.BedrockMantle,
 	schemas.Cerebras,
 	schemas.Cohere,
+	schemas.DeepSeek,
 	schemas.Elevenlabs,
 	schemas.Gemini,
 	schemas.Groq,
@@ -123,11 +125,11 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
 }
 
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
-	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.Vertex
+	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.BedrockMantle && providerKey != schemas.Vertex
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
@@ -171,6 +173,11 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		// BedrockKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
 		if key.BedrockKeyConfig == nil {
 			key.BedrockKeyConfig = &schemas.BedrockKeyConfig{}
+		}
+	case schemas.BedrockMantle:
+		// BedrockMantleKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
+		if key.BedrockMantleKeyConfig == nil {
+			key.BedrockMantleKeyConfig = &schemas.BedrockMantleKeyConfig{}
 		}
 	case schemas.Vertex:
 		if key.VertexKeyConfig == nil {
@@ -325,246 +332,51 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+	ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 }
 
-// applyFallbackKeySelection pins a key-aware fallback after the primary
-// request's key-selection context has been cleared.
-func applyFallbackKeySelection(ctx *schemas.BifrostContext, fallback schemas.Fallback) {
-	if fallback.KeyID == "" {
-		return
-	}
-	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, fallback.KeyID)
-}
-
-type responsesAffinityLookupKey struct{}
-type responsesAffinityRecoveryRetriesKey struct{}
-
-type responsesAffinityLookup struct {
-	PreviousResponseID     string
-	EncryptedContentHashes []string
-}
-
-func setResponsesAffinityLookup(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
-	if ctx == nil {
-		return
-	}
-	lookup := collectResponsesAffinityLookup(req)
-	if lookup.PreviousResponseID == "" && len(lookup.EncryptedContentHashes) == 0 {
-		ctx.ClearValue(responsesAffinityLookupKey{})
-		return
-	}
-	ctx.SetValue(responsesAffinityLookupKey{}, lookup)
-}
-
-func collectResponsesAffinityLookup(req *schemas.BifrostRequest) responsesAffinityLookup {
-	if req == nil {
-		return responsesAffinityLookup{}
-	}
-	var lookup responsesAffinityLookup
-	if req.ResponsesRequest != nil {
-		if req.ResponsesRequest.Params != nil && req.ResponsesRequest.Params.PreviousResponseID != nil {
-			lookup.PreviousResponseID = strings.TrimSpace(*req.ResponsesRequest.Params.PreviousResponseID)
-		}
-		lookup.EncryptedContentHashes = collectEncryptedContentHashes(req.ResponsesRequest.Input)
-	}
-	if req.CompactionRequest != nil {
-		if req.CompactionRequest.PreviousResponseID != nil {
-			lookup.PreviousResponseID = strings.TrimSpace(*req.CompactionRequest.PreviousResponseID)
-		}
-		lookup.EncryptedContentHashes = collectEncryptedContentHashes(req.CompactionRequest.Input)
-	}
-	return lookup
-}
-
-func hasResponsesAffinityLookup(ctx *schemas.BifrostContext) bool {
-	if ctx == nil {
-		return false
-	}
-	lookup, _ := ctx.Value(responsesAffinityLookupKey{}).(responsesAffinityLookup)
-	return lookup.PreviousResponseID != "" || len(lookup.EncryptedContentHashes) > 0
-}
-
-func setResponsesAffinityRecoveryRetries(ctx *schemas.BifrostContext, retries int) {
-	if ctx == nil || retries <= 0 {
-		return
-	}
-	ctx.SetValue(responsesAffinityRecoveryRetriesKey{}, retries)
-}
-
-func getResponsesAffinityRecoveryRetries(ctx *schemas.BifrostContext) int {
-	if ctx == nil {
-		return 0
-	}
-	retries, _ := ctx.Value(responsesAffinityRecoveryRetriesKey{}).(int)
-	return retries
-}
-
-func collectEncryptedContentHashes(messages []schemas.ResponsesMessage) []string {
-	if len(messages) == 0 {
-		return nil
-	}
-	hashes := make([]string, 0, len(messages))
-	seen := make(map[string]struct{}, len(messages))
-	add := func(value *string) {
-		if value == nil {
-			return
-		}
-		trimmed := strings.TrimSpace(*value)
-		if trimmed == "" {
-			return
-		}
-		hash := hashSHA256(trimmed)
-		if _, ok := seen[hash]; ok {
-			return
-		}
-		seen[hash] = struct{}{}
-		hashes = append(hashes, hash)
-	}
-
-	for _, message := range messages {
-		if message.ResponsesReasoning != nil {
-			add(message.ResponsesReasoning.EncryptedContent)
-		}
-		if message.Content != nil {
-			for i := range message.Content.ContentBlocks {
-				add(message.Content.ContentBlocks[i].EncryptedContent)
-			}
-		}
-	}
-	return hashes
-}
-
-func buildResponsesAffinityKey(kind string, providerKey schemas.ModelProvider, value string) string {
-	return "responses-affinity:" + kind + ":" + string(providerKey) + ":" + hashSHA256(value)
-}
-
-func buildResponsesAffinityHashedKey(kind string, providerKey schemas.ModelProvider, hash string) string {
-	return "responses-affinity:" + kind + ":" + string(providerKey) + ":" + hash
-}
-
-func (bifrost *Bifrost) getResponsesAffinityKey(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, supportedKeys []schemas.Key) (schemas.Key, bool) {
-	if bifrost == nil || bifrost.kvStore == nil || ctx == nil || len(supportedKeys) == 0 {
-		return schemas.Key{}, false
-	}
-	lookup, ok := ctx.Value(responsesAffinityLookupKey{}).(responsesAffinityLookup)
-	if !ok {
-		return schemas.Key{}, false
-	}
-
-	keys := make([]string, 0, 1+len(lookup.EncryptedContentHashes))
-	if lookup.PreviousResponseID != "" {
-		keys = append(keys, buildResponsesAffinityKey("response", providerKey, lookup.PreviousResponseID))
-	}
-	for _, hash := range lookup.EncryptedContentHashes {
-		if hash != "" {
-			keys = append(keys, buildResponsesAffinityHashedKey("encrypted", providerKey, hash))
-		}
-	}
-
-	for _, kvKey := range keys {
-		key, found, stale := getCachedKeyFromStore(bifrost.kvStore, kvKey, supportedKeys)
-		if found {
-			return key, true
-		}
-		if stale {
-			if _, err := bifrost.kvStore.Delete(kvKey); err != nil && bifrost.logger != nil {
-				bifrost.logger.Warn("error deleting stale responses affinity cache for provider=%s: %s", providerKey, err.Error())
-			}
-		}
-	}
-	return schemas.Key{}, false
-}
-
-func (bifrost *Bifrost) rememberResponsesAffinity(requestType schemas.RequestType, providerKey schemas.ModelProvider, key schemas.Key, resp *schemas.BifrostResponse) {
-	if bifrost == nil || bifrost.kvStore == nil || key.ID == "" || resp == nil {
-		return
-	}
-	if requestType != schemas.ResponsesRequest && requestType != schemas.ResponsesStreamRequest && requestType != schemas.CompactionRequest {
-		return
-	}
-
-	responseIDs, encryptedValues := collectResponsesAffinityFromResponse(resp)
-	if len(responseIDs) == 0 && len(encryptedValues) == 0 {
-		return
-	}
-
-	for _, id := range responseIDs {
-		bifrost.setResponsesAffinityValue(buildResponsesAffinityKey("response", providerKey, id), key.ID)
-	}
-	for _, encrypted := range encryptedValues {
-		bifrost.setResponsesAffinityValue(buildResponsesAffinityKey("encrypted", providerKey, encrypted), key.ID)
-	}
-}
-
-func (bifrost *Bifrost) setResponsesAffinityValue(cacheKey string, keyID string) {
-	if err := bifrost.kvStore.SetWithTTL(cacheKey, keyID, schemas.DefaultSessionStickyTTL); err != nil && bifrost.logger != nil {
-		bifrost.logger.Warn("error setting responses affinity cache for key_id=%s: %s", keyID, err.Error())
-	}
-}
-
-func collectResponsesAffinityFromResponse(resp *schemas.BifrostResponse) ([]string, []string) {
-	if resp == nil {
-		return nil, nil
-	}
-	var responseIDs []string
-	var encryptedValues []string
-	addResponseID := func(value *string) {
-		if value == nil {
-			return
-		}
-		if trimmed := strings.TrimSpace(*value); trimmed != "" {
-			responseIDs = append(responseIDs, trimmed)
-		}
-	}
-	addEncrypted := func(value *string) {
-		if value == nil {
-			return
-		}
-		if trimmed := strings.TrimSpace(*value); trimmed != "" {
-			encryptedValues = append(encryptedValues, trimmed)
-		}
-	}
-	collectFromMessage := func(message *schemas.ResponsesMessage) {
-		if message == nil {
-			return
-		}
-		if message.ResponsesReasoning != nil {
-			addEncrypted(message.ResponsesReasoning.EncryptedContent)
-		}
-		if message.Content != nil {
-			for i := range message.Content.ContentBlocks {
-				addEncrypted(message.Content.ContentBlocks[i].EncryptedContent)
-			}
-		}
-	}
-
-	if resp.ResponsesResponse != nil {
-		addResponseID(resp.ResponsesResponse.ID)
-		for i := range resp.ResponsesResponse.Output {
-			collectFromMessage(&resp.ResponsesResponse.Output[i])
-		}
-	}
-	if resp.CompactionResponse != nil {
-		addResponseID(resp.CompactionResponse.ID)
-		for i := range resp.CompactionResponse.Output {
-			collectFromMessage(&resp.CompactionResponse.Output[i])
-		}
-	}
-	if resp.ResponsesStreamResponse != nil {
-		if resp.ResponsesStreamResponse.Response != nil {
-			addResponseID(resp.ResponsesStreamResponse.Response.ID)
-			for i := range resp.ResponsesStreamResponse.Response.Output {
-				collectFromMessage(&resp.ResponsesStreamResponse.Response.Output[i])
-			}
-		}
-		collectFromMessage(resp.ResponsesStreamResponse.Item)
-		if resp.ResponsesStreamResponse.Part != nil {
-			addEncrypted(resp.ResponsesStreamResponse.Part.EncryptedContent)
-		}
-	}
-
-	return responseIDs, encryptedValues
+// ClearContextForInternalRequest clears context state that is specific to the
+// caller's original request, so a context derived from it can carry an
+// internal sub-request (e.g. a plugin generating an embedding for its own
+// use) that must behave like a fresh top-level request.
+//
+// Two categories are cleared:
+//
+//   - Key routing: key-selection state resolved for the caller's provider
+//     (governance key allow-list, pinned/direct keys, key-selection skip). An
+//     internal request typically targets a different provider, and when it
+//     skips the plugin pipeline this state is never re-resolved — inherited,
+//     it is applied against the wrong provider's key pool and rejects every
+//     key ("no keys found for provider").
+//   - Body transport: raw-body passthrough and large-payload/large-response
+//     streaming state, plus caller-forwarded extra headers and the caller's
+//     URL-path override. Inherited, these make providers send the caller's
+//     raw or streamed body instead of marshaling the internal request, route
+//     it to the caller's endpoint path instead of the internal request's own,
+//     and forward the caller's headers on a call the caller doesn't own.
+//
+// Deliberately not cleared: tracing/observability keys (the sub-request
+// should stay tied to the caller's trace) and
+// BifrostContextKeySkipPluginPipeline (whether the internal request runs the
+// plugin pipeline is the caller's decision).
+func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
+	// Key routing.
+	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
+	ctx.ClearValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID)
+	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
+	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
+	ctx.ClearValue(schemas.BifrostContextKeyDirectKey)
+	ctx.ClearValue(schemas.BifrostContextKeySkipKeySelection)
+	// Body transport.
+	ctx.ClearValue(schemas.BifrostContextKeyUseRawRequestBody)
+	ctx.ClearValue(schemas.BifrostContextKeySendBackRawRequest)
+	ctx.ClearValue(schemas.BifrostContextKeySendBackRawResponse)
+	ctx.ClearValue(schemas.BifrostContextKeyPassthroughOverridesPresent)
+	ctx.ClearValue(schemas.BifrostContextKeyLargePayloadMode)
+	ctx.ClearValue(schemas.BifrostContextKeyLargeResponseMode)
+	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
+	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
@@ -653,6 +465,16 @@ func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 // isPassthroughRequestType returns true if the given request type is a passthrough request.
 func isPassthroughRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.PassthroughRequest || reqType == schemas.PassthroughStreamRequest
+}
+
+// isResponsesLifecycleRequestType returns true for OpenAI Responses API lifecycle HTTP verbs.
+func isResponsesLifecycleRequestType(reqType schemas.RequestType) bool {
+	switch reqType {
+	case schemas.ResponsesRetrieveRequest, schemas.ResponsesDeleteRequest, schemas.ResponsesCancelRequest, schemas.ResponsesInputItemsRequest:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsFinalChunk returns true if the given context is a final chunk.

@@ -153,19 +153,42 @@ for plugin in "${PLUGINS[@]}"; do
       #     (~1-5ms Docker); passes on upstream CI where real OpenAI (~1-5s) >> cache (1ms)
       #   - TestEmbeddingRequestsNoCacheWithoutCacheKey: t.Fatalf on embedding error — no
       #     keys support text-embedding-3-small in fork CI (no OPENAI_API_KEY)
-      #   - TestCacheTypeDirectWithSemanticFallback, TestCacheConfiguration,
-      #     TestResponsesAPICacheExpiration: 2026-07-07 sync added main.go's
-      #     "skip cache write if store.RequiresVectors() && no embedding" guard — a
-      #     correctness fix (previously a write with a missing embedding could reach
-      #     Weaviate's HNSW index in an inconsistent state). Our tests use Weaviate
-      #     (RequiresVectors()==true), so ANY cache write — including CacheTypeDirect
-      #     entries — is now correctly skipped whenever embedding generation fails,
-      #     which it always does without OPENAI_API_KEY. Same underlying cause as the
-      #     rest of this list; these three just didn't need a working embedding path
-      #     before this guard existed.
+      #   - 2026-07-07 sync added main.go's "skip cache write if
+      #     store.RequiresVectors() && no embedding" guard — a correctness fix
+      #     (previously a write with a missing embedding could reach Weaviate's
+      #     HNSW index in an inconsistent state, since every object in a
+      #     Weaviate-backed collection requires a vector regardless of whether
+      #     it's later read back via direct hash lookup or semantic search).
+      #     Our tests use Weaviate (RequiresVectors()==true), so ANY cache
+      #     write — including CacheTypeDirect entries — is now correctly
+      #     skipped whenever embedding generation fails, which it always does
+      #     without OPENAI_API_KEY. This newly affects every test asserting a
+      #     positive cache hit after a write, not just semantic-search tests:
+      #     TestCacheTypeDirectWithSemanticFallback, TestCacheConfiguration,
+      #     TestResponsesAPICacheExpiration, TestBoundaryParameterValues,
+      #     TestCacheNoStoreBasicFunctionality, TestCacheNoStoreErrorHandling,
+      #     TestCacheTypeErrorHandling, TestCacheTypeInvalidValue,
+      #     TestChatCompletionContentBlocksNormalization, TestContentVariations,
+      #     TestCrossCacheTypeWithDifferentParameters,
+      #     TestDefaultCacheKey_CachesWithoutPerRequestKey,
+      #     TestDefaultCacheKey_PerRequestKeyOverridesDefault,
+      #     TestExcludeSystemPromptComparison,
+      #     TestExcludeSystemPromptWithMultipleSystemMessages,
+      #     TestExcludeSystemPromptWithNoSystemMessages, TestNoCacheScenarios,
+      #     TestParameterVariations, TestResponsesAPIBasicFunctionality,
+      #     TestResponsesAPIComplexParameters, TestResponsesAPIDifferentParameters,
+      #     TestResponsesAPIStreaming, TestResponsesAPIWithInstructions,
+      #     TestSemanticCacheBasicFlow, TestSemanticCacheStreamingFlow,
+      #     TestSemanticCache_ConfigurationEdgeCases, TestSemanticCache_CustomTTLHandling,
+      #     TestSemanticCache_CustomThresholdHandling,
+      #     TestSemanticCache_ProviderModelCachingFlags, TestToolVariations.
+      #     This is a large jump (15 -> 42) because this guard is a correctness
+      #     fix that is logically load-bearing for nearly every "caching
+      #     works" assertion in this package when backed by a vector-requiring
+      #     store — flagged for visibility, not silently absorbed.
       # All pass on upstream CI (they have OPENAI_API_KEY + real OpenAI latency). REMOVAL
       # CONDITION: remove when fork adds OPENAI_API_KEY secret or upstream mocks embedder/TTS.
-      SEMANTICCACHE_SKIP='TestSemanticSimilarityEdgeCases|TestNormalizationWithSemanticCache|TestTextNormalizationDirectCache|TestCacheNoStoreReadButNoWrite|TestSemanticSearch|TestDirectVsSemanticSearch|TestCrossCacheTypeAccessibility|TestMultipleCacheEntriesPriority|TestResponsesAPISemanticMatching|TestStreamingCacheBasicFunctionality|TestSemanticCacheBasicFunctionality|TestEmbeddingRequestsNoCacheWithoutCacheKey|TestCacheTypeDirectWithSemanticFallback|TestCacheConfiguration|TestResponsesAPICacheExpiration'
+      SEMANTICCACHE_SKIP='TestSemanticSimilarityEdgeCases|TestNormalizationWithSemanticCache|TestTextNormalizationDirectCache|TestCacheNoStoreReadButNoWrite|TestSemanticSearch|TestDirectVsSemanticSearch|TestCrossCacheTypeAccessibility|TestMultipleCacheEntriesPriority|TestResponsesAPISemanticMatching|TestStreamingCacheBasicFunctionality|TestSemanticCacheBasicFunctionality|TestEmbeddingRequestsNoCacheWithoutCacheKey|TestCacheTypeDirectWithSemanticFallback|TestCacheConfiguration|TestResponsesAPICacheExpiration|TestBoundaryParameterValues|TestCacheNoStoreBasicFunctionality|TestCacheNoStoreErrorHandling|TestCacheTypeErrorHandling|TestCacheTypeInvalidValue|TestChatCompletionContentBlocksNormalization|TestContentVariations|TestCrossCacheTypeWithDifferentParameters|TestDefaultCacheKey_CachesWithoutPerRequestKey|TestDefaultCacheKey_PerRequestKeyOverridesDefault|TestExcludeSystemPromptComparison|TestExcludeSystemPromptWithMultipleSystemMessages|TestExcludeSystemPromptWithNoSystemMessages|TestNoCacheScenarios|TestParameterVariations|TestResponsesAPIBasicFunctionality|TestResponsesAPIComplexParameters|TestResponsesAPIDifferentParameters|TestResponsesAPIStreaming|TestResponsesAPIWithInstructions|TestSemanticCacheBasicFlow|TestSemanticCacheStreamingFlow|TestSemanticCache_ConfigurationEdgeCases|TestSemanticCache_CustomTTLHandling|TestSemanticCache_CustomThresholdHandling|TestSemanticCache_ProviderModelCachingFlags|TestToolVariations'
       if go test -v -timeout 20m -coverprofile=coverage.txt -coverpkg=./... -skip "$SEMANTICCACHE_SKIP" ./...; then
         echo "✅ Tests passed for: $plugin"
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))

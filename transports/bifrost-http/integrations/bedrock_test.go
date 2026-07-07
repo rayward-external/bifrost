@@ -449,9 +449,10 @@ func Test_createBedrockRerankRouteRequestConverter(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, bifrostReq)
 	require.NotNil(t, bifrostReq.RerankRequest)
-	// Converters leave Provider empty; resolution happens later in the
-	// modelcatalogresolver PreRequestHook.
-	assert.Equal(t, schemas.ModelProvider(""), bifrostReq.RerankRequest.Provider)
+	// ARN-based model strings are left unprefixed by ParseModelString, so the
+	// converter falls back to schemas.Bedrock explicitly (see core/providers/bedrock/rerank.go,
+	// and the equivalent assertion in core/providers/bedrock/rerank_test.go).
+	assert.Equal(t, schemas.Bedrock, bifrostReq.RerankRequest.Provider)
 	assert.Equal(t, "capital of france", bifrostReq.RerankRequest.Query)
 	require.Len(t, bifrostReq.RerankRequest.Documents, 1)
 	assert.Equal(t, "Paris is capital of France", bifrostReq.RerankRequest.Documents[0].Text)

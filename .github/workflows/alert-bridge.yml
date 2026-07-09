@@ -28,7 +28,7 @@ jobs:
         run: |
           gh api --paginate "repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=100" > alerts.json
           echo "Open code-scanning alerts: $(jq length alerts.json)" >> $GITHUB_STEP_SUMMARY
-          jq -c '[.[] | {number, rule: .rule.id, severity: .rule.security_severity_level, path: .most_recent_instance.location.path, line: .most_recent_instance.location.start_line}]' alerts.json
+          jq -c '[.[] | {number, rule: .rule.id, description: .rule.description, severity: .rule.security_severity_level, tool: .tool.name, path: .most_recent_instance.location.path, line: .most_recent_instance.location.start_line, message: .most_recent_instance.message.text, created_at, html_url}]' alerts.json
 
       - name: Upload alerts artifact
         if: inputs.mode == 'list'

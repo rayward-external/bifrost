@@ -157,6 +157,12 @@ updates:
       interval: daily
     open-pull-requests-limit: 0
 
+  - package-ecosystem: npm
+    directory: /npx/bifrost-migration-cli
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
   - package-ecosystem: gomod
     directory: /plugins/governance
     schedule:
@@ -201,6 +207,12 @@ updates:
 
   - package-ecosystem: gomod
     directory: /plugins/telemetry
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /.github/workflows/configs/newman
     schedule:
       interval: daily
     open-pull-requests-limit: 0
@@ -317,5 +329,10 @@ updates:
 
   - package-ecosystem: gomod
     directory: /plugins/modelcatalogresolver
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /scripts/bifrost-migration-cli
     schedule:
       interval: weekly

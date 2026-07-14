@@ -68,6 +68,12 @@ updates:
     open-pull-requests-limit: 0
 
   - package-ecosystem: gomod
+    directory: /examples/mcps/mcp-test-client
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
     directory: /examples/mcps/parallel-test-server
     schedule:
       interval: daily

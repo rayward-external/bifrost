@@ -1024,6 +1024,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.29",
               "changelogs/helm-v2.1.28",
               "changelogs/helm-v2.1.27",
               "changelogs/helm-v2.1.26",
@@ -1256,6 +1257,10 @@
     {
       "source": "/enterprise/getting-started",
       "destination": "/enterprise/overview"
+    },
+    {
+      "source": "/alerting/:slug*",
+      "destination": "/enterprise/alerting/:slug*"
     }
   ],
   "footer": {

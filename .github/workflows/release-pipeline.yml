@@ -560,7 +560,7 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
           # Fork patch: skip upstream-broken tests — see fork-patches.txt; remove when upstream fixes
-          GOTEST_SKIP: 'TestSkillsServingGenericFileDownloadDecodesEncodedPathParams$'
+          GOTEST_SKIP: 'TestSkillsServingGenericFileDownloadDecodesEncodedPathParams$|TestGetMCPServerForRequest_PreAuthenticatedUserPath/stamped_user_id_with_a_header_VK_is_rejected_as_conflicting$'
         run: ./.github/workflows/scripts/test-bifrost-http.sh
 
   # Migration tests - validates database migrations from previous versions

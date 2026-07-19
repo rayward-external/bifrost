@@ -25,6 +25,7 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -2952,19 +2953,44 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-// resolveBatchProvider resolves the provider (and optional model) for a batch
-// create request. Per the OpenAI spec, model is optional on POST /v1/batches —
-// it lives inside each JSONL request body. When model is present it is parsed
-// via resolveModelAndProvider; when absent the provider is taken from the
-// ?provider= query param or x-model-provider header (same as fileUpload).
-func resolveBatchProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model string) (schemas.ModelProvider, string, error) {
-	if model != "" {
-		return resolveModelAndProvider(ctx, config, model)
-	}
+// explicitBatchProvider reads the caller's explicit provider signal for
+// batch/file endpoints: the ?provider= query param, falling back to the
+// x-model-provider header. Empty when neither is present.
+func explicitBatchProvider(ctx *fasthttp.RequestCtx) string {
 	p := string(ctx.QueryArgs().Peek("provider"))
 	if p == "" {
 		p = string(ctx.Request.Header.Peek("x-model-provider"))
 	}
+	return p
+}
+
+// resolveBatchProvider resolves the provider (and optional model) for a batch
+// create request. Per the OpenAI spec, model is optional on POST /v1/batches —
+// it lives inside each JSONL request body. When model is present it is parsed
+// via resolveModelAndProvider; a bare model name (no provider prefix) falls
+// back to the explicit ?provider=/x-model-provider signal and then to the
+// model catalog — the same resolution the realtime transport paths use,
+// because batch requests never reach the PreRequestHook routing pipeline.
+// When model is absent the provider must be explicit.
+func resolveBatchProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model string) (schemas.ModelProvider, string, error) {
+	if model != "" {
+		provider, modelName, err := resolveModelAndProvider(ctx, config, model)
+		if err != nil || provider != "" {
+			return provider, modelName, err
+		}
+		if p := explicitBatchProvider(ctx); p != "" {
+			return schemas.ModelProvider(p), modelName, nil
+		}
+		if config != nil && config.ModelCatalog != nil {
+			if selected, _ := modelcatalogresolver.ResolveProviderFromCatalog(nil, config.ModelCatalog, modelName); selected != "" {
+				return selected, modelName, nil
+			}
+		}
+		// Preserve the pre-existing behavior for unresolvable bare models:
+		// the core request layer emits its "provider is required" error.
+		return provider, modelName, nil
+	}
+	p := explicitBatchProvider(ctx)
 	if p == "" {
 		return "", "", fmt.Errorf("provider query parameter or x-model-provider header is required when model is not specified")
 	}
@@ -3301,6 +3327,21 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 		// Try to get from extra_body
 		if provider == "" && len(form.Value["provider"]) > 0 {
 			provider = string(form.Value["provider"][0])
+		}
+	}
+
+	// A `model` form field (LiteLLM-dialect batch uploads send
+	// `-F model=<name>`) resolves the provider when no explicit signal is
+	// present: a provider-prefixed value wins outright, a bare name goes
+	// through the model catalog — mirroring resolveBatchProvider.
+	if provider == "" && len(form.Value["model"]) > 0 && form.Value["model"][0] != "" {
+		formProvider, formModel := schemas.ParseModelString(form.Value["model"][0], "")
+		if formProvider != "" {
+			provider = string(formProvider)
+		} else if h.config != nil && h.config.ModelCatalog != nil {
+			if selected, _ := modelcatalogresolver.ResolveProviderFromCatalog(nil, h.config.ModelCatalog, formModel); selected != "" {
+				provider = string(selected)
+			}
 		}
 	}
 

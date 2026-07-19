@@ -44,6 +44,37 @@ func TestResolveBatchProvider(t *testing.T) {
 			name:       "no model, no provider → error",
 			wantErrMsg: "provider query parameter or x-model-provider header is required",
 		},
+		// Bare model names (no provider prefix) must consult the explicit
+		// ?provider=/x-model-provider signal instead of silently resolving to
+		// an empty provider — previously the model != "" branch short-circuited
+		// before the query/header check.
+		{
+			name:         "bare model + ?provider= query param",
+			model:        "gpt-5.4-batch",
+			query:        "azure",
+			wantProvider: "azure",
+			wantModel:    "gpt-5.4-batch",
+		},
+		{
+			name:         "bare model + x-model-provider header",
+			model:        "gpt-5.4-batch",
+			header:       "azure",
+			wantProvider: "azure",
+			wantModel:    "gpt-5.4-batch",
+		},
+		{
+			name:         "prefixed model wins over query param",
+			model:        "openai/gpt-4o-mini",
+			query:        "azure",
+			wantProvider: "openai",
+			wantModel:    "gpt-4o-mini",
+		},
+		{
+			name:         "bare model, no signal, no catalog → empty provider (core layer errors)",
+			model:        "gpt-5.4-batch",
+			wantProvider: "",
+			wantModel:    "gpt-5.4-batch",
+		},
 	}
 
 	for _, tc := range cases {

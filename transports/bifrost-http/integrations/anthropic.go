@@ -1118,6 +1118,16 @@ func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	routes = append(routes, CreateAnthropicBatchRouteConfigs("/anthropic", handlerStore)...)
 	routes = append(routes, CreateAnthropicFilesRouteConfigs("/anthropic", handlerStore)...)
 
+	// Root-mounted aliases: serve the Anthropic Messages surface at the bare
+	// paths (/v1/messages, /v1/messages/count_tokens, /v1/messages/batches...)
+	// with behavior identical to the /anthropic-prefixed routes, so Anthropic
+	// SDKs can point base_url at the gateway root. Only these three route
+	// families are safe at root: the list-models and files variants would
+	// collide with the core /v1/models and /v1/files routes.
+	routes = append(routes, createAnthropicMessagesRouteConfig("", logger)...)
+	routes = append(routes, CreateAnthropicCountTokensRouteConfigs("", handlerStore)...)
+	routes = append(routes, CreateAnthropicBatchRouteConfigs("", handlerStore)...)
+
 	return &AnthropicRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
 	}

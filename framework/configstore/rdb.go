@@ -202,6 +202,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 		dbKey.VertexRegion = &key.VertexKeyConfig.Region
 		dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+		dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 	}
 
 	if key.BedrockKeyConfig != nil {
@@ -251,6 +252,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		DumpErrorsInConsoleLogs:               config.DumpErrorsInConsoleLogs,
 		LogRetentionDays:                      config.LogRetentionDays,
 		EnforceAuthOnInference:                config.EnforceAuthOnInference,
+		DualCredentialConflictBehavior:        config.DualCredentialConflictBehavior,
 		EnforceGovernanceHeader:               config.EnforceGovernanceHeader,
 		EnforceSCIMAuth:                       config.EnforceSCIMAuth,
 		PrometheusLabels:                      config.PrometheusLabels,
@@ -508,20 +510,21 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		return nil, err
 	}
 	return &ClientConfig{
-		DropExcessRequests:      dbConfig.DropExcessRequests,
-		InitialPoolSize:         dbConfig.InitialPoolSize,
-		PrometheusLabels:        dbConfig.PrometheusLabels,
-		EnableLogging:           dbConfig.EnableLogging,
-		DisableContentLogging:   dbConfig.DisableContentLogging,
-		DisableDBPingsInHealth:  dbConfig.DisableDBPingsInHealth,
-		DumpErrorsInConsoleLogs: dbConfig.DumpErrorsInConsoleLogs,
-		LogRetentionDays:        dbConfig.LogRetentionDays,
-		EnforceAuthOnInference:  dbConfig.EnforceAuthOnInference,
-		EnforceGovernanceHeader: dbConfig.EnforceGovernanceHeader,
-		EnforceSCIMAuth:         dbConfig.EnforceSCIMAuth,
-		AllowedOrigins:          dbConfig.AllowedOrigins,
-		AllowedHeaders:          dbConfig.AllowedHeaders,
-		MaxRequestBodySizeMB:    dbConfig.MaxRequestBodySizeMB,
+		DropExcessRequests:             dbConfig.DropExcessRequests,
+		InitialPoolSize:                dbConfig.InitialPoolSize,
+		PrometheusLabels:               dbConfig.PrometheusLabels,
+		EnableLogging:                  dbConfig.EnableLogging,
+		DisableContentLogging:          dbConfig.DisableContentLogging,
+		DisableDBPingsInHealth:         dbConfig.DisableDBPingsInHealth,
+		DumpErrorsInConsoleLogs:        dbConfig.DumpErrorsInConsoleLogs,
+		LogRetentionDays:               dbConfig.LogRetentionDays,
+		EnforceAuthOnInference:         dbConfig.EnforceAuthOnInference,
+		DualCredentialConflictBehavior: dbConfig.DualCredentialConflictBehavior,
+		EnforceGovernanceHeader:        dbConfig.EnforceGovernanceHeader,
+		EnforceSCIMAuth:                dbConfig.EnforceSCIMAuth,
+		AllowedOrigins:                 dbConfig.AllowedOrigins,
+		AllowedHeaders:                 dbConfig.AllowedHeaders,
+		MaxRequestBodySizeMB:           dbConfig.MaxRequestBodySizeMB,
 		Compat: CompatConfig{
 			ConvertTextToChat:      dbConfig.CompatConvertTextToChat,
 			ConvertChatToResponses: dbConfig.CompatConvertChatToResponses,
@@ -736,6 +739,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 				dbKey.VertexRegion = &key.VertexKeyConfig.Region
 				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+				dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 			}
 
 			// Handle Bedrock config
@@ -965,6 +969,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 			dbKey.VertexRegion = &key.VertexKeyConfig.Region
 			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 		}
 
 		// Handle Bedrock config
@@ -1103,6 +1108,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 			dbKey.VertexRegion = &key.VertexKeyConfig.Region
 			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 		}
 		// Handle Bedrock config
 		if key.BedrockKeyConfig != nil {

@@ -2138,11 +2138,21 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 			},
 		}
 	}
-	// An empty provider is allowed through: the PreRequestHook routing
-	// pipeline (governance routing rules, virtual-key load balancing, the
-	// model-catalog resolver) fills it in from the request's model, exactly
-	// as ChatCompletionRequest does. validateRequestAfterPreRequestHooks
-	// rejects requests the pipeline could not resolve.
+	// An empty provider is allowed through when a model is present: the
+	// PreRequestHook routing pipeline (governance routing rules, virtual-key
+	// load balancing, the model-catalog resolver) fills it in from the model,
+	// exactly as ChatCompletionRequest does, and
+	// validateRequestAfterPreRequestHooks rejects requests the pipeline could
+	// not resolve. Model-less requests keep the pre-existing eager error —
+	// there is nothing to route on, and callers depend on this message.
+	if req.Provider == "" && (req.Model == nil || *req.Model == "") {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch create request",
+			},
+		}
+	}
 	hasInputBlob := req.InputBlob != nil && strings.TrimSpace(*req.InputBlob) != ""
 	if req.InputFileID == "" && len(req.Requests) == 0 && !hasInputBlob {
 		return nil, &schemas.BifrostError{
@@ -2418,7 +2428,12 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 		}
 	}
 
-	if len(req.File) == 0 && req.Provider != schemas.Vertex {
+	// Byte-less uploads are only valid for Vertex (resumable GCS sessions).
+	// With an empty provider the pipeline may still resolve to Vertex, so the
+	// eager rejection applies only to explicit non-Vertex providers; a
+	// pipeline-resolved non-Vertex provider fails in the provider
+	// implementation instead.
+	if len(req.File) == 0 && req.Provider != "" && req.Provider != schemas.Vertex {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{

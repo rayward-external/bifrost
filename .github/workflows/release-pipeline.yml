@@ -745,6 +745,9 @@ jobs:
           # need a non-empty key value to exist, so fall back to dummies.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'sk-ci-dummy-openai' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || 'sk-ant-ci-dummy' }}
+          # Flows that hit live provider APIs gate themselves on this flag and
+          # skip when the environment only has the dummy fallbacks above.
+          HAS_REAL_PROVIDER_KEYS: ${{ secrets.OPENAI_API_KEY != '' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}

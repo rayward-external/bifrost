@@ -3405,7 +3405,7 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 
 	// Collect unknown form fields as extra params (multipart — cannot use extractExtraParams which expects JSON).
 	// gcs_bucket/gcs_prefix are consumed into StorageConfig above; other providers (e.g. Bedrock s3_bucket) still flow through here.
-	fileUploadKnownFields := map[string]bool{"file": true, "purpose": true, "provider": true, "filename": true, "content_type": true, "gcs_bucket": true, "gcs_prefix": true}
+	fileUploadKnownFields := map[string]bool{"file": true, "purpose": true, "provider": true, "model": true, "filename": true, "content_type": true, "gcs_bucket": true, "gcs_prefix": true}
 	extraParams := map[string]interface{}{}
 	for k, vals := range form.Value {
 		if !fileUploadKnownFields[k] && len(vals) > 0 && vals[0] != "" {

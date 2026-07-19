@@ -357,11 +357,26 @@ params = {
     "order": "asc",
 }
 
+def logs_settled(rows):
+    # A log row is created when the request starts and its token_usage/cost
+    # are filled in asynchronously at completion — waiting on count alone
+    # races that flush and flakes with "missing token_usage or cost" on the
+    # newest row. Wait until every row is complete, not merely present.
+    for row in rows:
+        usage = row.get("token_usage") or {}
+        if (
+            usage.get("prompt_tokens") is None
+            or usage.get("completion_tokens") is None
+            or row.get("cost") is None
+        ):
+            return False
+    return True
+
 logs = []
 for _ in range(60):
     payload = get_json("/api/logs", params)
     logs = payload.get("logs", [])
-    if len(logs) >= expected_count:
+    if len(logs) >= expected_count and logs_settled(logs):
         break
     time.sleep(1)
 

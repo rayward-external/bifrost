@@ -2138,14 +2138,11 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 			},
 		}
 	}
-	if req.Provider == "" {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "provider is required for batch create request",
-			},
-		}
-	}
+	// An empty provider is allowed through: the PreRequestHook routing
+	// pipeline (governance routing rules, virtual-key load balancing, the
+	// model-catalog resolver) fills it in from the request's model, exactly
+	// as ChatCompletionRequest does. validateRequestAfterPreRequestHooks
+	// rejects requests the pipeline could not resolve.
 	hasInputBlob := req.InputBlob != nil && strings.TrimSpace(*req.InputBlob) != ""
 	if req.InputFileID == "" && len(req.Requests) == 0 && !hasInputBlob {
 		return nil, &schemas.BifrostError{
@@ -2159,13 +2156,15 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 		ctx = bifrost.ctx
 	}
 
-	provider := bifrost.getProviderByKey(req.Provider)
-	if provider == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "provider not found for batch create request",
-			},
+	if req.Provider != "" {
+		provider := bifrost.getProviderByKey(req.Provider)
+		if provider == nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: "provider not found for batch create request",
+				},
+			}
 		}
 	}
 
@@ -2400,7 +2399,14 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 			},
 		}
 	}
-	if req.Provider == "" {
+	// An empty provider is allowed through when a model is present: the
+	// PreRequestHook routing pipeline (governance routing rules, virtual-key
+	// load balancing, the model-catalog resolver) fills it in from the model,
+	// exactly as ChatCompletionRequest does.
+	// validateRequestAfterPreRequestHooks rejects requests the pipeline could
+	// not resolve. Model-less uploads still require an explicit provider —
+	// there is nothing to route on.
+	if req.Provider == "" && (req.Model == nil || *req.Model == "") {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{

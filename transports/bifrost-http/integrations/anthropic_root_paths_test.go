@@ -49,6 +49,30 @@ func TestNewAnthropicRouterMountsRootPaths(t *testing.T) {
 		}
 	}
 
+	// The literal routes must win over the /v1/messages/{path:*} wildcard —
+	// if the wildcard shadowed them, count_tokens would run generic inference
+	// and batch creates would be treated as message posts. Handler pointers
+	// can't discriminate (closures from one source line share a code pointer),
+	// but a wildcard match stores the {path:*} route param and a literal match
+	// does not.
+	matchedByWildcard := func(method, path string) bool {
+		lookupCtx := &fasthttp.RequestCtx{}
+		handler, _ := r.Lookup(method, path, lookupCtx)
+		if handler == nil {
+			t.Fatalf("expected %s %s to be routable", method, path)
+		}
+		return lookupCtx.UserValue("path") != nil
+	}
+	if !matchedByWildcard("POST", "/v1/messages/arbitrary-subpath") {
+		t.Error("expected POST /v1/messages/arbitrary-subpath to be matched by the wildcard route")
+	}
+	if matchedByWildcard("POST", "/v1/messages/count_tokens") {
+		t.Error("POST /v1/messages/count_tokens matched the wildcard messages route — literal route shadowed")
+	}
+	if matchedByWildcard("POST", "/v1/messages/batches") {
+		t.Error("POST /v1/messages/batches matched the wildcard messages route — literal route shadowed")
+	}
+
 	// The list-models and files families must NOT be mounted at root — they
 	// belong to the core OpenAI-shape handler there.
 	ctx := &fasthttp.RequestCtx{}

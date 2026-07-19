@@ -70,7 +70,7 @@ func TestResolveBatchProvider(t *testing.T) {
 			wantModel:    "gpt-4o-mini",
 		},
 		{
-			name:         "bare model, no signal, no catalog → empty provider (core layer errors)",
+			name:         "bare model, no signal → empty provider (routing pipeline resolves)",
 			model:        "gpt-5.4-batch",
 			wantProvider: "",
 			wantModel:    "gpt-5.4-batch",

@@ -373,6 +373,10 @@ fi
 # supplied per pass so the unauthenticated and authenticated runs keep separate
 # reports while using identical environment/config inputs.
 newman_args=(--timeout-script 120000 --timeout 900000 -r "$REPORTERS" --env-var "base_url=$BASE_URL")
+# Flows that call real provider APIs (e.g. the VK-scoped GET /v1/models, which
+# proxies to the provider's live models endpoint) gate themselves on this flag
+# so secretless CI environments skip them instead of failing on dummy keys.
+newman_args+=(--env-var "has_real_provider_keys=${HAS_REAL_PROVIDER_KEYS:-false}")
 
 # Parsed seed env entries live here, not in the runner's shell namespace.
 # Decoupling the data keyspace from the script's own variables (PATH, COLLECTION,

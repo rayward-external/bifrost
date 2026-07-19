@@ -3306,12 +3306,26 @@
           ],
           "request": {
             "method": "POST",
-            "header": [ { "key": "Content-Type", "value": "application/json" } ],
-            "body": { "mode": "raw", "raw": "{}" },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
             "url": {
               "raw": "{{base_url}}/api/governance/virtual-keys",
-              "host": [ "{{base_url}}" ],
-              "path": [ "api", "governance", "virtual-keys" ]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
             }
           }
         },
@@ -3347,18 +3361,48 @@
           ],
           "request": {
             "method": "GET",
-            "header": [ { "key": "x-bf-vk", "value": "{{vkrestrict_value}}" } ],
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkrestrict_value}}"
+              }
+            ],
             "url": {
               "raw": "{{base_url}}/api/models?limit=5000",
-              "host": [ "{{base_url}}" ],
-              "path": [ "api", "models" ],
-              "query": [ { "key": "limit", "value": "5000" } ]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
             }
           }
         },
         {
           "name": "List Models via VK - /v1/models (the #3187 flow)",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// This request proxies to the provider's LIVE models endpoint, so it",
+                  "// needs real provider credentials. Secretless CI (e.g. forks) runs with",
+                  "// dummy keys and skips it via the has_real_provider_keys env flag.",
+                  "if (String(pm.variables.get('has_real_provider_keys')) !== 'true') {",
+                  "    console.log('skipping #3187 flow: no real provider keys in this environment');",
+                  "    pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
@@ -3393,11 +3437,21 @@
           ],
           "request": {
             "method": "GET",
-            "header": [ { "key": "x-bf-vk", "value": "{{vkrestrict_value}}" } ],
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkrestrict_value}}"
+              }
+            ],
             "url": {
               "raw": "{{base_url}}/v1/models",
-              "host": [ "{{base_url}}" ],
-              "path": [ "v1", "models" ]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
             }
           }
         },
@@ -3419,8 +3473,15 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/governance/virtual-keys/{{vkrestrict_id}}",
-              "host": [ "{{base_url}}" ],
-              "path": [ "api", "governance", "virtual-keys", "{{vkrestrict_id}}" ]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkrestrict_id}}"
+              ]
             }
           }
         }

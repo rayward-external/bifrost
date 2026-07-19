@@ -4,6 +4,11 @@ name: Release Pipeline
 on:
   push:
     branches: ["main", "v2.0.0"]
+  # Fork-only: run the test jobs on PRs so the required test-* contexts land in a
+  # PR-associated check suite — workflow_dispatch runs on the branch do not count
+  # toward PR mergeability. Release jobs stay gated on maximhq/bifrost and skip.
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
     inputs:
       skip_tests:
@@ -742,8 +747,15 @@ jobs:
       - name: Run API integrations test
         env:
           CI: "1"
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Fork CI has no provider secrets. The management suite never makes
+          # real provider calls (inference goes through the local mocker), but
+          # key-based flows — e.g. the VK-scoped GET /v1/models (#3187) —
+          # need a non-empty key value to exist, so fall back to dummies.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'sk-ci-dummy-openai' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || 'sk-ant-ci-dummy' }}
+          # Flows that hit live provider APIs gate themselves on this flag and
+          # skip when the environment only has the dummy fallbacks above.
+          HAS_REAL_PROVIDER_KEYS: ${{ secrets.OPENAI_API_KEY != '' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}

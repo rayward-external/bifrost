@@ -758,6 +758,10 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.CachedContentUpdateRequest.Provider = provider
 	case br.CachedContentDeleteRequest != nil:
 		br.CachedContentDeleteRequest.Provider = provider
+	case br.BatchCreateRequest != nil:
+		br.BatchCreateRequest.Provider = provider
+	case br.FileUploadRequest != nil:
+		br.FileUploadRequest.Provider = provider
 	}
 }
 
@@ -794,6 +798,10 @@ func (br *BifrostRequest) SetModel(model string) {
 	case br.BatchCreateRequest != nil:
 		if br.BatchCreateRequest.Model != nil {
 			br.BatchCreateRequest.Model = new(model)
+		}
+	case br.FileUploadRequest != nil:
+		if br.FileUploadRequest.Model != nil {
+			br.FileUploadRequest.Model = new(model)
 		}
 	case br.CachedContentCreateRequest != nil:
 		br.CachedContentCreateRequest.Model = model

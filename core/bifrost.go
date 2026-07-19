@@ -2139,7 +2139,14 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 			},
 		}
 	}
-	if req.Provider == "" {
+	// An empty provider is allowed through when a model is present: the
+	// PreRequestHook routing pipeline (governance routing rules, virtual-key
+	// load balancing, the model-catalog resolver) fills it in from the model,
+	// exactly as ChatCompletionRequest does, and
+	// validateRequestAfterPreRequestHooks rejects requests the pipeline could
+	// not resolve. Model-less requests keep the pre-existing eager error —
+	// there is nothing to route on, and callers depend on this message.
+	if req.Provider == "" && (req.Model == nil || *req.Model == "") {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -2160,13 +2167,15 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 		ctx = bifrost.ctx
 	}
 
-	provider := bifrost.getProviderByKey(req.Provider)
-	if provider == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "provider not found for batch create request",
-			},
+	if req.Provider != "" {
+		provider := bifrost.getProviderByKey(req.Provider)
+		if provider == nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: "provider not found for batch create request",
+				},
+			}
 		}
 	}
 
@@ -2401,7 +2410,14 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 			},
 		}
 	}
-	if req.Provider == "" {
+	// An empty provider is allowed through when a model is present: the
+	// PreRequestHook routing pipeline (governance routing rules, virtual-key
+	// load balancing, the model-catalog resolver) fills it in from the model,
+	// exactly as ChatCompletionRequest does.
+	// validateRequestAfterPreRequestHooks rejects requests the pipeline could
+	// not resolve. Model-less uploads still require an explicit provider —
+	// there is nothing to route on.
+	if req.Provider == "" && (req.Model == nil || *req.Model == "") {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -2413,7 +2429,12 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 		}
 	}
 
-	if len(req.File) == 0 && req.Provider != schemas.Vertex {
+	// Byte-less uploads are only valid for Vertex (resumable GCS sessions).
+	// With an empty provider the pipeline may still resolve to Vertex, so the
+	// eager rejection applies only to explicit non-Vertex providers; a
+	// pipeline-resolved non-Vertex provider fails in the provider
+	// implementation instead.
+	if len(req.File) == 0 && req.Provider != "" && req.Provider != schemas.Vertex {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{

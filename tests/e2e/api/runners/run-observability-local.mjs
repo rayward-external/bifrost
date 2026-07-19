@@ -394,9 +394,24 @@ async function assertLoggingTrace() {
 // threshold. assertPrometheusScrape and assertLoggingTrace check each side in isolation;
 // only this cross-check catches a drift where both sides individually look "present".
 function assertMetricsMatchLogs(metrics, log) {
-  const labels = { provider: providerName, model: requestedModel, method: "chat_completion" };
-  const inputLine = findPrometheusSample(metrics, "bifrost_input_tokens_total", labels);
-  const outputLine = findPrometheusSample(metrics, "bifrost_output_tokens_total", labels);
+  // The server may label the counter series with either the requested
+  // ("provider/model") or the resolved ("model") form — accept both, matching
+  // assertPrometheusScrape and the log.model check above.
+  const labelCandidates = [
+    { provider: providerName, model: requestedModel, method: "chat_completion" },
+    { provider: providerName, model: modelName, method: "chat_completion" },
+  ];
+  const findSample = (name) => {
+    for (const labels of labelCandidates) {
+      const line = findPrometheusSample(metrics, name, labels);
+      if (line) {
+        return line;
+      }
+    }
+    return null;
+  };
+  const inputLine = findSample("bifrost_input_tokens_total");
+  const outputLine = findSample("bifrost_output_tokens_total");
   if (!inputLine || !outputLine) {
     throw new Error("metrics/logs reconciliation: /metrics is missing token counters for the LLM call");
   }

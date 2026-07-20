@@ -44,8 +44,8 @@ files:
     parameters:
     - name: x-model-provider
       in: query
-      required: true
-      description: Provider to list files for
+      required: false
+      description: Provider to list files for (optional — inferred when unambiguous)
       schema:
         $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     - name: purpose

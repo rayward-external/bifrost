@@ -105,6 +105,12 @@ func TestResolveLifecycleProvider(t *testing.T) {
 			wantProvider: schemas.Bedrock,
 		},
 		{
+			name:         "projects/ batch id infers vertex",
+			providers:    azureOnly,
+			id:           "projects/my-proj/locations/us-central1/batchPredictionJobs/123",
+			wantProvider: schemas.Vertex,
+		},
+		{
 			name:       "ambiguous id, two OpenAI-dialect providers → error",
 			providers:  bothOpenAIDialects,
 			id:         "batch_537ba5d0",

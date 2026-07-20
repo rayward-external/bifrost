@@ -3034,7 +3034,9 @@ func (h *CompletionHandler) resolveLifecycleProvider(ctx *fasthttp.RequestCtx, i
 		return schemas.Anthropic, nil
 	case strings.HasPrefix(id, "arn:"), strings.HasPrefix(id, "s3://"):
 		return schemas.Bedrock, nil
-	case strings.HasPrefix(id, "gs://"):
+	// Vertex: gs:// file ids and projects/{p}/locations/{l}/batchPredictionJobs/{id}
+	// batch ids (the resource name Vertex batch create returns).
+	case strings.HasPrefix(id, "gs://"), strings.HasPrefix(id, "projects/"):
 		return schemas.Vertex, nil
 	}
 	// Only ids that actually look OpenAI-dialect (batch_*, file-* with a

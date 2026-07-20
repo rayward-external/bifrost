@@ -24,6 +24,15 @@ func TestResolveLifecycleProvider(t *testing.T) {
 		schemas.Azure:  {},
 		schemas.OpenAI: {},
 	}
+	batchTrue := true
+	azureBatchOpenAIFailover := map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Azure:  {Keys: []schemas.Key{{ID: "az-1", UseForBatchAPI: &batchTrue}}},
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: "oa-1"}}},
+	}
+	bothBatchCapable := map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Azure:  {Keys: []schemas.Key{{ID: "az-1", UseForBatchAPI: &batchTrue}}},
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: "oa-1", UseForBatchAPI: &batchTrue}}},
+	}
 
 	cases := []struct {
 		name         string
@@ -111,8 +120,26 @@ func TestResolveLifecycleProvider(t *testing.T) {
 			wantProvider: schemas.Vertex,
 		},
 		{
-			name:       "ambiguous id, two OpenAI-dialect providers → error",
+			name:       "ambiguous id, two OpenAI-dialect providers (no batch keys) → error",
 			providers:  bothOpenAIDialects,
+			id:         "batch_537ba5d0",
+			wantErrMsg: "provider is ambiguous",
+		},
+		{
+			name:         "two OpenAI-dialect providers, only azure batch-capable → azure",
+			providers:    azureBatchOpenAIFailover,
+			id:           "batch_537ba5d0",
+			wantProvider: schemas.Azure,
+		},
+		{
+			name:         "id-less list, only azure batch-capable → azure",
+			providers:    azureBatchOpenAIFailover,
+			id:           "",
+			wantProvider: schemas.Azure,
+		},
+		{
+			name:       "both batch-capable → still ambiguous",
+			providers:  bothBatchCapable,
 			id:         "batch_537ba5d0",
 			wantErrMsg: "provider is ambiguous",
 		},

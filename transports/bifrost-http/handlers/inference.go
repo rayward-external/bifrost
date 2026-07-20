@@ -3049,6 +3049,26 @@ func (h *CompletionHandler) resolveLifecycleProvider(ctx *fasthttp.RequestCtx, i
 				openAIDialect = append(openAIDialect, p)
 			}
 		}
+		// With several OpenAI-dialect providers configured, only those holding a
+		// batch-enabled key (UseForBatchAPI) can have produced these ids — e.g. a
+		// provider configured purely for chat failover shouldn't shadow the one
+		// that actually runs batches.
+		if len(openAIDialect) > 1 {
+			var batchCapable []schemas.ModelProvider
+			for _, p := range openAIDialect {
+				if cfg, err := h.config.GetProviderConfigRaw(p); err == nil {
+					for _, k := range cfg.Keys {
+						if k.UseForBatchAPI != nil && *k.UseForBatchAPI {
+							batchCapable = append(batchCapable, p)
+							break
+						}
+					}
+				}
+			}
+			if len(batchCapable) > 0 {
+				openAIDialect = batchCapable
+			}
+		}
 		if len(openAIDialect) == 1 {
 			return openAIDialect[0], nil
 		}

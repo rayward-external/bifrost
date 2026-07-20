@@ -38,8 +38,8 @@ batches:
     parameters:
     - name: provider
       in: query
-      required: true
-      description: Provider to list batches for
+      required: false
+      description: Provider to list batches for (optional — inferred when unambiguous)
       schema:
         $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     - name: limit
@@ -92,8 +92,8 @@ batches-by-id:
         type: string
     - name: provider
       in: query
-      required: true
-      description: The provider of the batch
+      required: false
+      description: The provider of the batch (optional — inferred when unambiguous)
       schema:
         $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     responses:
@@ -130,8 +130,8 @@ batches-cancel:
         type: string
     - name: provider
       in: query
-      required: true
-      description: The provider of the batch
+      required: false
+      description: The provider of the batch (optional — inferred when unambiguous)
       schema:
         $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     responses:
@@ -168,8 +168,8 @@ batches-results:
         type: string
     - name: provider
       in: query
-      required: true
-      description: The provider of the batch
+      required: false
+      description: The provider of the batch (optional — inferred when unambiguous)
       schema:
         $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     responses:

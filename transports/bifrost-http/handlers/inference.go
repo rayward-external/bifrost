@@ -3009,9 +3009,51 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 func explicitBatchProvider(ctx *fasthttp.RequestCtx) string {
 	p := string(ctx.QueryArgs().Peek("provider"))
 	if p == "" {
+		p = string(ctx.QueryArgs().Peek("x-model-provider"))
+	}
+	if p == "" {
 		p = string(ctx.Request.Header.Peek("x-model-provider"))
 	}
 	return p
+}
+
+// resolveLifecycleProvider resolves the provider for batch/file lifecycle
+// endpoints, which carry an id but no model. Resolution order: the explicit
+// ?provider=/x-model-provider signal, then an unambiguous id shape
+// (msgbatch_* → anthropic, arn:* / s3:// → bedrock, gs:// → vertex), then —
+// for the ambiguous OpenAI-dialect ids (batch_*, file-*) and list calls — the
+// sole configured provider speaking that dialect. Errors when no unambiguous
+// resolution exists, preserving the old explicit-provider requirement.
+func (h *CompletionHandler) resolveLifecycleProvider(ctx *fasthttp.RequestCtx, id string) (schemas.ModelProvider, error) {
+	if p := explicitBatchProvider(ctx); p != "" {
+		return schemas.ModelProvider(p), nil
+	}
+	switch {
+	// Anthropic ids: msgbatch_* batches, file_* (underscore) files.
+	case strings.HasPrefix(id, "msgbatch_"), strings.HasPrefix(id, "file_"):
+		return schemas.Anthropic, nil
+	case strings.HasPrefix(id, "arn:"), strings.HasPrefix(id, "s3://"):
+		return schemas.Bedrock, nil
+	// Vertex: gs:// file ids and projects/{p}/locations/{l}/batchPredictionJobs/{id}
+	// batch ids (the resource name Vertex batch create returns).
+	case strings.HasPrefix(id, "gs://"), strings.HasPrefix(id, "projects/"):
+		return schemas.Vertex, nil
+	}
+	// Only ids that actually look OpenAI-dialect (batch_*, file-* with a
+	// hyphen) and id-less list calls may fall back to the sole configured
+	// OpenAI-dialect provider; any other shape must be explicit.
+	if id == "" || strings.HasPrefix(id, "batch_") || strings.HasPrefix(id, "file-") {
+		var openAIDialect []schemas.ModelProvider
+		for _, p := range h.config.GetAvailableProviders() {
+			if p == schemas.OpenAI || p == schemas.Azure {
+				openAIDialect = append(openAIDialect, p)
+			}
+		}
+		if len(openAIDialect) == 1 {
+			return openAIDialect[0], nil
+		}
+	}
+	return "", fmt.Errorf("provider is ambiguous for this id: pass the ?provider= query parameter or the x-model-provider header")
 }
 
 // resolveBatchProvider resolves the provider (and optional model) for a batch
@@ -3117,10 +3159,9 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 
 // batchList handles GET /v1/batches - List batch jobs
 func (h *CompletionHandler) batchList(ctx *fasthttp.RequestCtx) {
-	// Get provider from query parameters
-	provider := string(ctx.QueryArgs().Peek("provider"))
-	if provider == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+	provider, perr := h.resolveLifecycleProvider(ctx, "")
+	if perr != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, perr.Error())
 		return
 	}
 
@@ -3145,7 +3186,7 @@ func (h *CompletionHandler) batchList(ctx *fasthttp.RequestCtx) {
 
 	// Build Bifrost batch list request
 	bifrostBatchReq := &schemas.BifrostBatchListRequest{
-		Provider: schemas.ModelProvider(provider),
+		Provider: provider,
 		Limit:    limit,
 		After:    after,
 		BeforeID: before,
@@ -3189,16 +3230,15 @@ func (h *CompletionHandler) batchRetrieve(ctx *fasthttp.RequestCtx) {
 		batchID = decoded
 	}
 
-	// Get provider from query parameters
-	provider := string(ctx.QueryArgs().Peek("provider"))
-	if provider == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+	provider, perr := h.resolveLifecycleProvider(ctx, batchID)
+	if perr != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, perr.Error())
 		return
 	}
 
 	// Build Bifrost batch retrieve request
 	bifrostBatchReq := &schemas.BifrostBatchRetrieveRequest{
-		Provider: schemas.ModelProvider(provider),
+		Provider: provider,
 		BatchID:  batchID,
 	}
 
@@ -3240,16 +3280,15 @@ func (h *CompletionHandler) batchCancel(ctx *fasthttp.RequestCtx) {
 		batchID = decoded
 	}
 
-	// Get provider from query parameters
-	provider := string(ctx.QueryArgs().Peek("provider"))
-	if provider == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+	provider, perr := h.resolveLifecycleProvider(ctx, batchID)
+	if perr != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, perr.Error())
 		return
 	}
 
 	// Build Bifrost batch cancel request
 	bifrostBatchReq := &schemas.BifrostBatchCancelRequest{
-		Provider: schemas.ModelProvider(provider),
+		Provider: provider,
 		BatchID:  batchID,
 	}
 
@@ -3291,16 +3330,15 @@ func (h *CompletionHandler) batchResults(ctx *fasthttp.RequestCtx) {
 		batchID = decoded
 	}
 
-	// Get provider from query parameters
-	provider := string(ctx.QueryArgs().Peek("provider"))
-	if provider == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+	provider, perr := h.resolveLifecycleProvider(ctx, batchID)
+	if perr != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, perr.Error())
 		return
 	}
 
 	// Build Bifrost batch results request
 	bifrostBatchReq := &schemas.BifrostBatchResultsRequest{
-		Provider: schemas.ModelProvider(provider),
+		Provider: provider,
 		BatchID:  batchID,
 	}
 
@@ -3505,17 +3543,9 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 
 // fileList handles GET /v1/files - List files
 func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
-	// Get provider from query parameters or header; accept both ?provider= and
-	// ?x-model-provider= for consistency with other file endpoints (#3963).
-	provider := string(ctx.QueryArgs().Peek("provider"))
-	if provider == "" {
-		provider = string(ctx.QueryArgs().Peek("x-model-provider"))
-	}
-	if provider == "" {
-		provider = string(ctx.Request.Header.Peek("x-model-provider"))
-	}
-	if provider == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter or x-model-provider header is required")
+	provider, perr := h.resolveLifecycleProvider(ctx, "")
+	if perr != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, perr.Error())
 		return
 	}
 
@@ -3561,7 +3591,7 @@ func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
 
 	// Build Bifrost file list request
 	bifrostFileReq := &schemas.BifrostFileListRequest{
-		Provider:      schemas.ModelProvider(provider),
+		Provider:      provider,
 		Purpose:       schemas.FilePurpose(purpose),
 		Limit:         limit,
 		After:         after,
@@ -3613,16 +3643,15 @@ func (h *CompletionHandler) fileRetrieve(ctx *fasthttp.RequestCtx) {
 	// or percent-encoded gs:// / s3:// ids passed directly).
 	fileID = decodeStorageFileID(fileID)
 
-	// Get provider from query parameters
-	provider := string(ctx.QueryArgs().Peek("provider"))
-	if provider == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+	provider, perr := h.resolveLifecycleProvider(ctx, fileID)
+	if perr != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, perr.Error())
 		return
 	}
 
 	// Build Bifrost file retrieve request
 	bifrostFileReq := &schemas.BifrostFileRetrieveRequest{
-		Provider: schemas.ModelProvider(provider),
+		Provider: provider,
 		FileID:   fileID,
 	}
 
@@ -3667,16 +3696,15 @@ func (h *CompletionHandler) fileDelete(ctx *fasthttp.RequestCtx) {
 	// or percent-encoded gs:// / s3:// ids passed directly).
 	fileID = decodeStorageFileID(fileID)
 
-	// Get provider from query parameters
-	provider := string(ctx.QueryArgs().Peek("provider"))
-	if provider == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+	provider, perr := h.resolveLifecycleProvider(ctx, fileID)
+	if perr != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, perr.Error())
 		return
 	}
 
 	// Build Bifrost file delete request
 	bifrostFileReq := &schemas.BifrostFileDeleteRequest{
-		Provider: schemas.ModelProvider(provider),
+		Provider: provider,
 		FileID:   fileID,
 	}
 
@@ -3721,16 +3749,15 @@ func (h *CompletionHandler) fileContent(ctx *fasthttp.RequestCtx) {
 	// or percent-encoded gs:// / s3:// ids passed directly).
 	fileID = decodeStorageFileID(fileID)
 
-	// Get provider from query parameters
-	provider := string(ctx.QueryArgs().Peek("provider"))
-	if provider == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+	provider, perr := h.resolveLifecycleProvider(ctx, fileID)
+	if perr != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, perr.Error())
 		return
 	}
 
 	// Build Bifrost file content request
 	bifrostFileReq := &schemas.BifrostFileContentRequest{
-		Provider: schemas.ModelProvider(provider),
+		Provider: provider,
 		FileID:   fileID,
 	}
 

@@ -30,7 +30,8 @@ func TestResolveLifecycleProvider(t *testing.T) {
 		providers    map[schemas.ModelProvider]configstore.ProviderConfig
 		id           string
 		query        string // ?provider=; empty = unset
-		header       string // x-model-provider; empty = unset
+		queryAlias   string // ?x-model-provider=; empty = unset
+		header       string // x-model-provider header; empty = unset
 		wantProvider schemas.ModelProvider
 		wantErrMsg   string // non-empty = error expected, substring match
 	}{
@@ -85,6 +86,25 @@ func TestResolveLifecycleProvider(t *testing.T) {
 			wantProvider: schemas.Azure,
 		},
 		{
+			name:         "file- (hyphen) id, single OpenAI-dialect provider",
+			providers:    azureOnly,
+			id:           "file-27ee9280ae3e",
+			wantProvider: schemas.Azure,
+		},
+		{
+			name:         "file_ (underscore) id infers anthropic, never the OpenAI fallback",
+			providers:    azureOnly,
+			id:           "file_011CcpBQA2BV1gthmNPSYzkh",
+			wantProvider: schemas.Anthropic,
+		},
+		{
+			name:         "?x-model-provider= query alias accepted",
+			providers:    azureOnly,
+			id:           "batch_537ba5d0",
+			queryAlias:   "bedrock",
+			wantProvider: schemas.Bedrock,
+		},
+		{
 			name:       "ambiguous id, two OpenAI-dialect providers → error",
 			providers:  bothOpenAIDialects,
 			id:         "batch_537ba5d0",
@@ -96,6 +116,12 @@ func TestResolveLifecycleProvider(t *testing.T) {
 			id:         "file-abc123",
 			wantErrMsg: "provider is ambiguous",
 		},
+		{
+			name:       "unknown id shape never falls back to the sole OpenAI-dialect provider",
+			providers:  azureOnly,
+			id:         "job-oddly-shaped-id",
+			wantErrMsg: "provider is ambiguous",
+		},
 	}
 
 	for _, tc := range cases {
@@ -105,6 +131,9 @@ func TestResolveLifecycleProvider(t *testing.T) {
 			ctx := &fasthttp.RequestCtx{}
 			if tc.query != "" {
 				ctx.QueryArgs().Set("provider", tc.query)
+			}
+			if tc.queryAlias != "" {
+				ctx.QueryArgs().Set("x-model-provider", tc.queryAlias)
 			}
 			if tc.header != "" {
 				ctx.Request.Header.Set("x-model-provider", tc.header)

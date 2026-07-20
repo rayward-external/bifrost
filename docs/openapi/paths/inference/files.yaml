@@ -104,8 +104,8 @@ files-by-id:
         type: string
     - name: provider
       in: query
-      required: true
-      description: The provider of the file
+      required: false
+      description: The provider of the file (optional — inferred when unambiguous)
       schema:
         $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     responses:
@@ -140,8 +140,8 @@ files-by-id:
         type: string
     - name: provider
       in: query
-      required: true
-      description: The provider of the file
+      required: false
+      description: The provider of the file (optional — inferred when unambiguous)
       schema:
         $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     responses:
@@ -178,8 +178,8 @@ files-content:
         type: string
     - name: provider
       in: query
-      required: true
-      description: The provider of the file
+      required: false
+      description: The provider of the file (optional — inferred when unambiguous)
       schema:
         $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     responses:

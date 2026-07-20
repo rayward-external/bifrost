@@ -3029,21 +3029,27 @@ func (h *CompletionHandler) resolveLifecycleProvider(ctx *fasthttp.RequestCtx, i
 		return schemas.ModelProvider(p), nil
 	}
 	switch {
-	case strings.HasPrefix(id, "msgbatch_"):
+	// Anthropic ids: msgbatch_* batches, file_* (underscore) files.
+	case strings.HasPrefix(id, "msgbatch_"), strings.HasPrefix(id, "file_"):
 		return schemas.Anthropic, nil
 	case strings.HasPrefix(id, "arn:"), strings.HasPrefix(id, "s3://"):
 		return schemas.Bedrock, nil
 	case strings.HasPrefix(id, "gs://"):
 		return schemas.Vertex, nil
 	}
-	var openAIDialect []schemas.ModelProvider
-	for _, p := range h.config.GetAvailableProviders() {
-		if p == schemas.OpenAI || p == schemas.Azure {
-			openAIDialect = append(openAIDialect, p)
+	// Only ids that actually look OpenAI-dialect (batch_*, file-* with a
+	// hyphen) and id-less list calls may fall back to the sole configured
+	// OpenAI-dialect provider; any other shape must be explicit.
+	if id == "" || strings.HasPrefix(id, "batch_") || strings.HasPrefix(id, "file-") {
+		var openAIDialect []schemas.ModelProvider
+		for _, p := range h.config.GetAvailableProviders() {
+			if p == schemas.OpenAI || p == schemas.Azure {
+				openAIDialect = append(openAIDialect, p)
+			}
 		}
-	}
-	if len(openAIDialect) == 1 {
-		return openAIDialect[0], nil
+		if len(openAIDialect) == 1 {
+			return openAIDialect[0], nil
+		}
 	}
 	return "", fmt.Errorf("provider is ambiguous for this id: pass the ?provider= query parameter or the x-model-provider header")
 }

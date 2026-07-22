@@ -2,6 +2,13 @@
 
 > Context for AI agents (Claude Code, Copilot, Cursor, etc.) working on this codebase. Read this fully before making changes.
 
+## PR targets: this fork only
+
+Open PRs against **`rayward-external/bifrost`** (branch `main`) — **never**
+`maximhq/bifrost`. Upstreaming is the repo owner's decision, not an agent's; recommend
+it and stop. `gh` defaults to upstream in this checkout, so always pass
+`--repo rayward-external/bifrost`. Full rule: [`CLAUDE.md`](CLAUDE.md).
+
 ## What is Bifrost?
 
 Bifrost is a high-performance AI gateway that unifies 20+ LLM providers behind a single OpenAI-compatible API with ~11µs overhead at 5,000 RPS. It also serves as an MCP (Model Context Protocol) gateway, turning static chat models into tool-calling agents.

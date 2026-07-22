@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -35,7 +36,14 @@ func Sign(secret, webhookID string, timestamp time.Time, body []byte) (string, e
 // signedContent builds the exact byte sequence covered by the signature.
 func signedContent(webhookID string, timestamp time.Time, body []byte) []byte {
 	prefix := webhookID + "." + strconv.FormatInt(timestamp.Unix(), 10) + "."
-	content := make([]byte, 0, len(prefix)+len(body))
+	// Guard the capacity sum against overflow (CodeQL go/allocation-size-overflow):
+	// if it were ever to wrap, fall back to sizing for prefix alone — append
+	// still grows the slice correctly, just with an extra reallocation.
+	capacity := len(prefix)
+	if len(body) <= math.MaxInt-capacity {
+		capacity += len(body)
+	}
+	content := make([]byte, 0, capacity)
 	content = append(content, prefix...)
 	return append(content, body...)
 }

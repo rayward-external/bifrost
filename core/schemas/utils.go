@@ -837,6 +837,10 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 		copyImage := ChatInputImage{
 			URL: original.ImageURLStruct.URL,
 		}
+		if original.ImageURLStruct.FileID != nil {
+			copyFileID := *original.ImageURLStruct.FileID
+			copyImage.FileID = &copyFileID
+		}
 		if original.ImageURLStruct.Detail != nil {
 			copyDetail := *original.ImageURLStruct.Detail
 			copyImage.Detail = &copyDetail
@@ -1665,6 +1669,11 @@ func isOpenAIReasoningModel(model string) bool {
 		return false
 	}
 	return len(name) == 2 || name[2] == '-'
+}
+
+// IsAzureModelRouter reports whether model is Azure's model-router model.
+func IsAzureModelRouter(model string) bool {
+	return strings.Contains(model, "model-router")
 }
 
 // IsElevenlabsSoundModel checks if the model targets ElevenLabs' text-to-sound

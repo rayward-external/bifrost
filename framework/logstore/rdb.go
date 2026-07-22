@@ -3114,26 +3114,6 @@ func (s *RDBLogStore) buildProviderLatencyHistogramResult(computedBuckets map[in
 // Generic dimension histogram methods
 // ---------------------------------------------------------------------------
 
-// sanitizeDimColumn maps the caller-supplied dimension name to a known-safe
-// string literal.  Returning a literal (not the input) breaks static-analysis
-// taint tracking while still validating at runtime.
-func sanitizeDimColumn(col string) (string, error) {
-	switch col {
-	case "provider":
-		return "provider", nil
-	case "team_id":
-		return "team_id", nil
-	case "customer_id":
-		return "customer_id", nil
-	case "user_id":
-		return "user_id", nil
-	case "business_unit_id":
-		return "business_unit_id", nil
-	default:
-		return "", fmt.Errorf("invalid dimension column: %s", col)
-	}
-}
-
 // GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
 // Uses the mv_logs_hourly materialized view on PostgreSQL when eligible; falls back to raw queries otherwise.
 func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {

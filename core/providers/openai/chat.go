@@ -65,7 +65,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
-		openaiReq.normalizeReasoningEffort(capModel)
+		// Forward reasoning_effort verbatim: OpenAI/Azure own their own vocabulary
+		// and reject an unsupported level with a 400 that names the supported ones.
+		// Remapping here would silently downgrade the caller instead.
+		openaiReq.resolveReasoningEffort(capModel, reasoningEffortForward)
 		return openaiReq
 	case schemas.Cerebras, schemas.DeepSeek:
 		openaiReq.filterOpenAISpecificParameters(capModel)
@@ -150,14 +153,44 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters(capModel string) {
 	}
 }
 
+// reasoningEffortPolicy selects how a caller's reasoning_effort is reconciled
+// with the vocabulary the target endpoint actually accepts.
+type reasoningEffortPolicy int
+
+const (
+	// reasoningEffortRemap rewrites an effort the endpoint cannot serve onto the
+	// nearest level it can (max -> xhigh -> high, minimal -> low). This is the
+	// compatibility shim for the OpenAI-compatible providers that borrow this
+	// request shape while implementing only part of the vocabulary.
+	reasoningEffortRemap reasoningEffortPolicy = iota
+
+	// reasoningEffortForward sends the caller's effort through untouched and lets
+	// the provider answer for its own vocabulary. Used on the OpenAI/Azure chat
+	// path, where the provider is the authority: an unsupported level comes back
+	// as a 400 naming the values it does accept, instead of being silently served
+	// at a weaker level the caller never asked for and cannot detect.
+	//
+	// This is deliberately endpoint-scoped. "max" is real for gpt-5.6 on the
+	// Responses API but is not in the chat-completions vocabulary for any gpt-5.x
+	// model, so remapping it here made gpt-5.5 answer 200-as-xhigh while gpt-5.6
+	// answered 400 for the identical request. See rayward-internal #310.
+	reasoningEffortForward
+)
+
 func (req *OpenAIChatRequest) normalizeReasoningEffort(capModel string) {
+	req.resolveReasoningEffort(capModel, reasoningEffortRemap)
+}
+
+func (req *OpenAIChatRequest) resolveReasoningEffort(capModel string, policy reasoningEffortPolicy) {
 	if req.ChatParameters.Reasoning != nil {
 		reasoningCopy := *req.ChatParameters.Reasoning
 		req.ChatParameters.Reasoning = &reasoningCopy
 		if req.ChatParameters.Reasoning.Effort != nil {
 			// Native field is provided, use it (and clear max_tokens)
-			effort := *req.ChatParameters.Reasoning.Effort
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(normalizeOpenAIReasoningEffort(capModel, effort))
+			if policy == reasoningEffortRemap {
+				effort := *req.ChatParameters.Reasoning.Effort
+				req.ChatParameters.Reasoning.Effort = schemas.Ptr(normalizeOpenAIReasoningEffort(capModel, effort))
+			}
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		} else if req.ChatParameters.Reasoning.MaxTokens != nil {

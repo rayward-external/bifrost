@@ -146,35 +146,44 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			effort:   "xhigh",
 			expected: "xhigh",
 		},
+		// FORK PATCH (rayward-internal #310): on the OpenAI/Azure chat path the
+		// caller's effort is forwarded verbatim rather than remapped onto a weaker
+		// level, so the provider can reject it with a 400 naming what it accepts.
+		// Upstream expects "high"/"low"/"xhigh" for the five cases below. If a sync
+		// reverts these expectations, re-apply — see .github/fork-patches.txt.
+		// The sibling table in
+		// TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEffort
+		// is deliberately NOT changed: that path still remaps for the
+		// OpenAI-compatible providers that only implement part of the vocabulary.
 		{
-			name:     "maps xhigh to high for gpt-5.1",
+			name:     "forwards xhigh verbatim for gpt-5.1",
 			model:    "gpt-5.1",
 			effort:   "xhigh",
-			expected: "high",
-		},
-		{
-			name:     "maps xhigh to high for gpt-5-pro",
-			model:    "gpt-5-pro",
-			effort:   "xhigh",
-			expected: "high",
-		},
-		{
-			name:     "maps minimal to low",
-			model:    "gpt-5.4",
-			effort:   "minimal",
-			expected: "low",
-		},
-		{
-			name:     "maps max to xhigh for xhigh-capable model",
-			model:    "gpt-5.4",
-			effort:   "max",
 			expected: "xhigh",
 		},
 		{
-			name:     "maps max to high for model without xhigh",
+			name:     "forwards xhigh verbatim for gpt-5-pro",
+			model:    "gpt-5-pro",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "forwards minimal verbatim",
+			model:    "gpt-5.4",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "forwards max verbatim for xhigh-capable model",
+			model:    "gpt-5.4",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "forwards max verbatim for model without xhigh",
 			model:    "gpt-5.1",
 			effort:   "max",
-			expected: "high",
+			expected: "max",
 		},
 		{
 			name:     "preserves max for deepseek-v4-pro",
@@ -1470,4 +1479,99 @@ func TestOpenAIChatRequest_StripsWebSearchOptionsFilters(t *testing.T) {
 
 	// Original request must not be mutated
 	require.NotNil(t, req.ChatParameters.WebSearchOptions.Filters)
+}
+
+// TestToOpenAIChatRequest_ReasoningEffortForwardedForOpenAIAzure pins the
+// endpoint-scoped reasoning_effort policy (rayward-internal #310).
+//
+// On the OpenAI/Azure chat path the caller's effort is forwarded verbatim so the
+// provider can reject an unsupported level with a 400 that names the values it
+// accepts. Remapping here previously made the same request answer 200-as-xhigh
+// on gpt-5.5 but 400 on gpt-5.6, with no way for the caller to tell which.
+func TestToOpenAIChatRequest_ReasoningEffortForwardedForOpenAIAzure(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	userContent := "hi"
+	mkReq := func(provider schemas.ModelProvider, model, effort string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &userContent},
+			}},
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(effort)},
+			},
+		}
+	}
+
+	// OpenAI/Azure: forwarded untouched, whatever the level.
+	for _, tt := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		effort   string
+	}{
+		{"gpt-5.5 max is not silently downgraded to xhigh", schemas.OpenAI, "gpt-5.5", "max"},
+		{"gpt-5.6 max is unchanged", schemas.OpenAI, "gpt-5.6", "max"},
+		{"gpt-5.1 xhigh is not silently downgraded to high", schemas.OpenAI, "gpt-5.1", "xhigh"},
+		{"gpt-5 minimal is not silently rewritten to low", schemas.OpenAI, "gpt-5", "minimal"},
+		{"azure gpt-5.5 max is not silently downgraded", schemas.Azure, "gpt-5.5", "max"},
+		{"standard effort still passes through", schemas.OpenAI, "gpt-5.1", "medium"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			out := ToOpenAIChatRequest(ctx, mkReq(tt.provider, tt.model, tt.effort))
+			require.NotNil(t, out)
+			require.NotNil(t, out.ChatParameters.Reasoning)
+			require.NotNil(t, out.ChatParameters.Reasoning.Effort)
+			require.Equal(t, tt.effort, *out.ChatParameters.Reasoning.Effort,
+				"OpenAI/Azure chat must forward reasoning_effort verbatim")
+		})
+	}
+
+	// Non-OpenAI OpenAI-compatible providers keep the compatibility remap: they
+	// borrow this request shape without implementing the whole vocabulary, so the
+	// shim stays in place for them.
+	t.Run("fireworks still remaps an unsupported level", func(t *testing.T) {
+		out := ToOpenAIChatRequest(ctx, mkReq(schemas.Fireworks, "accounts/fireworks/models/deepseek-v3p2", "minimal"))
+		require.NotNil(t, out)
+		require.NotNil(t, out.ChatParameters.Reasoning)
+		require.NotNil(t, out.ChatParameters.Reasoning.Effort)
+		require.Equal(t, "low", *out.ChatParameters.Reasoning.Effort,
+			"non-OpenAI providers keep the minimal->low compatibility remap")
+	})
+
+	// The max_tokens -> effort estimation path is independent of the policy and
+	// must still run for OpenAI/Azure.
+	t.Run("openai still estimates effort from max_tokens", func(t *testing.T) {
+		req := mkReq(schemas.OpenAI, "gpt-5.1", "")
+		req.Params.Reasoning = &schemas.ChatReasoning{MaxTokens: schemas.Ptr(20000)}
+		out := ToOpenAIChatRequest(ctx, req)
+		require.NotNil(t, out)
+		require.NotNil(t, out.ChatParameters.Reasoning)
+		require.NotNil(t, out.ChatParameters.Reasoning.Effort)
+		require.NotEmpty(t, *out.ChatParameters.Reasoning.Effort)
+		require.Nil(t, out.ChatParameters.Reasoning.MaxTokens, "max_tokens must be cleared")
+	})
+
+	// The forward path shares the caller's *ChatReasoning pointer (ChatParameters
+	// is a shallow copy of *bifrostReq.Params), so the defensive copy in
+	// resolveReasoningEffort is load-bearing: without it, clearing max_tokens on
+	// the converted request would clear it on the caller's original too. Guard it.
+	t.Run("forward path does not mutate the caller's request", func(t *testing.T) {
+		req := mkReq(schemas.OpenAI, "gpt-5.6", "max")
+		req.Params.Reasoning.MaxTokens = schemas.Ptr(1024)
+
+		out := ToOpenAIChatRequest(ctx, req)
+		require.NotNil(t, out)
+		require.Nil(t, out.ChatParameters.Reasoning.MaxTokens, "converted request clears max_tokens")
+
+		// Caller's original ChatReasoning must be untouched.
+		require.NotNil(t, req.Params.Reasoning.Effort)
+		require.Equal(t, "max", *req.Params.Reasoning.Effort, "caller's effort must not be mutated")
+		require.NotNil(t, req.Params.Reasoning.MaxTokens, "caller's max_tokens must not be cleared")
+		require.Equal(t, 1024, *req.Params.Reasoning.MaxTokens, "caller's max_tokens must not be mutated")
+	})
 }

@@ -70,7 +70,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// Remapping here would silently downgrade the caller instead.
 		openaiReq.resolveReasoningEffort(capModel, reasoningEffortForward)
 		return openaiReq
-	case schemas.Cerebras, schemas.DeepSeek:
+	case schemas.Cerebras, schemas.DeepSeek, schemas.Wafer:
 		openaiReq.filterOpenAISpecificParameters(capModel)
 		openaiReq.stripReasoningDetails()
 		return openaiReq

@@ -573,6 +573,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Handle RequiredHeaders changes (no restart needed - governance plugin reads via pointer)
 	updatedConfig.RequiredHeaders = payload.ClientConfig.RequiredHeaders
 
+	// Batch-ownership governance knobs (no restart needed - the governance plugin
+	// reads both via live pointers into ClientConfig; ReloadClientConfigFromConfigStore
+	// mutates the struct in place so the next request picks up the new values).
+	updatedConfig.UnknownBatchIDPolicy = payload.ClientConfig.UnknownBatchIDPolicy
+	updatedConfig.BatchAdminVirtualKeyIDs = payload.ClientConfig.BatchAdminVirtualKeyIDs
+
 	// Handle LoggingHeaders changes (no restart needed - logging plugin reads via pointer)
 	updatedConfig.LoggingHeaders = payload.ClientConfig.LoggingHeaders
 

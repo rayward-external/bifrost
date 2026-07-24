@@ -1178,6 +1178,80 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 	assert.True(t, migrator.HasColumn(&tables.TableModelPricing{}, "is_deprecated"), "model pricing is_deprecated column should exist")
 }
 
+// The full migration chain leaves the managed-batch owner keyset index in place
+// on a fresh DB (it comes from the CreateTable tag), and the dedicated backfill
+// migration creates it on a pre-existing table that lacks it, idempotently.
+func TestMigrationAddManagedBatchOwnerKeysetIndex(t *testing.T) {
+	const idx = "idx_managed_batch_owner_keyset"
+
+	t.Run("present after full fresh migration chain", func(t *testing.T) {
+		_, db := setupFullMigrationDB(t)
+		assert.True(t, db.Migrator().HasIndex(&tables.TableManagedBatch{}, idx),
+			"fresh DB must have the keyset index from CreateTable")
+	})
+
+	t.Run("backfills a pre-existing table missing the index, idempotently", func(t *testing.T) {
+		db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+			Logger: logger.Default.LogMode(logger.Silent),
+		})
+		require.NoError(t, err)
+		ctx := context.Background()
+
+		// Simulate a DB created before the index existed: table present, index absent.
+		require.NoError(t, db.AutoMigrate(&tables.TableManagedBatch{}))
+		mg := db.Migrator()
+		if mg.HasIndex(&tables.TableManagedBatch{}, idx) {
+			require.NoError(t, mg.DropIndex(&tables.TableManagedBatch{}, idx))
+		}
+		require.False(t, mg.HasIndex(&tables.TableManagedBatch{}, idx), "precondition: index absent")
+
+		// Backfill migration creates it.
+		require.NoError(t, migrationAddManagedBatchOwnerKeysetIndex(ctx, db, testMigrationLogger))
+		assert.True(t, mg.HasIndex(&tables.TableManagedBatch{}, idx), "migration must create the keyset index")
+
+		// Running it again is a no-op, not an error.
+		require.NoError(t, migrationAddManagedBatchOwnerKeysetIndex(ctx, db, testMigrationLogger))
+		assert.True(t, mg.HasIndex(&tables.TableManagedBatch{}, idx))
+	})
+}
+
+// The full migration chain leaves the managed-file owner keyset index in place
+// on a fresh DB (it comes from the CreateTable tag), and the dedicated backfill
+// migration creates it on a pre-existing table that lacks it, idempotently.
+func TestMigrationAddManagedFileOwnerKeysetIndex(t *testing.T) {
+	const idx = "idx_managed_file_owner_keyset"
+
+	t.Run("present after full fresh migration chain", func(t *testing.T) {
+		_, db := setupFullMigrationDB(t)
+		assert.True(t, db.Migrator().HasIndex(&tables.TableManagedFile{}, idx),
+			"fresh DB must have the keyset index from CreateTable")
+	})
+
+	t.Run("backfills a pre-existing table missing the index, idempotently", func(t *testing.T) {
+		db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+			Logger: logger.Default.LogMode(logger.Silent),
+		})
+		require.NoError(t, err)
+		ctx := context.Background()
+
+		// Simulate a DB created before the index existed: table present, index absent.
+		require.NoError(t, db.AutoMigrate(&tables.TableManagedFile{}))
+		mg := db.Migrator()
+		if mg.HasIndex(&tables.TableManagedFile{}, idx) {
+			require.NoError(t, mg.DropIndex(&tables.TableManagedFile{}, idx))
+		}
+		require.False(t, mg.HasIndex(&tables.TableManagedFile{}, idx), "precondition: index absent")
+
+		// Backfill migration creates it.
+		require.NoError(t, migrationAddManagedFileOwnerKeysetIndex(ctx, db, testMigrationLogger))
+		assert.True(t, mg.HasIndex(&tables.TableManagedFile{}, idx), "migration must create the keyset index")
+
+		// Running it again is a no-op, not an error.
+		require.NoError(t, migrationAddManagedFileOwnerKeysetIndex(ctx, db, testMigrationLogger))
+		assert.True(t, mg.HasIndex(&tables.TableManagedFile{}, idx))
+	})
+}
+
 func TestTriggerMigrations_Idempotent(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),

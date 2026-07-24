@@ -134,16 +134,24 @@ type batchPager interface {
 	ListOwnedBatchIDsPage(ctx context.Context, provider string, owner configstoreTables.ManagedBatchOwner, cursorCreatedAt time.Time, cursorID string, hasCursor, before bool, limit int, tx ...*gorm.DB) ([]configstoreTables.TableManagedBatch, bool, error)
 }
 
-// BatchLifecycleClient is the narrow core-client capability the batch-ownership
-// enforcement needs to issue its in-process sub-requests: a compensating cancel
-// after a failed ownership capture, and a per-id BatchRetrieve fan-out used to
-// build the owner-scoped list page from the ledger. *bifrost.Bifrost satisfies
-// it. It is injected post-construction (SetBatchLifecycleClient) because the core
-// client is created after the plugins, so it may be nil (both paths degrade — see
-// call sites).
+// BatchLifecycleClient is the narrow core-client capability the batch- AND
+// file-ownership enforcement needs to issue its in-process sub-requests: a
+// compensating cancel/delete after a failed ownership capture, and a per-id
+// retrieve fan-out used to build an owner-scoped list page from the ledger.
+// *bifrost.Bifrost satisfies it. It is injected post-construction
+// (SetBatchLifecycleClient) because the core client is created after the plugins,
+// so it may be nil (all paths degrade — see call sites).
+//
+// The file methods (FileRetrieveRequest / FileDeleteRequest) are used by the
+// file-ownership gate (see fileownership.go): FileRetrieve for the owner-scoped
+// file-list fan-out, FileDelete for the compensating delete after a failed file
+// ownership capture. They live on this shared interface so a single injected
+// client serves both ledgers.
 type BatchLifecycleClient interface {
 	BatchCancelRequest(ctx *schemas.BifrostContext, req *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError)
 	BatchRetrieveRequest(ctx *schemas.BifrostContext, req *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError)
+	FileRetrieveRequest(ctx *schemas.BifrostContext, req *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError)
+	FileDeleteRequest(ctx *schemas.BifrostContext, req *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError)
 }
 
 // SetBatchLifecycleClient injects the core client used for the in-process

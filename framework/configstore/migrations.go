@@ -453,6 +453,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_webhook_config_client_column"}, run: migrationAddWebhookConfigClientColumn},
 	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
 	{IDs: []string{"add_use_anthropic_endpoints_column"}, run: migrationAddUseAnthropicEndpointsColumn},
+	{IDs: []string{"add_managed_batches_table"}, run: migrationAddManagedBatchesTable},
+	{IDs: []string{"add_batch_ownership_client_config_columns"}, run: migrationAddBatchOwnershipClientConfigColumns},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10858,6 +10860,69 @@ func migrationAddWebhookConfigClientColumn(ctx context.Context, db *gorm.DB, log
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running webhook config client column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddManagedBatchesTable creates the governance_managed_batches table:
+// the batch-ownership ledger the governance plugin uses to scope batch list
+// output and gate per-id batch lifecycle verbs to the owning tenant. Additive
+// and idempotent (HasTable guard); GORM CreateTable builds the (provider,
+// batch_id) unique index and the owner-vk index from the model's tags.
+func migrationAddManagedBatchesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_managed_batches_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableManagedBatch{}) {
+				if err := mg.CreateTable(&tables.TableManagedBatch{}); err != nil {
+					return fmt.Errorf("create governance_managed_batches table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Migrator().DropTable(&tables.TableManagedBatch{})
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running managed batches table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBatchOwnershipClientConfigColumns adds the governance
+// batch-ownership operator knobs to config_client: the unknown-batch-id policy
+// (deny|allow) and the JSON list of batch-admin virtual key IDs. Additive and
+// idempotent (addColumnIfNotExists).
+func migrationAddBatchOwnershipClientConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_batch_ownership_client_config_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "unknown_batch_id_policy"); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "batch_admin_virtual_key_ids_json")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "unknown_batch_id_policy"); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "batch_admin_virtual_key_ids_json")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
 }

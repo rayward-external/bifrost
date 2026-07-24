@@ -168,6 +168,18 @@ func (f *fakeBatchClient) BatchRetrieveRequest(ctx *schemas.BifrostContext, req 
 	return &schemas.BifrostBatchRetrieveResponse{ID: req.BatchID, Status: schemas.BatchStatusCompleted}, nil
 }
 
+// FileRetrieveRequest / FileDeleteRequest satisfy the shared BatchLifecycleClient
+// interface (extended in Part B for the file-ownership gate). The batch tests do
+// not exercise the file paths, so these are inert stubs; the file tests use their
+// own client fake (see fileownership_test.go).
+func (f *fakeBatchClient) FileRetrieveRequest(_ *schemas.BifrostContext, req *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	return &schemas.BifrostFileRetrieveResponse{ID: req.FileID}, nil
+}
+
+func (f *fakeBatchClient) FileDeleteRequest(_ *schemas.BifrostContext, req *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	return &schemas.BifrostFileDeleteResponse{ID: req.FileID, Deleted: true}, nil
+}
+
 func ptr(s string) *string { return &s }
 
 // newBatchPluginWithConfig builds a governance plugin backed by an in-memory VK
@@ -996,6 +1008,15 @@ func TestListOwnedBatchesForCaller_FilterScanCapFailsLoud(t *testing.T) {
 	require.NotNil(t, berr, "a sparse filter over a huge owned set must fail loud, not scan unboundedly")
 	require.NotNil(t, berr.StatusCode)
 	assert.Equal(t, 400, *berr.StatusCode)
+}
+
+// Inert file stubs so statusBatchClient satisfies the shared BatchLifecycleClient
+// interface (extended in Part B). The batch tests do not exercise file paths.
+func (c *statusBatchClient) FileRetrieveRequest(_ *schemas.BifrostContext, req *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	return &schemas.BifrostFileRetrieveResponse{ID: req.FileID}, nil
+}
+func (c *statusBatchClient) FileDeleteRequest(_ *schemas.BifrostContext, req *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	return &schemas.BifrostFileDeleteResponse{ID: req.FileID, Deleted: true}, nil
 }
 
 // dataIDs extracts the ordered batch ids from a built list page.

@@ -456,6 +456,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_managed_batches_table"}, run: migrationAddManagedBatchesTable},
 	{IDs: []string{"add_batch_ownership_client_config_columns"}, run: migrationAddBatchOwnershipClientConfigColumns},
 	{IDs: []string{"add_managed_batch_owner_keyset_index"}, run: migrationAddManagedBatchOwnerKeysetIndex},
+	{IDs: []string{"add_managed_files_table"}, run: migrationAddManagedFilesTable},
+	{IDs: []string{"add_managed_file_owner_keyset_index"}, run: migrationAddManagedFileOwnerKeysetIndex},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10965,6 +10967,81 @@ func migrationAddManagedBatchOwnerKeysetIndex(ctx context.Context, db *gorm.DB, 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running managed batch owner keyset index migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddManagedFilesTable creates the governance_managed_files table: the
+// file-ownership ledger the governance plugin uses to scope file list output and
+// gate per-id file lifecycle verbs (retrieve / delete / content-download) to the
+// owning tenant. The file-lifecycle sibling of migrationAddManagedBatchesTable.
+// Additive and idempotent (HasTable guard); GORM CreateTable builds the
+// (provider, file_id) unique index, the owner-vk index, and the keyset index
+// from the model's tags.
+func migrationAddManagedFilesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_managed_files_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableManagedFile{}) {
+				if err := mg.CreateTable(&tables.TableManagedFile{}); err != nil {
+					return fmt.Errorf("create governance_managed_files table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Migrator().DropTable(&tables.TableManagedFile{})
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running managed files table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddManagedFileOwnerKeysetIndex adds the composite keyset index
+// (owner_virtual_key_id, created_at, file_id) to governance_managed_files so deep
+// owner-scoped file list pagination pages a caller's own files from an index
+// rather than a full table scan. Additive and idempotent: guarded by HasIndex,
+// and CreateIndex reads the struct tag so it is dialect-safe (Postgres + SQLite).
+// A fresh install already has the index from CreateTable (the tag is on
+// TableManagedFile), so this migration is a no-op there and only backfills
+// databases created before the index existed.
+func migrationAddManagedFileOwnerKeysetIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_managed_file_owner_keyset_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			file := &tables.TableManagedFile{}
+			if mg.HasTable(file) && !mg.HasIndex(file, "idx_managed_file_owner_keyset") {
+				if err := mg.CreateIndex(file, "idx_managed_file_owner_keyset"); err != nil {
+					return fmt.Errorf("create idx_managed_file_owner_keyset: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			file := &tables.TableManagedFile{}
+			if mg.HasIndex(file, "idx_managed_file_owner_keyset") {
+				return mg.DropIndex(file, "idx_managed_file_owner_keyset")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running managed file owner keyset index migration: %s", err.Error())
 	}
 	return nil
 }

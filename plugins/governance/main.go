@@ -124,6 +124,17 @@ type GovernancePlugin struct {
 	batchUnknownIDPolicy *string
 	batchClient          BatchLifecycleClient
 
+	// File-ownership enforcement (see fileownership.go), the file-lifecycle
+	// sibling of the batch fields above. fileLedger is the configstore-backed
+	// file-ownership ledger (nil disables enforcement); filePager is the optional
+	// keyset pager (nil => single-upstream-page filter fallback). The admin list,
+	// unknown-id policy, and lifecycle client are SHARED with the batch gate
+	// (batchAdminVKIDs / batchUnknownIDPolicy / batchClient) — one tenant, one
+	// posture, one injected client.
+	fileLedger     fileLedger
+	filePager      filePager            // optional keyset-pagination capability (nil => single-upstream-page filter fallback)
+	fileProvenance fileProvenanceLinker // optional provenance-linking capability (nil => input-file SourceBatchID skipped)
+
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 }
 
@@ -275,6 +286,7 @@ func Init(
 	}
 	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, governanceConfig))
 	plugin.configureBatchOwnership(config, configStore)
+	plugin.configureFileOwnership(configStore)
 	return plugin, nil
 }
 
@@ -371,6 +383,7 @@ func InitFromStore(
 	}
 	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, nil))
 	plugin.configureBatchOwnership(config, configStore)
+	plugin.configureFileOwnership(configStore)
 	return plugin, nil
 }
 
@@ -1369,6 +1382,26 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		}, nil
 	}
 
+	// File ownership (see fileownership.go), the file-lifecycle sibling of the
+	// batch gate above. Serve a scoped file list deeply from the ledger via a
+	// short-circuit when a keyset pager + client are available (otherwise flag the
+	// request for a single-page ledger filter in the post-hook), then owner-gate
+	// per-id file verbs (retrieve/delete/content-download) BEFORE the upstream
+	// relay so a foreign or unknown file id is never touched — closing the
+	// file-content cross-tenant leak.
+	if req.RequestType == schemas.FileListRequest && req.FileListRequest != nil {
+		ctx.SetValue(fileListRequestedLimitKey, resolveFileListTarget(req.FileListRequest.Limit))
+		if sc := p.buildFileListShortCircuit(ctx, req.FileListRequest); sc != nil {
+			return req, sc, nil
+		}
+	}
+	if fileErr := p.enforceFileOwnershipPreHook(ctx, req); fileErr != nil {
+		ctx.SetValue(governanceRejectedContextKey, true)
+		return req, &schemas.LLMPluginShortCircuit{
+			Error: fileErr,
+		}, nil
+	}
+
 	return req, nil, nil
 }
 
@@ -1410,6 +1443,16 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		return nil, batchErr, nil
 	}
 	result = newResult
+
+	// File ownership (see fileownership.go): capture owner on a successful upload
+	// (fatal on ledger failure, with a compensating delete), link batch input/
+	// output/error files to the batch owner, and filter a single upstream file
+	// list page against the ledger when the deep short-circuit could not run.
+	fileResult, fileErr := p.applyFileOwnershipPostHook(ctx, result, requestType, provider, virtualKey)
+	if fileErr != nil {
+		return nil, fileErr, nil
+	}
+	result = fileResult
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 

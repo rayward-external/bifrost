@@ -214,6 +214,19 @@
           },
           "description": "Headers that must be present on every request. Requests missing any of these headers are rejected with 400. Case-insensitive matching."
         },
+        "unknown_batch_id_policy": {
+          "type": "string",
+          "enum": ["deny", "allow"],
+          "default": "deny",
+          "description": "Governance batch-ownership: how per-id batch lifecycle verbs (retrieve/cancel/results/delete) treat a batch id that has no ownership-ledger row. 'deny' (the secure default) returns 404 instead of relaying to the shared upstream credentials; 'allow' is an opt-in migration window that relays ledger-absent ids to upstream (the pre-fix behavior, for ledger-absent ids only). Batch ids that DO have a ledger row are always owner-gated regardless. Use 'allow' briefly if batches created before the ledger deployed must remain reachable, then return to 'deny'. Live-updatable via /api/config without a restart."
+        },
+        "batch_admin_virtual_key_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Governance batch-ownership: virtual-key IDs that bypass per-tenant batch scoping (see the batch-ownership ledger) — they see every batch in list output and can act on any batch id. Empty by default; cross-tenant batch inspection is meant for the dashboard/API plane."
+        },
         "logging_headers": {
           "type": "array",
           "items": {

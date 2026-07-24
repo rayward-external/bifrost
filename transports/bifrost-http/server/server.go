@@ -1888,6 +1888,19 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	}
 	logger.Info("models added to catalog")
 	s.Config.SetBifrostClient(s.Client)
+	// Inject the core client into the governance plugin so batch-ownership
+	// enforcement can issue its in-process sub-requests: a compensating cancel
+	// after a failed ownership capture, and server-side paging of the upstream
+	// list for owner-scoped listing. Done here because the client is created
+	// after the plugins. Best-effort: skipped when governance is absent
+	// (enterprise) or the plugin build predates the setter.
+	if gp, gpErr := s.getGovernancePlugin(); gpErr == nil && gp != nil {
+		if setter, ok := gp.(interface {
+			SetBatchLifecycleClient(governance.BatchLifecycleClient)
+		}); ok {
+			setter.SetBatchLifecycleClient(s.Client)
+		}
+	}
 	// Initialize routes
 	s.Router = router.New()
 	// Save the matched route template on each request

@@ -3,7 +3,7 @@
 awscli==1.44.38 \
     --hash=sha256:4554ed8fcc6b474397fb308bfdf9270d28dabfd2a239325027980cab30cefa47 \
     --hash=sha256:4dd2fd5d13b7fede2a9a30b51eb23171504a6a266bf9ec40ffa03bd53214b5b6
-    # via -r .github/workflows/requirements/awscli.in
+    # via -r awscli.in
 botocore==1.42.48 \
     --hash=sha256:57d23635a90239051bab1e1e980401890ec2d87ded38623b1e4570260aec56f7 \
     --hash=sha256:970983e520de6d85981379efd44dbf293dbc6288d376169787b3b23ea8cd6163
@@ -22,9 +22,9 @@ jmespath==1.1.0 \
     --hash=sha256:472c87d80f36026ae83c6ddd0f1d05d4e510134ed462851fd5f754c8c3cbb88d \
     --hash=sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64
     # via botocore
-pyasn1==0.6.3 \
-    --hash=sha256:697a8ecd6d98891189184ca1fa05d1bb00e2f84b5977c481452050549c8a72cf \
-    --hash=sha256:a80184d120f0864a52a073acc6fc642847d0be408e7c7252f31390c0f4eadcde
+pyasn1==0.6.4 \
+    --hash=sha256:9c447d8431c947fe4c8febc4ed9e760bc29011a5b01e5c74b67025bd9fb8ce81 \
+    --hash=sha256:deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b
     # via rsa
 python-dateutil==2.9.0.post0 \
     --hash=sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3 \

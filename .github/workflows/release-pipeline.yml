@@ -18,8 +18,14 @@ on:
         default: false
 
 # Prevent concurrent runs
+# Fork-only: scoped by github.ref (not the bare upstream "release-pipeline" string) so
+# each PR/branch gets its own lane. Upstream only triggers this workflow on push/dispatch,
+# where a single global lane rarely collides; the fork's added pull_request trigger above
+# means every simultaneous PR now competes for the same slot, and newer entrants were
+# observed cancelling older in-progress runs (not just queued ones) despite
+# cancel-in-progress: false, repeatedly wiping out other PRs' in-flight suites.
 concurrency:
-  group: release-pipeline
+  group: release-pipeline-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:

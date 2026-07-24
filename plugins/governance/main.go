@@ -40,6 +40,27 @@ type Config struct {
 	IsEnterprise          bool      `json:"is_enterprise"`
 	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
 	RoutingChainMaxDepth  *int      `json:"routing_chain_max_depth"` // Pointer to live config value; changes are reflected immediately without restart
+
+	// BatchAdminVirtualKeyIDs lists virtual-key row IDs that bypass batch
+	// ownership scoping (the batch-ownership ledger). Empty by default. This is
+	// an explicit operator opt-in: cross-tenant batch inspection is meant for
+	// the dashboard/API plane, not for an inference key. An admin key sees every
+	// batch in list output and can act on any batch id.
+	//
+	// Pointer to the live ClientConfig field so an /api/config update takes
+	// effect without a restart (read at request time, never snapshotted).
+	BatchAdminVirtualKeyIDs *[]string `json:"batch_admin_virtual_key_ids,omitempty"`
+
+	// UnknownBatchIDPolicy controls how per-id batch lifecycle verbs (retrieve /
+	// cancel / results / delete) treat a batch id that is absent from the
+	// ownership ledger — e.g. created before this ledger existed or out of band.
+	// "deny" (default) returns a 404; "allow" relays it upstream (migration
+	// window). Foreign-owned ids (present in the ledger under another tenant)
+	// are always denied regardless of this setting.
+	//
+	// Pointer to the live ClientConfig field so an /api/config update takes
+	// effect without a restart (read at request time, never snapshotted).
+	UnknownBatchIDPolicy *string `json:"unknown_batch_id_policy,omitempty"`
 }
 
 type InMemoryStore interface {
@@ -88,6 +109,20 @@ type GovernancePlugin struct {
 	requiredHeaders       *[]string // pointer to live config slice; lowercased at check time
 	isEnterprise          bool
 	disableAutoToolInject *bool
+
+	// Batch-ownership enforcement (see batchownership.go). batchLedger is the
+	// configstore-backed ownership ledger (nil in in-memory-only mode, or when
+	// the store does not support the optional ledger capability — either
+	// disables enforcement). batchAdminVKIDs / batchUnknownIDPolicy are LIVE
+	// pointers to the ClientConfig fields (read at request time so /api/config
+	// updates apply without a restart). batchClient lets the plugin issue the
+	// in-process compensating cancel; it is injected post-construction (the core
+	// client is created after plugins) and may be nil.
+	batchLedger          batchLedger
+	batchPager           batchPager // optional keyset-pagination capability (nil => owned-id fallback)
+	batchAdminVKIDs      *[]string
+	batchUnknownIDPolicy *string
+	batchClient          BatchLifecycleClient
 
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 }
@@ -239,6 +274,7 @@ func Init(
 		inMemoryStore:         inMemoryStore,
 	}
 	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, governanceConfig))
+	plugin.configureBatchOwnership(config, configStore)
 	return plugin, nil
 }
 
@@ -334,6 +370,7 @@ func InitFromStore(
 		disableAutoToolInject: disableAutoToolInject,
 	}
 	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, nil))
+	plugin.configureBatchOwnership(config, configStore)
 	return plugin, nil
 }
 
@@ -1306,6 +1343,32 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		}, nil
 	}
 
+	// Record the requested list page size (Limit for OpenAI/Anthropic, else
+	// PageSize for Vertex/Gemini), derived + clamped, so the owner-scoped ledger
+	// paging below knows how many owned rows to collect for the caller.
+	if req.RequestType == schemas.BatchListRequest && req.BatchListRequest != nil {
+		ctx.SetValue(batchListRequestedLimitKey, resolveBatchListTarget(req.BatchListRequest.Limit, req.BatchListRequest.PageSize))
+		// Serve a non-admin caller's list DEEPLY from the ownership ledger via a
+		// short-circuit: the shared upstream list endpoint is never called, so no
+		// foreign page is ever fetched (strictly leak-proof). Returns nil — relay
+		// upstream unchanged — for the no-ledger, single-tenant (no VK), and admin
+		// cases. An unknown VK fails closed to an empty page inside the builder.
+		if sc := p.buildBatchListShortCircuit(ctx, req.BatchListRequest); sc != nil {
+			return req, sc, nil
+		}
+	}
+
+	// Owner-gate per-id batch lifecycle verbs (retrieve/cancel/results/delete)
+	// BEFORE the upstream relay: a short-circuit here returns before the request
+	// is enqueued to the provider, so a foreign or unknown batch id is never
+	// touched upstream.
+	if batchErr := p.enforceBatchOwnershipPreHook(ctx, req); batchErr != nil {
+		ctx.SetValue(governanceRejectedContextKey, true)
+		return req, &schemas.LLMPluginShortCircuit{
+			Error: batchErr,
+		}, nil
+	}
+
 	return req, nil, nil
 }
 
@@ -1337,6 +1400,16 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// filter models which are not supported on this virtual key
 		result.ListModelsResponse.Data = p.filterModelsForVirtualKey(ctx, result.ListModelsResponse.Data, virtualKey)
 	}
+
+	// Batch ownership (see batchownership.go): capture owner on a successful
+	// create, and scope list output to the caller's ledger-known batches. A
+	// create-time ledger-write failure fails the request (returned as the error)
+	// rather than leaving an unowned batch upstream.
+	newResult, batchErr := p.applyBatchOwnershipPostHook(ctx, result, requestType, provider, virtualKey)
+	if batchErr != nil {
+		return nil, batchErr, nil
+	}
+	result = newResult
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 

@@ -216,10 +216,12 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	// 4. Governance (if enabled and not enterprise)
 	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
 		config := &governance.Config{
-			IsVkMandatory:         &s.Config.ClientConfig.EnforceAuthOnInference,
-			RequiredHeaders:       &s.Config.ClientConfig.RequiredHeaders,
-			DisableAutoToolInject: &s.Config.ClientConfig.MCPDisableAutoToolInject,
-			RoutingChainMaxDepth:  &s.Config.ClientConfig.RoutingChainMaxDepth,
+			IsVkMandatory:           &s.Config.ClientConfig.EnforceAuthOnInference,
+			RequiredHeaders:         &s.Config.ClientConfig.RequiredHeaders,
+			DisableAutoToolInject:   &s.Config.ClientConfig.MCPDisableAutoToolInject,
+			RoutingChainMaxDepth:    &s.Config.ClientConfig.RoutingChainMaxDepth,
+			UnknownBatchIDPolicy:    &s.Config.ClientConfig.UnknownBatchIDPolicy,
+			BatchAdminVirtualKeyIDs: &s.Config.ClientConfig.BatchAdminVirtualKeyIDs,
 		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {

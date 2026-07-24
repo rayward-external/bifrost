@@ -119,6 +119,7 @@ type GovernancePlugin struct {
 	// in-process compensating cancel; it is injected post-construction (the core
 	// client is created after plugins) and may be nil.
 	batchLedger          batchLedger
+	batchPager           batchPager // optional keyset-pagination capability (nil => owned-id fallback)
 	batchAdminVKIDs      *[]string
 	batchUnknownIDPolicy *string
 	batchClient          BatchLifecycleClient
@@ -1343,10 +1344,18 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	// Record the requested list page size (Limit for OpenAI/Anthropic, else
-	// PageSize for Vertex/Gemini), derived + clamped, so PostLLMHook's owner-scoped
-	// server-side paging knows how many owned rows to collect for the caller.
+	// PageSize for Vertex/Gemini), derived + clamped, so the owner-scoped ledger
+	// paging below knows how many owned rows to collect for the caller.
 	if req.RequestType == schemas.BatchListRequest && req.BatchListRequest != nil {
 		ctx.SetValue(batchListRequestedLimitKey, resolveBatchListTarget(req.BatchListRequest.Limit, req.BatchListRequest.PageSize))
+		// Serve a non-admin caller's list DEEPLY from the ownership ledger via a
+		// short-circuit: the shared upstream list endpoint is never called, so no
+		// foreign page is ever fetched (strictly leak-proof). Returns nil — relay
+		// upstream unchanged — for the no-ledger, single-tenant (no VK), and admin
+		// cases. An unknown VK fails closed to an empty page inside the builder.
+		if sc := p.buildBatchListShortCircuit(ctx, req.BatchListRequest); sc != nil {
+			return req, sc, nil
+		}
 	}
 
 	// Owner-gate per-id batch lifecycle verbs (retrieve/cancel/results/delete)

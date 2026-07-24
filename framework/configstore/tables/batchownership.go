@@ -28,19 +28,30 @@ type TableManagedBatch struct {
 	// integration layer has undone any dialect-specific id encoding. The unique
 	// index makes a (provider, batch_id) capture idempotent and prevents a
 	// second tenant from claiming an id another tenant already owns.
+	//
+	// BatchID also carries the trailing tie-breaker column of the owner keyset
+	// index (idx_managed_batch_owner_keyset) so a caller's own batches can be
+	// paginated by a stable (created_at, batch_id) keyset without a full scan.
 	Provider string `gorm:"type:varchar(64);not null;uniqueIndex:idx_managed_batch_provider_batch,priority:1" json:"provider"`
-	BatchID  string `gorm:"type:varchar(512);not null;uniqueIndex:idx_managed_batch_provider_batch,priority:2" json:"batch_id"`
+	BatchID  string `gorm:"type:varchar(512);not null;uniqueIndex:idx_managed_batch_provider_batch,priority:2;index:idx_managed_batch_owner_keyset,priority:3" json:"batch_id"`
 
 	// Owner tuple. OwnerVirtualKeyID is always set; the others are "" when the
 	// creating key had no team / customer / creator. Empty owner columns never
 	// match a caller (the match logic ignores empty values), so a team-less key's
 	// batch is reachable only via its exact VK id.
-	OwnerVirtualKeyID string `gorm:"type:varchar(255);not null;index:idx_managed_batch_owner_vk" json:"owner_virtual_key_id"`
+	//
+	// OwnerVirtualKeyID leads the owner keyset index
+	// (owner_virtual_key_id, created_at, batch_id): the dominant single-VK list
+	// case (a key paging its own batches) is served entirely from this index.
+	// Team/customer-owned rows fall back to the created_at ordering leg — the OR
+	// legs (owner_team_id / owner_customer_id) are not separately covered, which
+	// is acceptable for the secondary gateway's batch volume.
+	OwnerVirtualKeyID string `gorm:"type:varchar(255);not null;index:idx_managed_batch_owner_vk;index:idx_managed_batch_owner_keyset,priority:1" json:"owner_virtual_key_id"`
 	OwnerTeamID       string `gorm:"type:varchar(255);not null;default:''" json:"owner_team_id"`
 	OwnerCustomerID   string `gorm:"type:varchar(255);not null;default:''" json:"owner_customer_id"`
 	OwnerUserID       string `gorm:"type:varchar(255);not null;default:''" json:"owner_user_id"`
 
-	CreatedAt time.Time `gorm:"not null" json:"created_at"`
+	CreatedAt time.Time `gorm:"not null;index:idx_managed_batch_owner_keyset,priority:2" json:"created_at"`
 }
 
 // TableName sets the table name for the managed-batch ownership ledger.

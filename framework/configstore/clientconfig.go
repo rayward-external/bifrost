@@ -95,6 +95,8 @@ type ClientConfig struct {
 	HeaderFilterConfig                    *tables.GlobalHeaderFilterConfig      `json:"header_filter_config,omitempty"`              // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL                     int                                   `json:"async_job_result_ttl"`                        // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeaders                       []string                              `json:"required_headers,omitempty"`                  // Headers that must be present on every request (case-insensitive)
+	UnknownBatchIDPolicy                  string                                `json:"unknown_batch_id_policy,omitempty"`           // Governance batch-ownership: how per-id batch verbs treat a batch id with no ownership-ledger row: "deny" (404) or "allow" (fall through to upstream). Empty = migration-safe default (allow).
+	BatchAdminVirtualKeyIDs               []string                              `json:"batch_admin_virtual_key_ids,omitempty"`       // Governance batch-ownership: virtual-key IDs that bypass per-tenant batch scoping (see the batch-ownership ledger). Empty by default.
 	LoggingHeaders                        []string                              `json:"logging_headers,omitempty"`                   // Headers to capture in log metadata
 	WhitelistedRoutes                     []string                              `json:"whitelisted_routes,omitempty"`                // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data

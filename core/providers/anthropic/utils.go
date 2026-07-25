@@ -810,6 +810,16 @@ func IsOpus47Plus(model string) bool {
 	return parseClaudeModel(model).isFamilyAtLeast(claudeFamilyOpus, 4, 7)
 }
 
+// IsOpus5Plus returns true for Claude Opus at version 5 or later. Opus 5 is a
+// drop-in for Opus 4.8's request surface: extended thinking (budget_tokens) is
+// removed, temperature/top_p/top_k are rejected with a 400, and it supports
+// adaptive thinking, the effort knob, fast mode, and mid-conversation system
+// messages. The comparison is numeric (see parseClaudeModel), so "opus-4-5"
+// is correctly excluded and Bedrock/Vertex/date-suffixed forms all parse.
+func IsOpus5Plus(model string) bool {
+	return parseClaudeModel(model).isFamilyAtLeast(claudeFamilyOpus, 5, 0)
+}
+
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
 // Mythos 5, Mythos Preview). These share Opus 4.7+'s request surface
 // (adaptive-only thinking, temperature/top_p/top_k removed) AND additionally
@@ -867,16 +877,9 @@ func SupportsNativeEffort(model string) bool {
 }
 
 // SupportsEffortParameter returns true if the model accepts the
-// output_config.effort parameter. The knob was introduced on Opus 4.5 and
-// Sonnet 4.6 and has been carried forward on every later model in those lines,
-// so the gate is a floor, not a whitelist:
-//
-//   - Fable / Mythos      — always
-//   - Opus    >= 4.5      — 4.5, 4.6, 4.7, 4.8, 5, ...
-//   - Sonnet  >= 4.6      — 4.6, 5, ...
-//   - Haiku               — never (Haiku 4.5 returns 400)
-//
-// Models outside that set reject effort with a 400:
+// output_config.effort parameter. Supported models: Claude Fable 5,
+// Claude Mythos 5, Claude Mythos Preview, Opus 5, Opus 4.8, Opus 4.7, Opus 4.6,
+// Sonnet 5, Sonnet 4.6, and Opus 4.5. All other models reject effort with a 400:
 //
 //	"This model does not support the effort parameter."
 //
@@ -933,9 +936,9 @@ func appendToSystemContent(existing *AnthropicContent, newContent AnthropicConte
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
 // system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex. Supported on Claude Opus >= 4.8 and the Claude Fable/Mythos family
-// (Fable post-dates Opus 4.8; the public doc lists Opus 4.8 but Fable supports
-// it as well). No beta header is required.
+// Vertex. Supported on Claude Opus 4.8+ (including Opus 5) and the Claude
+// Fable/Mythos family (Fable post-dates Opus 4.8; the public doc lists Opus 4.8
+// but Fable supports it as well). No beta header is required.
 //
 // The >= floor is confirmed forward-compatible by getbifrost.ai/datasheet,
 // which reports supports_mid_conversation_system: true for both claude-opus-4-8
@@ -964,8 +967,8 @@ var fastModeOpusVersions = map[[2]int]struct{}{
 }
 
 // SupportsFastMode returns true if the model supports speed:"fast" (research
-// preview). Supported on Opus 4.6, Opus 4.7 and Opus 4.8 — and ONLY those.
-// Requests carrying speed:"fast" to any other model are rejected with 400.
+// preview). Supported on Opus 4.6, Opus 4.7, Opus 4.8, and Opus 5; requests
+// carrying speed:"fast" to any other model are rejected with 400.
 // Beta header: fast-mode-2026-02-01.
 //
 // Fast mode is Opus-only — Sonnet, Haiku and Fable/Mythos all reject it.
@@ -1367,6 +1370,12 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicServerSideFallbackBetaHeader)
 		}
 	}
+	// Default fallback routing (fallbacks:"default", Opus 5) needs the superset header.
+	if req.fallbacksDefaultRouting() {
+		if !hasProvider || features.ServerSideFallback {
+			headers = appendUniqueHeader(headers, AnthropicServerSideFallbackDefaultBetaHeader)
+		}
+	}
 	// Check for fallback credit redemption (fallback_credit_token present). The
 	// canonical date is added here; FilterBetaHeadersForProvider rewrites it to the
 	// AWS date on Bedrock/Mantle.
@@ -1477,6 +1486,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicCacheDiagnosisBetaHeaderPrefix,
 	AnthropicServerSideFallbackBetaHeaderPrefix,
 	AnthropicFallbackCreditBetaHeaderPrefix,
+	AnthropicMidConversationToolChangesBetaHeaderPrefix,
 }
 
 // betaHeaderProviderVersion rewrites a beta header's version date on providers
@@ -1505,6 +1515,16 @@ func stripBifrostFallbacksFromBody(jsonBody []byte, provider schemas.ModelProvid
 		return jsonBody, nil
 	}
 	if !fb.IsArray() {
+		// Non-array "fallbacks": the string form (currently "default", Opus 5 default
+		// fallback routing) is kept on providers that support server-side fallback and
+		// stripped fail-closed elsewhere — mirroring the native-object gating below.
+		// Any other scalar shape is dropped (upstream would reject it).
+		if fb.Type == gjson.String {
+			features, known := ProviderFeatures[provider]
+			if !known || features.ServerSideFallback {
+				return jsonBody, nil
+			}
+		}
 		return sjson.DeleteBytes(jsonBody, "fallbacks")
 	}
 	// Unknown/custom providers keep native entries, mirroring the
@@ -1858,6 +1878,8 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicCacheDiagnosisBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.Diagnostics },
 	AnthropicServerSideFallbackBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.ServerSideFallback },
 	AnthropicFallbackCreditBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.FallbackCredit },
+	// Long key kept in its own group so gofmt doesn't realign the block above.
+	AnthropicMidConversationToolChangesBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and

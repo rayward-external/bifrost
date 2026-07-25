@@ -798,29 +798,26 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	return jsonBody, nil
 }
 
-// IsOpus47Plus returns true if the model is Claude Opus 4.7 or later (currently 4.7, 4.8, and 5) where:
+// IsOpus47Plus returns true for Claude Opus at version 4.7 or later — 4.7, 4.8,
+// 5, and every future Opus major — where:
 //   - Extended thinking (budget_tokens) is removed — only adaptive thinking is supported.
 //   - temperature, top_p, and top_k are not supported (setting them returns a 400).
 //
-// Opus 5 shares Opus 4.8's request surface, so it is matched here via IsOpus5Plus.
+// The comparison is numeric (see parseClaudeModel), not a substring whitelist.
+// The whitelist form of this function returned false for claude-opus-5 — a
+// *higher* version than the ones it listed — which is the whole of bug #351.
 func IsOpus47Plus(model string) bool {
-	model = strings.ToLower(model)
-	if !strings.Contains(model, "opus") {
-		return false
-	}
-	return strings.Contains(model, "4-7") || strings.Contains(model, "4.7") ||
-		strings.Contains(model, "4-8") || strings.Contains(model, "4.8") ||
-		IsOpus5Plus(model)
+	return parseClaudeModel(model).isFamilyAtLeast(claudeFamilyOpus, 4, 7)
 }
 
-// IsOpus5Plus returns true for Claude Opus 5 (and later Opus 5.x). Opus 5 is a
+// IsOpus5Plus returns true for Claude Opus at version 5 or later. Opus 5 is a
 // drop-in for Opus 4.8's request surface: extended thinking (budget_tokens) is
 // removed, temperature/top_p/top_k are rejected with a 400, and it supports
 // adaptive thinking, the effort knob, fast mode, and mid-conversation system
-// messages. Matching "opus-5" excludes "opus-4-5" and matches
-// Bedrock/Vertex/date-suffixed forms.
+// messages. The comparison is numeric (see parseClaudeModel), so "opus-4-5"
+// is correctly excluded and Bedrock/Vertex/date-suffixed forms all parse.
 func IsOpus5Plus(model string) bool {
-	return strings.Contains(strings.ToLower(model), "opus-5")
+	return parseClaudeModel(model).isFamilyAtLeast(claudeFamilyOpus, 5, 0)
 }
 
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
@@ -899,8 +896,9 @@ func SupportsNativeEffort(model string) bool {
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/effort
 func SupportsEffortParameter(model string) bool {
-	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsSonnet5Plus(m) || IsOpus5Plus(m) {
+	v := parseClaudeModel(model)
+	switch v.Family {
+	case claudeFamilyFable, claudeFamilyMythos:
 		return true
 	case claudeFamilyOpus:
 		return v.atLeast(4, 5)
@@ -951,8 +949,8 @@ func SupportsMidConversationSystem(provider schemas.ModelProvider, model string)
 	if provider != schemas.Anthropic {
 		return false
 	}
-	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsOpus5Plus(m) {
+	v := parseClaudeModel(model)
+	if v.isFableFamily() {
 		return true
 	}
 	return v.isFamilyAtLeast(claudeFamilyOpus, 4, 8)

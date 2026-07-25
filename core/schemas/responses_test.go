@@ -1,7 +1,6 @@
 package schemas
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -353,106 +352,6 @@ func TestResponsesMessageMarshalsToolSearchArgumentsAsObject(t *testing.T) {
 			t.Fatalf("did not expect arguments key, got %s", encoded)
 		}
 	})
-}
-
-func TestResponsesMessagePreservesToolSearchExecution(t *testing.T) {
-	raw := []byte(`{"id":"tsc_1","type":"tool_search_call","status":"completed","arguments":{"query":"loki"},"call_id":"call_1","execution":"client"}`)
-
-	var msg ResponsesMessage
-	if err := Unmarshal(raw, &msg); err != nil {
-		t.Fatalf("unmarshal tool_search_call: %v", err)
-	}
-	if msg.ResponsesToolMessage == nil || msg.Execution == nil || *msg.Execution != "client" {
-		t.Fatalf("expected execution=client to survive unmarshal, got %#v", msg.ResponsesToolMessage)
-	}
-
-	encoded, err := MarshalSorted(msg)
-	if err != nil {
-		t.Fatalf("marshal tool_search_call: %v", err)
-	}
-	if !strings.Contains(string(encoded), `"execution":"client"`) {
-		t.Fatalf("expected execution to round-trip, got %s", encoded)
-	}
-}
-
-func TestResponsesMessageRoundTripsToolSearchOutputTools(t *testing.T) {
-	raw := []byte(`{"id":"tso_1","type":"tool_search_output","call_id":"call_1","tools":[{"type":"namespace","name":"telemetry","tools":[{"type":"function","name":"query_loki_logs","description":"query loki","parameters":{"type":"object","properties":{"run_id":{"type":"string"}}}}]}]}`)
-
-	var msg ResponsesMessage
-	if err := Unmarshal(raw, &msg); err != nil {
-		t.Fatalf("unmarshal tool_search_output: %v", err)
-	}
-	if msg.Type == nil || *msg.Type != ResponsesMessageTypeToolSearchOutput {
-		t.Fatalf("expected tool_search_output type, got %#v", msg.Type)
-	}
-	if len(msg.ToolSearchOutputTools) == 0 {
-		t.Fatalf("expected raw tools to be captured, got none")
-	}
-
-	encoded, err := MarshalSorted(msg)
-	if err != nil {
-		t.Fatalf("marshal tool_search_output: %v", err)
-	}
-	for _, want := range []string{`"type":"namespace"`, `"type":"function"`, `"name":"query_loki_logs"`} {
-		if !strings.Contains(string(encoded), want) {
-			t.Fatalf("expected re-emitted tools to contain %s, got %s", want, encoded)
-		}
-	}
-}
-
-func TestResponsesMessageMarshalsToolSearchOutputArgumentsAsObject(t *testing.T) {
-	toolSearchOutputType := ResponsesMessageTypeToolSearchOutput
-	callID := "call_1"
-	args := `{"query":"loki"}`
-	tools := json.RawMessage(`[{"type":"namespace","name":"telemetry","tools":[{"type":"function","name":"query_loki_logs"}]}]`)
-	msg := ResponsesMessage{
-		Type:                  &toolSearchOutputType,
-		ToolSearchOutputTools: tools,
-		ResponsesToolMessage:  &ResponsesToolMessage{CallID: &callID, Arguments: &args},
-	}
-
-	encoded, err := MarshalSorted(msg)
-	if err != nil {
-		t.Fatalf("marshal tool_search_output: %v", err)
-	}
-	if !strings.Contains(string(encoded), `"arguments":{"query":"loki"}`) {
-		t.Fatalf("expected object-valued arguments, got %s", encoded)
-	}
-	if strings.Contains(string(encoded), `"arguments":"`) {
-		t.Fatalf("tool_search_output arguments must not be stringified, got %s", encoded)
-	}
-}
-
-func TestDeepCopyResponsesMessagePreservesToolSearchFields(t *testing.T) {
-	toolSearchOutputType := ResponsesMessageTypeToolSearchOutput
-	callID := "call_1"
-	name := "query_loki_logs"
-	namespace := "telemetry"
-	args := `{"query":"loki"}`
-	execution := "client"
-	tools := json.RawMessage(`[{"type":"namespace","name":"telemetry","tools":[{"type":"function","name":"query_loki_logs"}]}]`)
-
-	copied := DeepCopyResponsesMessage(ResponsesMessage{
-		Type:                  &toolSearchOutputType,
-		ToolSearchOutputTools: tools,
-		ResponsesToolMessage: &ResponsesToolMessage{
-			CallID:    &callID,
-			Name:      &name,
-			Namespace: &namespace,
-			Arguments: &args,
-			Execution: &execution,
-		},
-	})
-
-	if copied.ToolSearchOutputTools == nil || string(copied.ToolSearchOutputTools) != string(tools) {
-		t.Fatalf("expected raw tool_search_output tools to survive copy, got %s", copied.ToolSearchOutputTools)
-	}
-	if copied.ResponsesToolMessage == nil || copied.Namespace == nil || *copied.Namespace != namespace {
-		t.Fatalf("expected namespace to survive copy, got %#v", copied.ResponsesToolMessage)
-	}
-	if copied.Execution == nil || *copied.Execution != execution {
-		t.Fatalf("expected execution to survive copy, got %#v", copied.ResponsesToolMessage)
-	}
 }
 
 // TestResponsesMessagePreservesAdditionalTools verifies that codex

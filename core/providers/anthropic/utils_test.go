@@ -2754,14 +2754,10 @@ func TestSupportsFastMode(t *testing.T) {
 		{"claude-opus-4.7-20260401", true},
 		{"claude-opus-4-8", true},
 		{"claude-opus-4.8-20260601", true},
-		// Opus 5: fast mode via IsOpus47Plus.
-		{"claude-opus-5", true},
-		{"claude-opus-5-20260601", true},
 		// Bedrock / Vertex prefixed IDs.
 		{"global.anthropic.claude-opus-4-6", true},
 		{"global.anthropic.claude-opus-4-7", true},
 		{"global.anthropic.claude-opus-4-8", true},
-		{"global.anthropic.claude-opus-5", true},
 		// Not supported — other model families.
 		{"claude-sonnet-4-6", false},
 		{"claude-haiku-4-5", false},

@@ -6937,6 +6937,33 @@
             "type": "string"
           }
         },
+        "reasoning_effort_mapping": {
+          "type": "object",
+          "description": "Translates the OpenAI-dialect reasoning_effort onto a provider-specific request-body field, for OpenAI-compatible upstreams that do not implement reasoning_effort themselves. When set, reasoning_effort is never forwarded upstream.",
+          "properties": {
+            "field": {
+              "type": "string",
+              "description": "Request-body field to set instead of reasoning_effort (e.g. \"thinking\")"
+            },
+            "enabled": {
+              "type": "object",
+              "description": "Value written to field when reasoning is requested (e.g. {\"type\": \"enabled\"})"
+            },
+            "disabled": {
+              "type": "object",
+              "description": "Value written to field when reasoning is explicitly turned off. Omit to leave the field unset for the off case."
+            },
+            "disabled_values": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "reasoning_effort values that mean \"off\". Defaults to [\"none\"]; matched case-insensitively."
+            }
+          },
+          "required": ["field", "enabled"],
+          "additionalProperties": false
+        },
         "allowed_requests": {
           "type": "object",
           "description": "Allowed request types for the custom provider",

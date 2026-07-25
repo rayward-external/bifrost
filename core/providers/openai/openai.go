@@ -755,6 +755,59 @@ func HandleOpenAITextCompletionStreaming(
 	return responseChan, nil
 }
 
+// applyReasoningEffortMapping translates the inbound OpenAI-dialect
+// `reasoning_effort` into the provider-specific body field declared by this
+// custom provider's ReasoningEffortMapping, and enables ExtraParams passthrough
+// so the mapped field reaches the wire.
+//
+// It is a no-op unless a mapping is configured AND the caller actually supplied
+// a reasoning_effort, so providers without a mapping — and mapped providers on
+// requests that ask for no reasoning — keep their current wire format exactly.
+//
+// The returned request is a shallow copy whenever the mapping applies: neither
+// the caller's request nor its ExtraParams map is mutated, so a retry or a
+// fallback to a different provider still sees the original reasoning_effort.
+func (provider *OpenAIProvider) applyReasoningEffortMapping(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if provider.customProviderConfig == nil || request == nil {
+		return request
+	}
+	mapping := provider.customProviderConfig.ReasoningEffortMapping
+	if !mapping.IsConfigured() {
+		return request
+	}
+	if request.Params == nil || request.Params.Reasoning == nil || request.Params.Reasoning.Effort == nil {
+		return request
+	}
+	effort := strings.TrimSpace(*request.Params.Reasoning.Effort)
+	if effort == "" {
+		return request
+	}
+
+	requestCopy := *request
+	paramsCopy := *request.Params
+
+	// Drop the whole reasoning block: the upstream owning this mapping does not
+	// implement reasoning_effort, and some of its models 400 on levels they do
+	// not recognise. Clearing Effort alone is not enough — the OpenAI parameter
+	// filter re-derives an effort from reasoning.max_tokens when Effort is nil,
+	// which would put reasoning_effort back on the wire. The mapped field is now
+	// the sole carrier of the caller's reasoning intent.
+	paramsCopy.Reasoning = nil
+
+	// Extra params ride along to the wire once passthrough is on; copy the
+	// caller's map so the mapped field is added without mutating it.
+	extraParams := make(map[string]interface{}, len(request.Params.ExtraParams)+1)
+	maps.Copy(extraParams, request.Params.ExtraParams)
+	if value, ok := mapping.Resolve(effort); ok {
+		extraParams[mapping.Field] = value
+	}
+	paramsCopy.ExtraParams = extraParams
+	requestCopy.Params = &paramsCopy
+
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	return &requestCopy
+}
+
 // ChatCompletion performs a chat completion request to the OpenAI API.
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
@@ -770,6 +823,8 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		}
 		request.Params.Store = schemas.Ptr(false)
 	}
+
+	request = provider.applyReasoningEffortMapping(ctx, request)
 
 	return HandleOpenAIChatCompletionRequest(
 		ctx,
@@ -946,6 +1001,8 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		}
 		request.Params.Store = schemas.Ptr(false)
 	}
+
+	request = provider.applyReasoningEffortMapping(ctx, request)
 
 	// Use shared streaming logic
 	return HandleOpenAIChatCompletionStreaming(

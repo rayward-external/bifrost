@@ -1536,6 +1536,38 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 	}, nil, nil
 }
 
+// bedrockRejectsSamplingParams reports whether the Bedrock-served model rejects
+// inferenceConfig.temperature / inferenceConfig.topP.
+//
+// Adaptive-only Claude models (Opus >= 4.7, Sonnet >= 5, and the Fable/Mythos
+// family) removed the sampling knobs entirely; Bedrock forwards Converse's
+// inferenceConfig straight through to the underlying Messages request, so a
+// Bedrock-served claude-opus-5 returns the same
+//
+//	"`temperature` is deprecated for this model"
+//
+// 400 that the direct Anthropic provider does. The anthropic provider strips
+// them in ToAnthropicChatRequest (chat.go, gated on IsAdaptiveOnlyThinkingModel);
+// this is the Bedrock Converse equivalent, deliberately reusing the SAME shared
+// version predicate rather than re-deriving the model list here.
+//
+// model is the canonical/capability model string (schemas.ResolveCanonicalModel).
+// It may still be a raw Bedrock id — "us.anthropic.claude-opus-5-20260901-v1:0",
+// "global.anthropic.claude-sonnet-5", or an inference-profile ARN such as
+// "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5-...".
+// anthropic.IsAdaptiveOnlyThinkingModel parses those shapes directly (it strips
+// everything ahead of the "claude" segment and ignores date/version suffixes),
+// so no pre-normalisation is needed or wanted — trimming here would be a second
+// place to keep in sync.
+//
+// Non-Claude ids (Nova, GLM, Llama, Mistral, ...) and opaque
+// application-inference-profile ARNs that carry no model name parse to the zero
+// value, for which the predicate is false — those keep temperature/topP exactly
+// as before.
+func bedrockRejectsSamplingParams(model string) bool {
+	return anthropic.IsAdaptiveOnlyThinkingModel(model)
+}
+
 // convertInferenceConfig converts Bifrost parameters to Bedrock inference config
 func convertInferenceConfig(params *schemas.ChatParameters, model string) *BedrockInferenceConfig {
 	var config BedrockInferenceConfig
@@ -1543,12 +1575,16 @@ func convertInferenceConfig(params *schemas.ChatParameters, model string) *Bedro
 		config.MaxTokens = params.MaxCompletionTokens
 	}
 
-	if params.Temperature != nil {
-		config.Temperature = params.Temperature
-	}
+	// Adaptive-only Claude models reject temperature/topP with a 400 — see
+	// bedrockRejectsSamplingParams.
+	if !bedrockRejectsSamplingParams(model) {
+		if params.Temperature != nil {
+			config.Temperature = params.Temperature
+		}
 
-	if params.TopP != nil {
-		config.TopP = params.TopP
+		if params.TopP != nil {
+			config.TopP = params.TopP
+		}
 	}
 
 	// GLM models on Bedrock reject the stopSequences field.

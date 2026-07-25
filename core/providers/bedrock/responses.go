@@ -2296,11 +2296,16 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		if bifrostReq.Params.MaxOutputTokens != nil {
 			inferenceConfig.MaxTokens = bifrostReq.Params.MaxOutputTokens
 		}
-		if bifrostReq.Params.Temperature != nil {
-			inferenceConfig.Temperature = bifrostReq.Params.Temperature
-		}
-		if bifrostReq.Params.TopP != nil {
-			inferenceConfig.TopP = bifrostReq.Params.TopP
+		// Adaptive-only Claude models reject temperature/topP with a 400. Same
+		// gate as the Chat Converse path in convertInferenceConfig — see
+		// bedrockRejectsSamplingParams (utils.go) for why.
+		if !bedrockRejectsSamplingParams(capModel) {
+			if bifrostReq.Params.Temperature != nil {
+				inferenceConfig.Temperature = bifrostReq.Params.Temperature
+			}
+			if bifrostReq.Params.TopP != nil {
+				inferenceConfig.TopP = bifrostReq.Params.TopP
+			}
 		}
 		if bifrostReq.Params.Reasoning != nil {
 			if bedrockReq.AdditionalModelRequestFields == nil {

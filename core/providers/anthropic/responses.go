@@ -7475,8 +7475,7 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		webSearchType := AnthropicToolTypeWebSearch20250305
 		// Dynamic filtering (web_search_20260209) available on Anthropic + Azure for Opus 4.6+, Sonnet 4.6+.
 		features, ok := ProviderFeatures[provider]
-		if ok && features.WebSearchDynamic &&
-			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)) {
+		if ok && features.WebSearchDynamic && SupportsDynamicWebSearch(model) {
 			webSearchType = AnthropicToolTypeWebSearch20260209
 		}
 		anthropicTool := &AnthropicTool{
@@ -7507,8 +7506,7 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		webFetchType := AnthropicToolTypeWebFetch20250910
 		// Dynamic filtering versions only available on Anthropic + Azure
 		features, ok := ProviderFeatures[provider]
-		if ok && features.WebSearchDynamic &&
-			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6")) {
+		if ok && features.WebSearchDynamic && SupportsDynamicWebSearch(model) {
 			webFetchType = AnthropicToolTypeWebFetch20260309
 		}
 		if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.ResponseInclusion != nil {

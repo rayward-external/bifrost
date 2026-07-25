@@ -5078,6 +5078,28 @@
               "additionalProperties": {
                 "type": "string"
               }
+            },
+            "reasoning_effort_mapping": {
+              "type": "object",
+              "description": "Translates reasoning_effort onto a provider-specific request-body field for OpenAI-compatible upstreams that do not implement it",
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "object"
+                },
+                "disabled": {
+                  "type": "object"
+                },
+                "disabled_values": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": ["field", "enabled"]
             }
           },
           "required": ["base_provider_type"]

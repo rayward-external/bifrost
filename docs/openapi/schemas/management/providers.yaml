@@ -312,6 +312,38 @@ CustomProviderConfig:
       type: object
       additionalProperties:
         type: string
+    reasoning_effort_mapping:
+      $ref: '#/ReasoningEffortMapping'
+
+ReasoningEffortMapping:
+  type: object
+  description: >-
+    Translates the OpenAI-dialect reasoning_effort onto a provider-specific
+    request-body field, for OpenAI-compatible upstreams that expose their own
+    reasoning knob instead. When set, reasoning_effort is never forwarded
+    upstream.
+  properties:
+    field:
+      type: string
+      description: Request-body field to set instead of reasoning_effort (e.g. "thinking")
+    enabled:
+      type: object
+      description: Value written to field when reasoning is requested
+    disabled:
+      type: object
+      description: >-
+        Value written to field when reasoning is explicitly turned off. Omit to
+        leave the field unset for the off case.
+    disabled_values:
+      type: array
+      items:
+        type: string
+      description: >-
+        reasoning_effort values that mean "off". Defaults to ["none"]; matched
+        case-insensitively.
+  required:
+    - field
+    - enabled
 
 ProviderResponse:
   type: object

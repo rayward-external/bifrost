@@ -798,16 +798,16 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	return jsonBody, nil
 }
 
-// IsOpus47Plus returns true if the model is Claude Opus 4.7 or later (currently 4.7 and 4.8) where:
+// IsOpus47Plus returns true for Claude Opus at version 4.7 or later — 4.7, 4.8,
+// 5, and every future Opus major — where:
 //   - Extended thinking (budget_tokens) is removed — only adaptive thinking is supported.
 //   - temperature, top_p, and top_k are not supported (setting them returns a 400).
+//
+// The comparison is numeric (see parseClaudeModel), not a substring whitelist.
+// The whitelist form of this function returned false for claude-opus-5 — a
+// *higher* version than the ones it listed — which is the whole of bug #351.
 func IsOpus47Plus(model string) bool {
-	model = strings.ToLower(model)
-	if !strings.Contains(model, "opus") {
-		return false
-	}
-	return strings.Contains(model, "4-7") || strings.Contains(model, "4.7") ||
-		strings.Contains(model, "4-8") || strings.Contains(model, "4.8")
+	return parseClaudeModel(model).isFamilyAtLeast(claudeFamilyOpus, 4, 7)
 }
 
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
@@ -823,21 +823,24 @@ func IsOpus47Plus(model string) bool {
 //     always on ... thinking: {type: "disabled"} is rejected.")
 //   - https://platform.claude.com/docs/en/build-with-claude/fast-mode
 //     (fast mode is NOT supported on Fable — Opus 4.6/4.7/4.8 only; this is why
-//     Fable is kept separate from IsOpus47Plus, which gates SupportsFastMode).
+//     Fable is kept separate from SupportsFastMode, which is a closed set).
 func IsFableFamily(model string) bool {
-	m := strings.ToLower(model)
-	return strings.Contains(m, "fable") || strings.Contains(m, "mythos")
+	return parseClaudeModel(model).isFableFamily()
 }
 
-// IsSonnet5Plus returns true for Claude Sonnet 5 (and later Sonnet 5.x). Sonnet 5
-// is a drop-in for Sonnet 4.6 but adopts the Opus 4.7+ request surface: extended
-// thinking (budget_tokens) is removed and temperature/top_p/top_k are rejected
-// with a 400 — adaptive thinking is the only thinking-on mode. Matching "sonnet-5"
-// excludes "sonnet-4-5" and matches Bedrock/Vertex/date-suffixed forms.
+// IsSonnet5Plus returns true for Claude Sonnet at version 5 or later — Sonnet 5,
+// Sonnet 5.x, Sonnet 6, and every future Sonnet major. Sonnet 5 is a drop-in for
+// Sonnet 4.6 but adopts the Opus 4.7+ request surface: extended thinking
+// (budget_tokens) is removed and temperature/top_p/top_k are rejected with a
+// 400 — adaptive thinking is the only thinking-on mode.
+//
+// The comparison is numeric, so "sonnet-4-5" and "claude-3-5-sonnet" are
+// excluded on version, not on substring shape, and Bedrock/Vertex/date-suffixed
+// forms all parse.
 //
 // Source: https://platform.claude.com/docs/en/about-claude/models/whats-new-sonnet-5
 func IsSonnet5Plus(model string) bool {
-	return strings.Contains(strings.ToLower(model), "sonnet-5")
+	return parseClaudeModel(model).isFamilyAtLeast(claudeFamilySonnet, 5, 0)
 }
 
 // IsAdaptiveOnlyThinkingModel returns true for models where budget_tokens
@@ -850,46 +853,54 @@ func IsAdaptiveOnlyThinkingModel(model string) bool {
 	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)
 }
 
-// SupportsNativeEffort returns true if the model supports Anthropic's native output_config.effort parameter.
-// Currently supported on Claude Opus 4.5 and Opus 4.6.
+// SupportsNativeEffort returns true if the model supports Anthropic's native
+// output_config.effort parameter *without* being an adaptive-thinking model —
+// i.e. Opus in [4.5, 4.7): Opus 4.5 and Opus 4.6.
+//
+// Deliberately bounded above: Opus 4.7+ also accepts effort, but reaches it via
+// SupportsAdaptiveThinking, which every caller checks first. Keeping the upper
+// bound here means a new Opus major can never fall into the "native effort +
+// budget_tokens thinking" branch, which those models reject.
 func SupportsNativeEffort(model string) bool {
-	model = strings.ToLower(model)
-	if !strings.Contains(model, "opus") {
-		return false
-	}
-	return strings.Contains(model, "4-5") || strings.Contains(model, "4.5") ||
-		strings.Contains(model, "4-6") || strings.Contains(model, "4.6")
+	v := parseClaudeModel(model)
+	return v.Family == claudeFamilyOpus && v.atLeast(4, 5) && !v.atLeast(4, 7)
 }
 
 // SupportsEffortParameter returns true if the model accepts the
-// output_config.effort parameter. Supported models: Claude Fable 5,
-// Claude Mythos 5, Claude Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6,
-// Sonnet 5, Sonnet 4.6, and Opus 4.5. All other models reject effort with a 400:
+// output_config.effort parameter. The knob was introduced on Opus 4.5 and
+// Sonnet 4.6 and has been carried forward on every later model in those lines,
+// so the gate is a floor, not a whitelist:
+//
+//   - Fable / Mythos      — always
+//   - Opus    >= 4.5      — 4.5, 4.6, 4.7, 4.8, 5, ...
+//   - Sonnet  >= 4.6      — 4.6, 5, ...
+//   - Haiku               — never (Haiku 4.5 returns 400)
+//
+// Models outside that set reject effort with a 400:
 //
 //	"This model does not support the effort parameter."
 //
 // This is intentionally separate from SupportsAdaptiveThinking: a model can
 // support the effort knob without supporting adaptive thinking (Opus 4.5),
 // and adaptive thinking is a distinct surface (thinking.type:"adaptive")
-// from effort. Future models may shift either flag independently.
+// from effort.
+//
+// The substring form of this function returned false for claude-opus-5, which
+// pushed reasoning_effort onto the legacy budget_tokens path and produced the
+// 500 "failed to convert bifrost request to the expected provider request body".
+// Verified against getbifrost.ai/datasheet: claude-opus-5, claude-opus-4-8 and
+// claude-sonnet-5 all report supports_output_config: true.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/effort
 func SupportsEffortParameter(model string) bool {
-	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsSonnet5Plus(m) {
+	v := parseClaudeModel(model)
+	switch v.Family {
+	case claudeFamilyFable, claudeFamilyMythos:
 		return true
-	}
-	if strings.Contains(m, "haiku") {
-		return false
-	}
-	if strings.Contains(m, "opus") {
-		return strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
-			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") ||
-			strings.Contains(m, "4-7") || strings.Contains(m, "4.7") ||
-			strings.Contains(m, "4-8") || strings.Contains(m, "4.8")
-	}
-	if strings.Contains(m, "sonnet") {
-		return strings.Contains(m, "4-6") || strings.Contains(m, "4.6")
+	case claudeFamilyOpus:
+		return v.atLeast(4, 5)
+	case claudeFamilySonnet:
+		return v.atLeast(4, 6)
 	}
 	return false
 }
@@ -922,53 +933,124 @@ func appendToSystemContent(existing *AnthropicContent, newContent AnthropicConte
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
 // system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex. Supported on Claude Opus 4.8+ and the Claude Fable/Mythos family
+// Vertex. Supported on Claude Opus >= 4.8 and the Claude Fable/Mythos family
 // (Fable post-dates Opus 4.8; the public doc lists Opus 4.8 but Fable supports
 // it as well). No beta header is required.
+//
+// The >= floor is confirmed forward-compatible by getbifrost.ai/datasheet,
+// which reports supports_mid_conversation_system: true for both claude-opus-4-8
+// and claude-opus-5.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 func SupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
 	if provider != schemas.Anthropic {
 		return false
 	}
-	m := strings.ToLower(model)
-	if IsFableFamily(m) {
+	v := parseClaudeModel(model)
+	if v.isFableFamily() {
 		return true
 	}
-	return strings.Contains(m, "opus") &&
-		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+	return v.isFamilyAtLeast(claudeFamilyOpus, 4, 8)
+}
+
+// fastModeOpusVersions is the exact set of Opus (major, minor) versions
+// Anthropic documents as supporting speed:"fast". It is a closed set on
+// purpose — see SupportsFastMode. Add an entry only when the fast-mode doc
+// lists the version.
+var fastModeOpusVersions = map[[2]int]struct{}{
+	{4, 6}: {},
+	{4, 7}: {},
+	{4, 8}: {},
 }
 
 // SupportsFastMode returns true if the model supports speed:"fast" (research
-// preview). Supported on Opus 4.6, Opus 4.7, and Opus 4.8; requests carrying
-// speed:"fast" to any other model are rejected with 400.
+// preview). Supported on Opus 4.6, Opus 4.7 and Opus 4.8 — and ONLY those.
+// Requests carrying speed:"fast" to any other model are rejected with 400.
 // Beta header: fast-mode-2026-02-01.
+//
+// Fast mode is Opus-only — Sonnet, Haiku and Fable/Mythos all reject it.
+//
+// WHY THIS PREDICATE IS A CLOSED SET WHILE ITS NEIGHBOURS ARE >= FLOORS
+// --------------------------------------------------------------------
+// Every other predicate in this file (SupportsEffortParameter,
+// SupportsAdaptiveThinking, SupportsMidConversationSystem, ...) uses a
+// forward-inclusive ">= floor" so a newly-released model inherits the newest
+// request surface instead of silently falling into the legacy branch. That is
+// safe there because the fail-safe direction points the same way as the floor:
+// returning false is what CAUSES a 400 (the request takes the deprecated
+// budget_tokens path, or a supported knob is stripped and the caller silently
+// loses the capability), so guessing "true" for a future model is the
+// conservative guess.
+//
+// Fast mode inverts that direction, and it is the only predicate here that
+// does:
+//
+//   - false  -> stripUnsupportedAnthropicFields drops req.Speed and
+//     GetAnthropicBetaHeaders omits fast-mode-2026-02-01. The
+//     request still succeeds; the caller merely does not get the
+//     research-preview speedup.
+//   - true   -> speed:"fast" AND the beta header are forwarded verbatim. If
+//     the model does not actually have fast mode, Anthropic
+//     rejects the whole request with a 400.
+//
+// So an optimistic ">= 4.6" floor here would turn a *working* claude-opus-5
+// request into a hard failure — the exact class of bug this work exists to
+// remove — and unlike adaptive thinking or output_config there is no datasheet
+// flag (no supports_fast_mode) to verify a future model against. Nothing can
+// confirm the guess, and the guess is the dangerous direction, so the set stays
+// closed and a new Opus opts in by being added to fastModeOpusVersions above.
+//
+// The version parser is still the mechanism — this is an exact match on the
+// parsed (major, minor), not a substring scan, so Bedrock/Vertex prefixes,
+// date stamps and "4.6" vs "4-6" all normalise before the lookup.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/fast-mode
 func SupportsFastMode(model string) bool {
-	if IsOpus47Plus(model) {
-		return true
+	v := parseClaudeModel(model)
+	if v.Family != claudeFamilyOpus || !v.HasVersion {
+		return false
 	}
-	m := strings.ToLower(model)
-	return strings.Contains(m, "opus") &&
-		(strings.Contains(m, "4-6") || strings.Contains(m, "4.6"))
+	_, ok := fastModeOpusVersions[[2]int{v.Major, v.Minor}]
+	return ok
 }
 
 // SupportsAdaptiveThinking returns true if the model supports thinking.type: "adaptive".
-// Currently supported on Claude Opus 4.6, Claude Sonnet 4.6, Claude Sonnet 5+, Claude
-// Opus 4.7+, and the Claude Fable/Mythos family. On Opus 4.7+, Sonnet 5+, and
-// Fable/Mythos adaptive is the only thinking-on mode; on Opus 4.6 and Sonnet 4.6 it
-// coexists with the deprecated budget_tokens-based extended thinking. On Fable/Mythos
+// Introduced on Opus 4.6 / Sonnet 4.6 and carried forward, so the gate is
+// Opus >= 4.6, Sonnet >= 4.6, plus the whole Fable/Mythos family. Haiku does
+// not support adaptive thinking at any version.
+//
+// On Opus 4.7+, Sonnet 5+, and Fable/Mythos adaptive is the *only* thinking-on
+// mode (see IsAdaptiveOnlyThinkingModel); on Opus 4.6 and Sonnet 4.6 it coexists
+// with the deprecated budget_tokens-based extended thinking. On Fable/Mythos
 // adaptive is always on and thinking:{type:"disabled"} is rejected (see IsFableFamily).
+//
+// Verified against getbifrost.ai/datasheet: claude-opus-5, claude-opus-4-8 and
+// claude-sonnet-5 all report supports_adaptive_thinking: true.
 func SupportsAdaptiveThinking(model string) bool {
-	if IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model) {
+	v := parseClaudeModel(model)
+	switch v.Family {
+	case claudeFamilyFable, claudeFamilyMythos:
 		return true
+	case claudeFamilyOpus, claudeFamilySonnet:
+		return v.atLeast(4, 6)
 	}
-	model = strings.ToLower(model)
-	if !strings.Contains(model, "4-6") && !strings.Contains(model, "4.6") {
-		return false
+	return false
+}
+
+// SupportsDynamicWebSearch returns true if the model accepts the dynamic
+// filtering server-tool generation (web_search_20260209 / web_fetch_20260309).
+// Introduced on Opus 4.6 / Sonnet 4.6 and carried forward; Fable/Mythos support
+// it too. Same floor as SupportsAdaptiveThinking, but kept as its own predicate
+// because the two surfaces are independent and may diverge.
+func SupportsDynamicWebSearch(model string) bool {
+	v := parseClaudeModel(model)
+	switch v.Family {
+	case claudeFamilyFable, claudeFamilyMythos:
+		return true
+	case claudeFamilyOpus, claudeFamilySonnet:
+		return v.atLeast(4, 6)
 	}
-	return strings.Contains(model, "opus") || strings.Contains(model, "sonnet")
+	return false
 }
 
 // Computer-use tool generations.
@@ -986,21 +1068,20 @@ const (
 //   - Which beta header to inject (computer-use-2025-11-24 vs 2025-01-24).
 //   - Which computer_*/text_editor_* type the upstream API will accept.
 //   - Which `name` literal Anthropic's Pydantic validator demands for text_editor.
+//
+// New-gen floors: Opus >= 4.5, Sonnet >= 4.6, plus the whole Fable/Mythos
+// family. Haiku stays on the old generation at every version.
 func ComputerUseGeneration(model string) string {
-	m := strings.ToLower(model)
-	// Opus 4.7+, Sonnet 5+, and the Fable/Mythos family use the new generation.
-	if IsOpus47Plus(m) || IsSonnet5Plus(m) || IsFableFamily(m) {
+	v := parseClaudeModel(model)
+	switch v.Family {
+	case claudeFamilyFable, claudeFamilyMythos:
 		return ComputerUseGen20251124
-	}
-	// Opus 4.6 / Sonnet 4.6 / Opus 4.5 also use the new generation.
-	if strings.Contains(m, "opus") {
-		if strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
-			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") {
+	case claudeFamilyOpus:
+		if v.atLeast(4, 5) {
 			return ComputerUseGen20251124
 		}
-	}
-	if strings.Contains(m, "sonnet") {
-		if strings.Contains(m, "4-6") || strings.Contains(m, "4.6") {
+	case claudeFamilySonnet:
+		if v.atLeast(4, 6) {
 			return ComputerUseGen20251124
 		}
 	}
@@ -1013,24 +1094,18 @@ func ComputerUseGeneration(model string) string {
 // requires new-gen text_editor_20250728+.
 //
 // Models requiring new-gen text_editor:
-//   - Opus 4.7+ (matches IsOpus47Plus)
-//   - Sonnet 5+ (matches IsSonnet5Plus)
-//   - Opus 4.5 / 4.6
-//   - Sonnet 4.5 / 4.6 (sonnet-4-5 differs from ComputerUseGeneration which keeps it old-gen)
+//   - Opus   >= 4.5 (4.5, 4.6, 4.7, 4.8, 5, ...)
+//   - Sonnet >= 4.5 (sonnet-4-5 differs from ComputerUseGeneration, which keeps it old-gen)
+//   - The Fable/Mythos family
+//
+// Haiku stays on the old generation at every version.
 func TextEditorGeneration(model string) string {
-	m := strings.ToLower(model)
-	if IsOpus47Plus(m) || IsSonnet5Plus(m) || IsFableFamily(m) {
+	v := parseClaudeModel(model)
+	switch v.Family {
+	case claudeFamilyFable, claudeFamilyMythos:
 		return ComputerUseGen20251124
-	}
-	if strings.Contains(m, "opus") {
-		if strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
-			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") {
-			return ComputerUseGen20251124
-		}
-	}
-	if strings.Contains(m, "sonnet") {
-		if strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
-			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") {
+	case claudeFamilyOpus, claudeFamilySonnet:
+		if v.atLeast(4, 5) {
 			return ComputerUseGen20251124
 		}
 	}
@@ -1081,13 +1156,44 @@ func computerUseBaseTool(toolType string) string {
 	return ""
 }
 
-// MapBifrostEffortToAnthropic maps a Bifrost effort level to an Anthropic effort level.
-// Anthropic supports "low", "medium", "high", "max"; Bifrost also has "minimal" which maps to "low".
+// anthropicEffortLevels is the exact accepted set for output_config.effort,
+// measured live against api.anthropic.com on 2026-07-25. Anything outside it is
+// rejected with a 400:
+//
+//	output_config.effort: Input should be 'low', 'medium', 'high', 'xhigh' or 'max'
+var anthropicEffortLevels = map[string]struct{}{
+	"low":    {},
+	"medium": {},
+	"high":   {},
+	"xhigh":  {},
+	"max":    {},
+}
+
+// anthropicDefaultEffort is where an unrecognised effort string lands. It
+// matches the midpoint GetBudgetTokensFromReasoningEffort uses for unknown
+// input, so the two effort paths degrade identically.
+const anthropicDefaultEffort = "medium"
+
+// MapBifrostEffortToAnthropic maps a Bifrost/OpenAI reasoning-effort level onto
+// Anthropic's output_config.effort vocabulary. It is total: the return value is
+// always a member of {low, medium, high, xhigh, max}, because Anthropic 400s on
+// anything else and the callers set the field unconditionally.
+//
+// OpenAI's vocabulary is a superset — "minimal" and "none" have no Anthropic
+// equivalent and MUST NOT be forwarded verbatim. Both floor to "low": the models
+// that accept output_config.effort are adaptive-thinking models, where thinking
+// cannot be switched off through effort at all (callers that want thinking off
+// handle effort=="none" before reaching here, via thinking:{type:"disabled"}).
 func MapBifrostEffortToAnthropic(effort string) string {
-	if effort == "minimal" {
+	normalized := strings.ToLower(strings.TrimSpace(effort))
+	if _, ok := anthropicEffortLevels[normalized]; ok {
+		return normalized
+	}
+	switch normalized {
+	case "minimal", "none":
 		return "low"
 	}
-	return effort
+	return anthropicDefaultEffort
 }
 
 // setEffortOnOutputConfig merges the effort value into the request's OutputConfig,

@@ -300,6 +300,11 @@ updates:
       interval: weekly
 
   - package-ecosystem: gomod
+    directory: /examples/webhooks
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
     directory: /plugins/compat
     schedule:
       interval: weekly
@@ -316,6 +321,11 @@ updates:
 
   - package-ecosystem: gomod
     directory: /tests/e2e/clis
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/e2e/api/webhook-receiver
     schedule:
       interval: weekly
 

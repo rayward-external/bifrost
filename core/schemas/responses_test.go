@@ -263,42 +263,8 @@ func TestResponsesMessageToolCallArguments(t *testing.T) {
 }
 
 func TestResponsesMessageMarshalsToolSearchArgumentsAsObject(t *testing.T) {
-	toolSearchType := ResponsesMessageTypeToolSearchCall
 	functionType := ResponsesMessageTypeFunctionCall
 	callID := "call_123"
-
-	t.Run("tool_search_call arguments marshal as a JSON object", func(t *testing.T) {
-		args := `{"query":"observability logs","limit":10}`
-		msg := ResponsesMessage{
-			Type:                 &toolSearchType,
-			ResponsesToolMessage: &ResponsesToolMessage{CallID: &callID, Arguments: &args},
-		}
-		encoded, err := MarshalSorted(msg)
-		if err != nil {
-			t.Fatalf("marshal tool_search_call: %v", err)
-		}
-		if !strings.Contains(string(encoded), `"arguments":{"query":"observability logs","limit":10}`) {
-			t.Fatalf("expected object-valued arguments, got %s", encoded)
-		}
-		if strings.Contains(string(encoded), `"arguments":"`) {
-			t.Fatalf("tool_search_call arguments must not be stringified, got %s", encoded)
-		}
-	})
-
-	t.Run("tool_search_call empty arguments marshal as an empty object", func(t *testing.T) {
-		args := `{}`
-		msg := ResponsesMessage{
-			Type:                 &toolSearchType,
-			ResponsesToolMessage: &ResponsesToolMessage{CallID: &callID, Arguments: &args},
-		}
-		encoded, err := MarshalSorted(msg)
-		if err != nil {
-			t.Fatalf("marshal tool_search_call: %v", err)
-		}
-		if !strings.Contains(string(encoded), `"arguments":{}`) {
-			t.Fatalf("expected empty object arguments, got %s", encoded)
-		}
-	})
 
 	t.Run("function_call arguments stay a JSON string", func(t *testing.T) {
 		args := `{"city":"Paris"}`

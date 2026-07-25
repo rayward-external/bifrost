@@ -6,7 +6,7 @@ require gorm.io/gorm v1.31.1
 
 require (
 	github.com/blevesearch/go-porterstemmer v1.0.3
-	github.com/google/cel-go v0.28.1
+	github.com/google/cel-go v0.29.0
 	github.com/google/uuid v1.6.0
 	github.com/maximhq/bifrost/core v1.7.4
 	github.com/maximhq/bifrost/framework v1.5.4

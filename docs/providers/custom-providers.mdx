@@ -323,42 +323,6 @@ When a full URL (with scheme and host) is provided in `request_path_overrides`, 
 
 In this example, instead of using OpenAI's default `/v1/chat/completions` path, requests will be sent to `https://custom-endpoint.example.com/api/v2/chat`.
 
-### Reasoning Effort Mapping
-
-Some OpenAI-compatible endpoints do not implement `reasoning_effort`. They either ignore it silently or reject unfamiliar levels with a `400`, and expose their own knob instead — commonly a `thinking` object. `reasoning_effort_mapping` translates the OpenAI-dialect field onto that knob so callers keep using the standard parameter.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `field` | string | Request-body field to set instead of `reasoning_effort` (e.g. `thinking`). Required. |
-| `enabled` | object | Value written to `field` when reasoning is requested. Required. |
-| `disabled` | object | Value written to `field` when reasoning is explicitly turned off. Omit to leave `field` unset for the off case. |
-| `disabled_values` | string[] | `reasoning_effort` values that mean "off". Defaults to `["none"]`; matched case-insensitively. |
-
-```json
-{
-    "my-glm-provider": {
-        "keys": [{ "name": "key-1", "value": "env.PROVIDER_API_KEY", "models": ["*"], "weight": 1.0 }],
-        "network_config": {
-            "base_url": "https://your-openai-compatible-endpoint.com"
-        },
-        "custom_provider_config": {
-            "base_provider_type": "openai",
-            "reasoning_effort_mapping": {
-                "field": "thinking",
-                "enabled": { "type": "enabled" },
-                "disabled": { "type": "disabled" }
-            }
-        }
-    }
-}
-```
-
-With that mapping, `"reasoning_effort": "high"` (or any level outside `disabled_values`) is sent upstream as `"thinking": {"type": "enabled"}`, and `"reasoning_effort": "none"` as `"thinking": {"type": "disabled"}`.
-
-<Info>
-When a mapping is configured, `reasoning_effort` is **never** forwarded upstream — that is what prevents a `400` on a level the endpoint does not recognise. A request that carries no reasoning parameters is left untouched: neither `field` nor `reasoning_effort` is added. The mapping applies to `chat_completion` and `chat_completion_stream` on `openai`-based custom providers.
-</Info>
-
 ### TLS for Self-Signed or Internal Certificates
 
 When connecting to providers with HTTPS endpoints that use self-signed certificates or internal CAs (e.g., air-gapped environments, internal services), you can configure TLS in `network_config`:

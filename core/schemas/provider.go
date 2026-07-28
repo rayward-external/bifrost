@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"strings"
 	"time"
 )
 
@@ -518,83 +517,11 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 }
 
 type CustomProviderConfig struct {
-	CustomProviderKey      string                  `json:"-"`                                  // Custom provider key, internally set by Bifrost
-	IsKeyLess              bool                    `json:"is_key_less"`                        // Whether the custom provider requires a key (not allowed for Bedrock)
-	BaseProviderType       ModelProvider           `json:"base_provider_type"`                 // Base provider type
-	AllowedRequests        *AllowedRequests        `json:"allowed_requests,omitempty"`         // Allowed requests for the custom provider
-	RequestPathOverrides   map[RequestType]string  `json:"request_path_overrides,omitempty"`   // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
-	ReasoningEffortMapping *ReasoningEffortMapping `json:"reasoning_effort_mapping,omitempty"` // Translates reasoning_effort onto a provider-specific body field (OpenAI-compatible base providers only)
-}
-
-// DefaultReasoningEffortDisabledValue is the reasoning_effort value treated as
-// "reasoning off" when a ReasoningEffortMapping declares no DisabledValues.
-const DefaultReasoningEffortDisabledValue = "none"
-
-// ReasoningEffortMapping translates an OpenAI-dialect `reasoning_effort` into a
-// provider-specific request-body field. It exists for OpenAI-compatible
-// providers whose upstream does not implement `reasoning_effort` itself and
-// instead exposes its own knob (commonly a `thinking` object). Keeping the
-// translation declarative means the provider/model specifics live in config
-// rather than being hardcoded per vendor in Go.
-//
-// When a mapping is configured, `reasoning_effort` is never forwarded upstream:
-// such upstreams either ignore it silently or reject unsupported levels with a
-// 400, and both outcomes are worse than translating it.
-type ReasoningEffortMapping struct {
-	// Field is the request-body field to set instead of `reasoning_effort`,
-	// e.g. "thinking". A mapping with an empty Field is inert.
-	Field string `json:"field"`
-	// Enabled is the value written to Field when reasoning is requested,
-	// e.g. {"type":"enabled"}.
-	Enabled map[string]any `json:"enabled"`
-	// Disabled is the value written to Field when reasoning is explicitly
-	// turned off. When unset, Field is omitted entirely for the off case.
-	Disabled map[string]any `json:"disabled,omitempty"`
-	// DisabledValues lists the `reasoning_effort` values that mean "off".
-	// Defaults to ["none"] when empty. Matched case-insensitively.
-	DisabledValues []string `json:"disabled_values,omitempty"`
-}
-
-// IsConfigured reports whether the mapping is usable, i.e. whether
-// `reasoning_effort` must be translated rather than forwarded.
-func (m *ReasoningEffortMapping) IsConfigured() bool {
-	return m != nil && m.Field != ""
-}
-
-// Resolve maps an inbound `reasoning_effort` value onto the body value to write
-// to m.Field. The second return value is false when nothing should be written —
-// the mapping is inert, the effort is empty, or the matched case has no value
-// configured. Callers must still drop `reasoning_effort` from the outbound body
-// whenever IsConfigured reports true, independently of this result.
-//
-// The returned map is a copy, so callers may hand it to request-scoped
-// structures without exposing the provider config to mutation.
-func (m *ReasoningEffortMapping) Resolve(effort string) (map[string]any, bool) {
-	if !m.IsConfigured() {
-		return nil, false
-	}
-	effort = strings.TrimSpace(effort)
-	if effort == "" {
-		return nil, false
-	}
-
-	disabledValues := m.DisabledValues
-	if len(disabledValues) == 0 {
-		disabledValues = []string{DefaultReasoningEffortDisabledValue}
-	}
-	for _, disabledValue := range disabledValues {
-		if strings.EqualFold(strings.TrimSpace(disabledValue), effort) {
-			if len(m.Disabled) == 0 {
-				return nil, false
-			}
-			return maps.Clone(m.Disabled), true
-		}
-	}
-
-	if len(m.Enabled) == 0 {
-		return nil, false
-	}
-	return maps.Clone(m.Enabled), true
+	CustomProviderKey    string                 `json:"-"`                                // Custom provider key, internally set by Bifrost
+	IsKeyLess            bool                   `json:"is_key_less"`                      // Whether the custom provider requires a key (not allowed for Bedrock)
+	BaseProviderType     ModelProvider          `json:"base_provider_type"`               // Base provider type
+	AllowedRequests      *AllowedRequests       `json:"allowed_requests,omitempty"`       // Allowed requests for the custom provider
+	RequestPathOverrides map[RequestType]string `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
 }
 
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider

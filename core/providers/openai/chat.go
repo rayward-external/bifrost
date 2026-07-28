@@ -111,7 +111,16 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		// Fireworks supports predicted outputs; save before the filter strips them.
 		prediction := openaiReq.ChatParameters.Prediction
-		openaiReq.filterOpenAISpecificParameters(capModel)
+		// FORWARD the caller's reasoning_effort, same as OpenAI/Azure above and for
+		// the same reason: Fireworks polices its own vocabulary and answers an
+		// unsupported level with a 400 naming what it accepts. Remapping here made
+		// the gateway MORE permissive than the provider — measured 2026-07-28,
+		// kimi-k3 with reasoning_effort="minimal": Fireworks direct returns 400,
+		// but through Bifrost it returned 200 because minimal was silently rewritten
+		// to "low". The caller then believes minimal ran when it never reached the
+		// provider, which is undetectable client-side. Everything else in the filter
+		// still applies.
+		openaiReq.filterOpenAISpecificParametersWithEffortPolicy(capModel, reasoningEffortForward)
 		openaiReq.ChatParameters.Prediction = prediction
 		return openaiReq
 	default:
@@ -126,9 +135,17 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 // Filter OpenAI Specific Parameters
 func (req *OpenAIChatRequest) filterOpenAISpecificParameters(capModel string) {
+	req.filterOpenAISpecificParametersWithEffortPolicy(capModel, reasoningEffortRemap)
+}
+
+// filterOpenAISpecificParametersWithEffortPolicy is filterOpenAISpecificParameters
+// with the reasoning_effort policy made explicit. Split out so a provider that
+// POLICES its own effort vocabulary can keep every other part of the filter while
+// forwarding the caller's level untouched — see the Fireworks case above.
+func (req *OpenAIChatRequest) filterOpenAISpecificParametersWithEffortPolicy(capModel string, policy reasoningEffortPolicy) {
 	// Handle reasoning parameter: OpenAI uses effort-based reasoning
 	// Priority: effort (native) > max_tokens (estimated)
-	req.normalizeReasoningEffort(capModel)
+	req.resolveReasoningEffort(capModel, policy)
 
 	if req.ChatParameters.Prediction != nil {
 		req.ChatParameters.Prediction = nil

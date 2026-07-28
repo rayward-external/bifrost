@@ -1531,16 +1531,44 @@ func TestToOpenAIChatRequest_ReasoningEffortForwardedForOpenAIAzure(t *testing.T
 		})
 	}
 
-	// Non-OpenAI OpenAI-compatible providers keep the compatibility remap: they
-	// borrow this request shape without implementing the whole vocabulary, so the
-	// shim stays in place for them.
-	t.Run("fireworks still remaps an unsupported level", func(t *testing.T) {
-		out := ToOpenAIChatRequest(ctx, mkReq(schemas.Fireworks, "accounts/fireworks/models/deepseek-v3p2", "minimal"))
+	// Fireworks now FORWARDS too, for the same reason OpenAI/Azure do: it polices
+	// its own vocabulary and answers an unsupported level with a 400 naming what it
+	// accepts. Measured 2026-07-28 against Fireworks directly with a provider key,
+	// accounts/fireworks/models/kimi-k3: reasoning_effort="minimal" -> HTTP 400,
+	// every other level -> 200. With the remap, the SAME request through Bifrost
+	// returned 200 because minimal had been rewritten to "low" — the gateway was
+	// MORE permissive than the provider and served a level the caller never asked
+	// for, undetectably client-side. Do not restore the remap for Fireworks.
+	for _, tt := range []struct {
+		name   string
+		model  string
+		effort string
+	}{
+		{"fireworks minimal is not silently rewritten to low", "accounts/fireworks/models/kimi-k3", "minimal"},
+		{"fireworks max is not silently downgraded", "accounts/fireworks/models/kimi-k3", "max"},
+		{"fireworks xhigh is not silently downgraded", "accounts/fireworks/models/kimi-k3", "xhigh"},
+		{"fireworks standard effort still passes through", "accounts/fireworks/models/deepseek-v3p2", "medium"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			out := ToOpenAIChatRequest(ctx, mkReq(schemas.Fireworks, tt.model, tt.effort))
+			require.NotNil(t, out)
+			require.NotNil(t, out.ChatParameters.Reasoning)
+			require.NotNil(t, out.ChatParameters.Reasoning.Effort)
+			require.Equal(t, tt.effort, *out.ChatParameters.Reasoning.Effort,
+				"Fireworks must forward reasoning_effort verbatim and let the provider police its own vocabulary")
+		})
+	}
+
+	// The compatibility remap still applies to the OTHER OpenAI-compatible
+	// providers that borrow this request shape without implementing the whole
+	// vocabulary — this change is deliberately Fireworks-scoped.
+	t.Run("other compatible providers keep the minimal->low remap", func(t *testing.T) {
+		out := ToOpenAIChatRequest(ctx, mkReq(schemas.Cerebras, "llama-3.3-70b", "minimal"))
 		require.NotNil(t, out)
 		require.NotNil(t, out.ChatParameters.Reasoning)
 		require.NotNil(t, out.ChatParameters.Reasoning.Effort)
 		require.Equal(t, "low", *out.ChatParameters.Reasoning.Effort,
-			"non-OpenAI providers keep the minimal->low compatibility remap")
+			"non-Fireworks compatible providers keep the compatibility remap")
 	})
 
 	// The max_tokens -> effort estimation path is independent of the policy and

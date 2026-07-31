@@ -112,6 +112,20 @@ var externalAllowedHeaders = map[string]struct{}{
 	"access-control-expose-headers":    {},
 	"access-control-max-age":           {},
 
+	// WebSocket handshake. `/v1/responses` is registered as a GET route that
+	// upgrades (wsresponses.go), and fasthttp/websocket sets these on
+	// ctx.Response.Header BEFORE calling ctx.Hijack (server_fasthttp.go:172-183),
+	// so they are inside this policy's reach and a 101 without them is rejected
+	// by any standards-compliant client. Pure protocol: `Sec-WebSocket-Accept` is
+	// a hash of the client's own nonce and `Sec-WebSocket-Protocol` echoes the
+	// subprotocol the client asked for, so none of them says anything about us.
+	// `Connection: Upgrade` rides the framing entry above.
+	"upgrade":                  {},
+	"sec-websocket-accept":     {},
+	"sec-websocket-protocol":   {},
+	"sec-websocket-extensions": {},
+	"sec-websocket-version":    {},
+
 	// SecurityHeadersMiddleware. Generic hardening, identical on any host.
 	"x-frame-options":           {},
 	"x-content-type-options":    {},
@@ -140,6 +154,23 @@ var externalAllowedHeaders = map[string]struct{}{
 //   - x-amzn-bedrock-content-type, x-amz-request-id — name the vendor. No
 //     Bedrock-shaped route is published externally, but the allowlist means we
 //     do not have to keep that true to stay safe.
+//
+// Three more were raised by an independent review (2026-07-31) as breaking
+// supported protocols, and are excluded ON PURPOSE. Each names us or a vendor,
+// and every route that emits one is refused by the external load balancer —
+// verified live, not assumed: /genai/upload/v1beta/files -> 403, /mcp -> 403,
+// /v1/mcp -> 404.
+//
+//   - x-goog-upload-url / x-goog-upload-status — the GenAI resumable-upload
+//     control pair. The header NAME says Google, which is the disclosure itself,
+//     so allowlisting them to keep that flow working would defeat the point.
+//   - www-authenticate — MCP OAuth discovery sets it to
+//     resource_metadata="https://<our host>/…", i.e. our hostname in the value.
+//   - location — the OAuth consent/callback redirect carries our host the same
+//     way. Nothing on the published surface returns a 3xx.
+//
+// If any of those routes is ever published externally, the fix is to allow the
+// header AND neutralize what it carries — not to allow it alone.
 
 // isExternalAudience reports whether the audience header explicitly says
 // "external".

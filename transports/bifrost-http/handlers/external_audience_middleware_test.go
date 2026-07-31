@@ -407,6 +407,78 @@ func TestExternalAudienceSeesPostHocHeaders(t *testing.T) {
 	}
 }
 
+// /v1/responses is a GET route that upgrades (wsresponses.go:79), and
+// fasthttp/websocket writes the handshake onto ctx.Response.Header before
+// hijacking (server_fasthttp.go:172-183) — so the deferred rewrite CAN reach a
+// 101 and strip it into an unusable response. Found by an independent review.
+func TestExternalAudienceKeepsTheWebSocketHandshake(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set(AudienceRequestHeader, ExternalAudience)
+
+	handshake := map[string]string{
+		"Upgrade":                  "websocket",
+		"Sec-WebSocket-Accept":     "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+		"Sec-WebSocket-Protocol":   "openai-realtime",
+		"Sec-WebSocket-Extensions": "permessage-deflate; server_no_context_takeover",
+		"Sec-Websocket-Version":    "13",
+	}
+	handler := ExternalAudienceHeaderMiddleware()(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusSwitchingProtocols)
+		ctx.Response.Header.Set("Connection", "Upgrade")
+		for name, value := range handshake {
+			ctx.Response.Header.Set(name, value)
+		}
+		// A real upgrade also carries the routing identity, which must still go.
+		ctx.Response.Header.Set("x-bifrost-provider", "openai")
+	})
+	handler(ctx)
+
+	got := headerNames(&ctx.Response.Header)
+	for name, want := range handshake {
+		if got[strings.ToLower(name)] != want {
+			t.Errorf("101 lost %q (=%q, want %q); standards-compliant clients reject the connection",
+				name, got[strings.ToLower(name)], want)
+		}
+	}
+	if got["connection"] != "Upgrade" {
+		t.Errorf("101 lost Connection: Upgrade (=%q)", got["connection"])
+	}
+	if _, present := got["x-bifrost-provider"]; present {
+		t.Error("the upgrade response still leaked x-bifrost-provider")
+	}
+}
+
+// The headers an independent review asked for that are refused ON PURPOSE: each
+// names us or a vendor, and every route emitting one is denied at the external
+// load balancer. Pinned so re-adding one is a deliberate act.
+func TestExternalAudienceStillRefusesTheIdentifyingProtocolHeaders(t *testing.T) {
+	refused := map[string]string{
+		"X-Goog-Upload-URL":    "https://generativelanguage.googleapis.com/upload/v1beta/files/abc",
+		"X-Goog-Upload-Status": "active",
+		"WWW-Authenticate":     `Bearer resource_metadata="https://router2.example/.well-known/oauth-protected-resource"`,
+		"Location":             "https://router2.example/oauth/consent?state=abc",
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set(AudienceRequestHeader, ExternalAudience)
+
+	handler := ExternalAudienceHeaderMiddleware()(func(ctx *fasthttp.RequestCtx) {
+		for name, value := range refused {
+			ctx.Response.Header.Set(name, value)
+		}
+	})
+	handler(ctx)
+
+	got := headerNames(&ctx.Response.Header)
+	for name := range refused {
+		if value, present := got[strings.ToLower(name)]; present {
+			t.Errorf("%q survived (=%q). It names Google, or carries our own hostname "+
+				"in its value; the routes that emit it are denied at the LB "+
+				"(/genai/upload/v1beta/files 403, /mcp 403, /v1/mcp 404). Allowing it "+
+				"to unbreak that flow would be the leak.", name, value)
+		}
+	}
+}
+
 // A rebase that drops the registration line leaves every test above passing and
 // the gateway wide open, so the wiring itself is asserted.
 func TestExternalAudienceMiddlewareIsRegistered(t *testing.T) {
@@ -432,8 +504,10 @@ func TestExternalAllowlistContents(t *testing.T) {
 		"access-control-expose-headers", "access-control-max-age",
 		"allow", "cache-control", "connection", "content-encoding",
 		"content-length", "content-security-policy", "content-type", "date",
-		"permissions-policy", "referrer-policy", "retry-after", "server",
-		"strict-transport-security", "transfer-encoding", "vary",
+		"permissions-policy", "referrer-policy", "retry-after",
+		"sec-websocket-accept", "sec-websocket-extensions",
+		"sec-websocket-protocol", "sec-websocket-version", "server",
+		"strict-transport-security", "transfer-encoding", "upgrade", "vary",
 		"x-content-type-options", "x-frame-options", "x-robots-tag",
 	}
 	if len(externalAllowedHeaders) != len(want) {

@@ -94,6 +94,59 @@ func resolveBedrockARN(ctx *schemas.BifrostContext, key schemas.Key) string {
 	return ""
 }
 
+// bedrockARNResourceTypesThatAreModelIdentifiers lists the ARN resource types
+// that Bedrock accepts as a COMPLETE modelId on their own. For these, the ARN
+// already names the thing to invoke, so appending a model id produces a
+// nonexistent resource.
+//
+// The rest (e.g. "resource-config") are scoping ARNs that Bedrock expects to be
+// followed by the model — that is the case getModelPathAndRegion's
+// "<arn>/<model>" concatenation was written for, and it is preserved.
+var bedrockARNResourceTypesThatAreModelIdentifiers = map[string]struct{}{
+	"inference-profile":             {},
+	"application-inference-profile": {},
+	"provisioned-model":             {},
+	"custom-model":                  {},
+	"imported-model":                {},
+	"default-prompt-router":         {},
+	"prompt-router":                 {},
+	"foundation-model":              {},
+	"endpoint":                      {},
+	"marketplace-model-endpoint":    {},
+}
+
+// bedrockARNIsCompleteModelIdentifier reports whether arn can be used verbatim
+// as the Bedrock modelId path segment.
+//
+// Why this exists: an application-inference-profile ARN IS the model
+// identifier. Concatenating it with the resolved model id yields
+//
+//	arn:aws:bedrock:us-east-1:123:application-inference-profile/abc/us.anthropic.claude-haiku-4-5-20251001-v1:0
+//
+// which AWS rejects with a ValidationException whose message is the
+// deeply unhelpful "Your account is not authorized to invoke this API
+// operation." — an authorization-shaped error for what is really a malformed
+// resource name. Verified against AWS directly (2026-07-31): the same
+// credentials succeed with the ARN alone and fail with ARN+"/"+model.
+//
+// ARN grammar: arn:partition:service:region:account-id:resource-type/resource-id
+func bedrockARNIsCompleteModelIdentifier(arn string) bool {
+	if !strings.HasPrefix(arn, "arn:") {
+		return false
+	}
+	// Split off the 6th field (resource), which itself is "<type>/<id>".
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) < 6 {
+		return false
+	}
+	resourceType, _, ok := strings.Cut(parts[5], "/")
+	if !ok {
+		return false
+	}
+	_, found := bedrockARNResourceTypesThatAreModelIdentifiers[resourceType]
+	return found
+}
+
 var (
 	invalidCharRegex = regexp.MustCompile(`[^a-zA-Z0-9\s\-\(\)\[\]]`)
 	multiSpaceRegex  = regexp.MustCompile(`\s{2,}`)

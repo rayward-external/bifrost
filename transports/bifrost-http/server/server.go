@@ -2057,7 +2057,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            handlers.SecurityHeadersMiddleware()(s.CORSMiddleware.Middleware()(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
+		// RAYWARD FORK PATCH: ExternalAudienceHeaderMiddleware is OUTERMOST on
+		// purpose — it strips the response down to an allowlist for external
+		// callers and must therefore observe the final header set, security
+		// headers and CORS included. See handlers/external_audience_middleware.go.
+		Handler:            handlers.ExternalAudienceHeaderMiddleware()(handlers.SecurityHeadersMiddleware()(s.CORSMiddleware.Middleware()(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler)))),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 	}

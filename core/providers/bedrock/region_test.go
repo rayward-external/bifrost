@@ -210,3 +210,78 @@ func TestResolveBedrockRegion(t *testing.T) {
 		})
 	}
 }
+
+// TestGetModelPath_CompleteModelIdentifierARN pins the exact modelId segment
+// put on the wire when an inference-profile ARN is in play.
+//
+// Regression: the ARN used to be concatenated with the resolved model id
+// unconditionally, producing ".../application-inference-profile/2wxkyohjcdpt/
+// us.anthropic.claude-haiku-4-5-20251001-v1:0". AWS rejects that with
+// ValidationException "Your account is not authorized to invoke this API
+// operation." — verified directly against Bedrock on 2026-07-31: identical
+// credentials succeed with the ARN alone and fail with ARN+"/"+model.
+func TestGetModelPath_CompleteModelIdentifierARN(t *testing.T) {
+	const (
+		profileARN = "arn:aws:bedrock:us-east-1:065320271521:application-inference-profile/2wxkyohjcdpt"
+		model      = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+	)
+	provider := &BedrockProvider{}
+	key := schemas.Key{
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Region: schemas.NewSecretVar("us-east-1"),
+			ARN:    schemas.NewSecretVar(profileARN),
+		},
+	}
+
+	got, _ := provider.getModelPathAndRegion(nil, "converse", model, key)
+	assert.Equal(t, url.PathEscape(profileARN)+"/converse", got,
+		"an application-inference-profile ARN is the complete modelId")
+	assert.NotContains(t, got, url.PathEscape(profileARN+"/"+model),
+		"the ARN must not be concatenated with the model id")
+}
+
+// TestGetModelPath_ScopingARNStillConcatenates preserves the upstream behaviour
+// for ARNs that are NOT invocable resources on their own.
+func TestGetModelPath_ScopingARNStillConcatenates(t *testing.T) {
+	const (
+		scopeARN = "arn:aws:bedrock:us-east-1:1234567890:resource-config/default"
+		model    = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+	)
+	provider := &BedrockProvider{}
+	key := schemas.Key{
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Region: schemas.NewSecretVar("us-east-1"),
+			ARN:    schemas.NewSecretVar(scopeARN),
+		},
+	}
+
+	got, _ := provider.getModelPathAndRegion(nil, "converse", model, key)
+	assert.Equal(t, url.PathEscape(scopeARN+"/"+model)+"/converse", got)
+}
+
+func TestBedrockARNIsCompleteModelIdentifier(t *testing.T) {
+	cases := []struct {
+		arn  string
+		want bool
+	}{
+		{"arn:aws:bedrock:us-east-1:065320271521:application-inference-profile/2wxkyohjcdpt", true},
+		{"arn:aws:bedrock:us-east-1:123:inference-profile/us.anthropic.claude-opus-5", true},
+		{"arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0", true},
+		{"arn:aws:bedrock:us-east-1:123:provisioned-model/abc123", true},
+		{"arn:aws:bedrock:us-east-1:123:custom-model/xyz", true},
+		{"arn:aws:bedrock:us-east-1:123:default-prompt-router/anthropic.claude:1", true},
+		// Scoping ARNs — the model must still be appended.
+		{"arn:aws:bedrock:us-east-1:1234567890:resource-config/default", false},
+		// Not ARNs at all.
+		{"anthropic.claude-v2", false},
+		{"", false},
+		// Malformed: too few ARN fields, or no resource-type separator.
+		{"arn:aws:bedrock:us-east-1:123", false},
+		{"arn:aws:bedrock:us-east-1:123:inference-profile", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.arn, func(t *testing.T) {
+			assert.Equal(t, tc.want, bedrockARNIsCompleteModelIdentifier(tc.arn))
+		})
+	}
+}

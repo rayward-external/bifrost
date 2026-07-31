@@ -3755,8 +3755,15 @@ func (provider *BedrockProvider) getModelPathAndRegion(ctx *schemas.BifrostConte
 	}
 	p := fmt.Sprintf("%s/%s", bareModel, basePath)
 	if arn := resolveBedrockARN(ctx, key); arn != "" {
-		encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", arn, bareModel))
-		p = fmt.Sprintf("%s/%s", encodedModelIdentifier, basePath)
+		// An ARN that already names an invocable resource (inference profile,
+		// provisioned/custom model, ...) IS the modelId — appending bareModel
+		// to it names nothing and Bedrock rejects it. Scoping ARNs still get
+		// the model appended. See bedrockARNIsCompleteModelIdentifier.
+		modelIdentifier := fmt.Sprintf("%s/%s", arn, bareModel)
+		if bedrockARNIsCompleteModelIdentifier(arn) {
+			modelIdentifier = arn
+		}
+		p = fmt.Sprintf("%s/%s", url.PathEscape(modelIdentifier), basePath)
 	}
 	return p, r
 }

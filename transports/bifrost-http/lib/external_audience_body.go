@@ -58,15 +58,15 @@
 // The header policy can fail safe by deleting: an unparseable header is still a
 // name it can drop. A body must survive as valid JSON, so "delete everything
 // unrecognized" is not available and the policy is necessarily a targeted
-// removal of one known key.
+// removal of the known keys in strippedTopLevelKeys.
 //
 // That makes the parse failure the interesting case, handled asymmetrically ON
 // PURPOSE:
 //
 //   - Body does not parse as JSON -> pass through untouched. It is not a
 //     Bifrost-marshaled response (plain-text 500s, upstream binary bodies), so it
-//     cannot carry our extra_fields.
-//   - Body does not parse BUT the raw bytes contain "extra_fields" -> replace it
+//     cannot carry any of those keys.
+//   - Body does not parse BUT the raw bytes carry one of them -> replace it
 //     wholesale. Failing open there would ship the payload this file exists to
 //     remove, and the combination should be unreachable.
 package lib
@@ -88,17 +88,42 @@ const AudienceRequestHeader = "x-gateway-audience"
 // ExternalAudience is the only value that turns suppression on.
 const ExternalAudience = "external"
 
-// extraFieldsKey is the single top-level JSON key this policy removes.
+// strippedTopLevelKeys are the top-level JSON keys removed from an external
+// caller's response body. Each is about US rather than about the completion.
 //
-// One key, not a list: `extra_fields` is the only object in a Bifrost response
-// that is about US rather than about the completion. Everything else in the body
-// is the model's answer or the dialect's own envelope.
-const extraFieldsKey = "extra_fields"
+//   - extra_fields    the routing metadata: provider, internal key alias,
+//     purchased quota, deployment region (#467).
+//   - is_bifrost_error NAMES THE GATEWAY SOFTWARE, in a field name, on every
+//     error. A name discloses as readily as a value — the whole
+//     reason the header policy is an allowlist rather than a
+//     value filter. It is Bifrost-specific rather than part of
+//     any dialect, so both the OpenAI and Anthropic SDKs ignore
+//     it and dropping it externally breaks no standard client.
+//     The `error` object beside it carries the actual status,
+//     type, code and message, so nothing actionable is lost.
+var strippedTopLevelKeys = []string{"extra_fields", "is_bifrost_error"}
 
-// extraFieldsProbe is the raw-bytes test used both as a fast path and to decide
-// whether an UNPARSEABLE body is dangerous. Quoted deliberately — matching the
-// bare word would trip on a model that writes "extra_fields" in prose.
-var extraFieldsProbe = []byte(`"` + extraFieldsKey + `"`)
+// strippedKeyProbes are the raw-bytes tests used both as a fast path and to
+// decide whether an UNPARSEABLE body is dangerous. Quoted deliberately —
+// matching the bare word would trip on a model that writes one in prose.
+var strippedKeyProbes = func() [][]byte {
+	probes := make([][]byte, 0, len(strippedTopLevelKeys))
+	for _, key := range strippedTopLevelKeys {
+		probes = append(probes, []byte(`"`+key+`"`))
+	}
+	return probes
+}()
+
+// bodyCarriesStrippedKey reports whether any stripped key appears in the raw
+// bytes. Used for the fast path and for the fail-closed decision.
+func bodyCarriesStrippedKey(body []byte) bool {
+	for _, probe := range strippedKeyProbes {
+		if bytes.Contains(body, probe) {
+			return true
+		}
+	}
+	return false
+}
 
 // bodyReplacementOnParseFailure is what an external caller gets when a body both
 // fails to parse and looks like it carries routing metadata. Deliberately
@@ -135,10 +160,10 @@ func IsExternalAudience(ctx *fasthttp.RequestCtx) bool {
 // Returns ok=false only for the dangerous case described in the file header: the
 // document did not parse but its bytes contain the key.
 func StripExtraFields(body []byte) (out []byte, ok bool) {
-	if !bytes.Contains(body, extraFieldsProbe) {
+	if !bodyCarriesStrippedKey(body) {
 		// Overwhelmingly the common path for SSE: most chunks are small and the
 		// scan is cheaper than a parse. Also the correct answer for every body
-		// that never had the key.
+		// that never had a stripped key.
 		return body, true
 	}
 
@@ -146,11 +171,16 @@ func StripExtraFields(body []byte) (out []byte, ok bool) {
 	if err != nil {
 		return nil, false
 	}
-	existed, err := root.Unset(extraFieldsKey)
-	if err != nil {
-		return nil, false
+
+	removedAny := false
+	for _, key := range strippedTopLevelKeys {
+		existed, unsetErr := root.Unset(key)
+		if unsetErr != nil {
+			return nil, false
+		}
+		removedAny = removedAny || existed
 	}
-	if !existed {
+	if !removedAny {
 		// The bytes matched inside a nested value rather than at the top level.
 		// Leave the document alone rather than guess at what it meant.
 		return body, true

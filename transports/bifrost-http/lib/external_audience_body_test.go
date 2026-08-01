@@ -28,6 +28,52 @@ var leakMarkers = []string{
 	"azure",           // the upstream we buy from
 	"Apim-Request-Id", // the upstream's own request id
 	"Azureml-Model-Session",
+	"is_bifrost_error", // names the gateway software, in a field NAME
+}
+
+// prodErrorBody is the ACTUAL error body measured on router2.trueward.ai,
+// 2026-08-01, from a request with a misspelled `role`. `extra_fields` was
+// removed by #467; `is_bifrost_error` outlived it, because a field NAME does not
+// look like a leak until you remember that names disclose as readily as values —
+// the same reasoning that makes the header policy an allowlist.
+const prodErrorBody = `{"is_bifrost_error":false,"status_code":400,"error":{"type":"invalid_request_error","code":"invalid_value","message":"Invalid value: 'wizard'. Supported values are: 'system', 'assistant', 'user', 'function', 'tool', and 'developer'.","param":"messages[0].role"}}`
+
+func TestStripRemovesTheGatewaySoftwareName(t *testing.T) {
+	got, ok := StripExtraFields([]byte(prodErrorBody))
+	if !ok {
+		t.Fatal("StripExtraFields reported failure on a well-formed error body")
+	}
+	assertNoLeak(t, string(got))
+
+	// Everything ACTIONABLE must survive. Dropping the flag must not cost the
+	// caller the reason their request was rejected — that would be the
+	// over-sanitization failure this policy is otherwise careful to avoid.
+	for _, keep := range []string{
+		"invalid_request_error",
+		"invalid_value",
+		"Invalid value: 'wizard'",
+		"messages[0].role",
+		"400",
+	} {
+		if !strings.Contains(string(got), keep) {
+			t.Errorf("scrub destroyed actionable error detail %q\nbody: %s", keep, got)
+		}
+	}
+}
+
+func TestStripRemovesEveryKeyFromOneBody(t *testing.T) {
+	// A body carrying BOTH keys must lose both in a single pass. The fast-path
+	// probe returns on its first hit, so a loop that stopped at the first Unset
+	// would leave the second key in place and still report success.
+	both := `{"is_bifrost_error":false,"extra_fields":{"routing_info":{"key":"east"}},"error":{"message":"x"}}`
+	got, ok := StripExtraFields([]byte(both))
+	if !ok {
+		t.Fatal("unexpected failure")
+	}
+	assertNoLeak(t, string(got))
+	if !strings.Contains(string(got), `"message":"x"`) {
+		t.Errorf("payload lost: %s", got)
+	}
 }
 
 func assertNoLeak(t *testing.T, body string) {

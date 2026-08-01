@@ -49,6 +49,9 @@ var (
 // when both cache and DB miss handler return nothing. Only Anthropic requires max_tokens.
 var knownAnthropicMaxOutputTokens = map[string]int{
 	"claude-fable-5":    128000,
+	"claude-opus-5":     128000,
+	"claude-opus-4-8":   128000,
+	"claude-opus-4-7":   128000,
 	"claude-opus-4-6":   128000,
 	"claude-sonnet-5":   128000,
 	"claude-sonnet-4-6": 64000,

@@ -594,7 +594,8 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						budgetTokens = MinimumReasoningMaxTokens
 					}
 					if budgetTokens < MinimumReasoningMaxTokens {
-						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
+						// Caller-supplied budget below the provider minimum — a 400, not a 500.
+						return nil, providerUtils.NewInvalidRequestError("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
 					}
 					anthropicReq.Thinking = &AnthropicThinking{
 						Type:         "enabled",

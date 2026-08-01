@@ -125,7 +125,59 @@ func (r *byteAtATimeReader) Read(p []byte) (int, error) {
 func externalCtx() *fasthttp.RequestCtx {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set(AudienceRequestHeader, ExternalAudience)
+	// The wrapper only applies to genuine SSE, so the streaming tests below have
+	// to declare it. Callers must set Content-Type BEFORE installing the stream;
+	// every production site does.
+	ctx.Response.Header.SetContentType(sseContentType)
 	return ctx
+}
+
+// externalCtxWithContentType is the same, for the content-type gate tests.
+func externalCtxWithContentType(contentType string) *fasthttp.RequestCtx {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set(AudienceRequestHeader, ExternalAudience)
+	ctx.Response.Header.SetContentType(contentType)
+	return ctx
+}
+
+func TestWrapSSESkipsNonSSEContentTypes(t *testing.T) {
+	// The wrapper is LINE-oriented, so applying it to a stream without newlines
+	// buffers the whole response until EOF: a streaming endpoint silently turned
+	// batch, plus unbounded memory. Found by review, not by the tests above —
+	// they all used SSE, so the unconditional wrap looked correct.
+	//
+	// `application/vnd.amazon.eventstream` is the sharper case: it is BINARY
+	// framing that handleStreaming really can emit, and line-scanning it is not
+	// merely wasteful but meaningless.
+	for _, contentType := range []string{
+		"application/json",
+		"application/vnd.amazon.eventstream",
+		"application/octet-stream",
+		"", // never set — must not be treated as SSE
+	} {
+		t.Run(contentType, func(t *testing.T) {
+			src := &nopReadCloser{Reader: strings.NewReader(`{"extra_fields":{"routing_info":{"key":"east"}}}`)}
+			got := WrapSSEForExternalAudience(externalCtxWithContentType(contentType), src)
+			if got != io.ReadCloser(src) {
+				t.Errorf("content-type %q was wrapped by the line-oriented SSE scrubber", contentType)
+			}
+		})
+	}
+}
+
+func TestWrapSSEAppliesToSSEWithCharsetParameter(t *testing.T) {
+	// Content-Type is frequently "text/event-stream; charset=utf-8". An exact
+	// string comparison would skip it and silently disable the whole policy on
+	// the paths that spell it that way.
+	src := &nopReadCloser{Reader: strings.NewReader("data: {\"extra_fields\":{\"a\":1}}\n\n")}
+	got := WrapSSEForExternalAudience(externalCtxWithContentType("text/event-stream; charset=utf-8"), src)
+	if got == io.ReadCloser(src) {
+		t.Fatal("SSE with a charset parameter was not wrapped")
+	}
+	out, _ := io.ReadAll(got)
+	if strings.Contains(string(out), "extra_fields") {
+		t.Errorf("not scrubbed: %s", out)
+	}
 }
 
 func TestWrapSSEScrubsEveryChunk(t *testing.T) {

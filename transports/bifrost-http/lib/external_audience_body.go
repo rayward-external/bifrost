@@ -187,14 +187,37 @@ func ApplyExternalBodyPolicy(ctx *fasthttp.RequestCtx) {
 	}
 }
 
-// WrapSSEForExternalAudience returns src unchanged for internal callers, and a
-// scrubbing wrapper for external ones.
+// sseContentType is the ONLY content type this wrapper may be applied to.
+const sseContentType = "text/event-stream"
+
+// WrapSSEForExternalAudience returns src unchanged unless the caller is external
+// AND the response is genuinely SSE.
 //
 // Call it at the point the stream is CREATED and pass the result straight to
 // SetBodyStream. Wrapping an already-installed stream does not work; the file
 // header explains why.
+//
+// # THE CONTENT-TYPE TEST IS LOAD-BEARING, NOT DEFENSIVE
+//
+// The wrapper is LINE-oriented: it holds bytes until it sees a newline. That is
+// correct for SSE, where every frame is newline-delimited and small, and wrong
+// for everything else, in two distinct ways that a review caught:
+//
+//   - A passthrough stream returning `application/json` has no newlines until
+//     EOF, so the whole response would buffer in memory and the client would get
+//     nothing incrementally — a streaming endpoint silently turned batch.
+//   - handleStreaming can emit `application/vnd.amazon.eventstream`, a BINARY
+//     framing. Line-scanning it is meaningless and any rewrite would corrupt it.
+//
+// Callers must therefore set Content-Type BEFORE installing the stream. Every
+// current call site does; the guard test in integrations enforces that new ones
+// route through this function, and this test is what makes it safe to call from
+// a site whose content type is not statically known.
 func WrapSSEForExternalAudience(ctx *fasthttp.RequestCtx, src io.ReadCloser) io.ReadCloser {
 	if !IsExternalAudience(ctx) {
+		return src
+	}
+	if !bytes.Contains(ctx.Response.Header.ContentType(), []byte(sseContentType)) {
 		return src
 	}
 	return &sseScrubbingReader{src: src}

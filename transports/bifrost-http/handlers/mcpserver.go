@@ -227,7 +227,12 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 
 	// Use SSEStreamReader to bypass fasthttp's internal pipe batching
 	reader := lib.NewSSEStreamReader()
-	ctx.Response.SetBodyStream(reader, -1)
+	// RAYWARD FORK PATCH: same scrub as the inference and router streaming paths.
+	// The MCP routes are refused by the external load balancer today (/mcp -> 403,
+	// /v1/mcp -> 404), so this is not currently reachable externally — wrapped
+	// anyway, on the same reasoning the header allowlist uses: the policy should
+	// not depend on a deny list staying true somewhere else.
+	ctx.Response.SetBodyStream(lib.WrapSSEForExternalAudience(ctx, reader), -1)
 
 	go func() {
 		var transportLogs []schemas.PluginLogEntry

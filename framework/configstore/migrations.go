@@ -459,6 +459,11 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_budget_override_anchor_columns"}, run: migrationAddBudgetOverrideAnchorColumns},
 	{IDs: []string{"add_live_models_sync_interval_column"}, run: migrationAddLiveModelsSyncIntervalColumn},
 	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
+	{IDs: []string{"add_managed_batches_table"}, run: migrationAddManagedBatchesTable},
+	{IDs: []string{"add_managed_files_table"}, run: migrationAddManagedFilesTable},
+	{IDs: []string{"add_batch_ownership_client_config_columns"}, run: migrationAddBatchOwnershipClientConfigColumns},
+	{IDs: []string{"add_managed_batch_owner_keyset_index"}, run: migrationAddManagedBatchOwnerKeysetIndex},
+	{IDs: []string{"add_managed_file_owner_keyset_index"}, run: migrationAddManagedFileOwnerKeysetIndex},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.

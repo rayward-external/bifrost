@@ -1978,7 +1978,14 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// which batches multiple SSE events into single TCP segments.
 	// Each event is delivered individually via a channel, ensuring one HTTP chunk per event.
 	reader := lib.NewSSEStreamReader()
-	ctx.Response.SetBodyStream(reader, -1)
+	// RAYWARD FORK PATCH: strip `extra_fields` from every SSE chunk for external
+	// callers. THIS is the primary inference streaming path — a review caught it
+	// missing when only the integrations/router.go sites were wrapped, which
+	// would have left `stream:true` on /v1/chat/completions leaking the provider
+	// and our internal key alias once per token. `reader` stays the unwrapped
+	// SSEStreamReader for the producer below; only what the transport reads from
+	// is wrapped.
+	ctx.Response.SetBodyStream(lib.WrapSSEForExternalAudience(ctx, reader), -1)
 
 	// Producer goroutine: processes the stream channel, formats SSE events, sends to reader
 	go func() {

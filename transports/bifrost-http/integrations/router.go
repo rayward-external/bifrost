@@ -2695,7 +2695,12 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// Use SSEStreamReader to bypass fasthttp's internal pipe (fasthttputil.PipeConns)
 	// which batches multiple SSE events into single TCP segments.
 	reader := lib.NewSSEStreamReader()
-	ctx.Response.SetBodyStream(reader, -1)
+	// RAYWARD FORK PATCH: strip `extra_fields` from every SSE chunk for external
+	// callers. Wrapped HERE, at creation, because SetBodyStream closes the stream
+	// it replaces — so the response middleware cannot re-wrap this one without
+	// killing the producer. `reader` stays the unwrapped SSEStreamReader below;
+	// only what the transport reads from is wrapped.
+	ctx.Response.SetBodyStream(lib.WrapSSEForExternalAudience(ctx, reader), -1)
 
 	// Producer goroutine: processes the stream channel, formats events, sends to reader
 	go func() {
@@ -3339,7 +3344,9 @@ func (g *GenericRouter) handlePassthroughStream(
 
 	// Use SSEStreamReader to bypass fasthttp's internal pipe batching
 	reader := lib.NewSSEStreamReader()
-	ctx.Response.SetBodyStream(reader, -1)
+	// RAYWARD FORK PATCH: see the sibling call in handleStreaming. This is the
+	// pass-through streaming path and needs the same scrub.
+	ctx.Response.SetBodyStream(lib.WrapSSEForExternalAudience(ctx, reader), -1)
 
 	go func() {
 		defer func() {

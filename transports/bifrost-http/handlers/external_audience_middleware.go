@@ -68,16 +68,24 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
 // AudienceRequestHeader is injected by the EXTERNAL load balancer's backend
 // service. Deliberately vendor-neutral — AGENTS.md requires neutral header names
 // in fork patches, so it must never contain the brand.
-const AudienceRequestHeader = "x-gateway-audience"
+//
+// Defined in lib and re-exported here. The companion BODY policy has to live in
+// lib (`handlers` imports `integrations`, so `integrations` cannot import
+// `handlers`, and the SSE wrap has to happen inside `integrations`), and one
+// marker string across two policies must have exactly one definition — a
+// second copy that drifts would leave the header policy on and the body policy
+// silently off.
+const AudienceRequestHeader = lib.AudienceRequestHeader
 
 // ExternalAudience is the only value that turns suppression on.
-const ExternalAudience = "external"
+const ExternalAudience = lib.ExternalAudience
 
 // externalAllowedHeaders is the complete set of response headers an external
 // caller receives. Everything absent from this map is deleted.
@@ -179,16 +187,9 @@ var externalAllowedHeaders = map[string]struct{}{
 // client also sends one the value can arrive duplicated (two entries) or
 // comma-joined into one. Every occurrence is checked, and every token within it.
 func isExternalAudience(ctx *fasthttp.RequestCtx) bool {
-	for _, raw := range ctx.Request.Header.PeekAll(AudienceRequestHeader) {
-		for _, token := range strings.FieldsFunc(string(raw), func(r rune) bool {
-			return r == ',' || r == ' ' || r == '\t'
-		}) {
-			if strings.EqualFold(token, ExternalAudience) {
-				return true
-			}
-		}
-	}
-	return false
+	// Delegates so the header and body policies can never disagree about who is
+	// external. The detection tests below still exercise this name.
+	return lib.IsExternalAudience(ctx)
 }
 
 // applyExternalHeaderPolicy deletes every response header outside the allowlist.
@@ -211,8 +212,20 @@ func applyExternalHeaderPolicy(h *fasthttp.ResponseHeader) {
 	}
 }
 
-// ExternalAudienceHeaderMiddleware strips response headers down to the
-// allowlist for requests that arrived on an external frontend.
+// ExternalAudienceHeaderMiddleware applies the external-audience response
+// policies for requests that arrived on an external frontend: headers are
+// stripped to the allowlist above, and `extra_fields` is removed from BUFFERED
+// bodies by lib.ApplyExternalBodyPolicy.
+//
+// STREAMED bodies are NOT covered here and cannot be: fasthttp's SetBodyStream
+// closes the stream it replaces, so re-wrapping one from a middleware kills the
+// producer and delivers an empty body. Streams are wrapped at creation, in
+// integrations/router.go, via lib.WrapSSEForExternalAudience. Full reasoning in
+// lib/external_audience_body.go.
+//
+// The name is historical — it predates the body policy and is kept because
+// renaming would churn its registration and nine test call sites for no
+// behavioural gain, and this fork's first job is surviving upstream rebases.
 //
 // Must be registered OUTERMOST in server.go so it observes the final header set
 // produced by every inner middleware, CORS and the security headers included.
@@ -229,7 +242,11 @@ func ExternalAudienceHeaderMiddleware() schemas.BifrostHTTPMiddleware {
 			// branch, which returns without calling next, and the streaming
 			// branch, which returns with the body stream installed but the header
 			// block not yet serialized.
+			//
+			// LIFO: the body policy runs FIRST, so the header policy observes the
+			// Content-Length that SetBody recomputed rather than the pre-scrub one.
 			defer applyExternalHeaderPolicy(&ctx.Response.Header)
+			defer lib.ApplyExternalBodyPolicy(ctx)
 			next(ctx)
 		}
 	}

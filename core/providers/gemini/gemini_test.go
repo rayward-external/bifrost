@@ -204,6 +204,108 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 	}
 }
 
+// TestReasoningOnlyCandidateStillYieldsChoice covers the gap left by
+// TestEmptyCandidatesRegression: that test only exercises finish reasons which
+// isErrorFinishReason routes through createErrorResponse. MAX_TOKENS is NOT an
+// error finish reason, so a candidate that spent its whole budget on thinking —
+// leaving zero content parts — fell through to the content-parts guard, appended
+// no choice at all, and marshalled as "choices": null. A nil slice on a field
+// tagged `json:"choices"` (no omitempty) serialises to null, not [], which
+// violates the OpenAI schema and breaks SDK deserialisation.
+//
+// Observed live on gemini-2.5-flash / gemini-3.1-pro at small max_tokens.
+func TestReasoningOnlyCandidateStillYieldsChoice(t *testing.T) {
+	thought := "let me think about this"
+
+	tests := []struct {
+		name         string
+		candidate    *gemini.Candidate
+		expectFinish string
+	}{
+		{
+			name: "MaxTokens_NilContent",
+			candidate: &gemini.Candidate{
+				Index:        0,
+				FinishReason: gemini.FinishReasonMaxTokens,
+				Content:      nil,
+			},
+			expectFinish: "length",
+		},
+		{
+			name: "MaxTokens_ZeroParts",
+			candidate: &gemini.Candidate{
+				Index:        0,
+				FinishReason: gemini.FinishReasonMaxTokens,
+				Content:      &gemini.Content{Role: string(gemini.RoleModel), Parts: []*gemini.Part{}},
+			},
+			expectFinish: "length",
+		},
+		{
+			// The real shape: budget consumed entirely by thought parts, so the
+			// parts loop `continue`s on every one and emits no content block.
+			name: "MaxTokens_ThoughtPartsOnly",
+			candidate: &gemini.Candidate{
+				Index:        0,
+				FinishReason: gemini.FinishReasonMaxTokens,
+				Content: &gemini.Content{
+					Role:  string(gemini.RoleModel),
+					Parts: []*gemini.Part{{Text: thought, Thought: true}},
+				},
+			},
+			expectFinish: "length",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &gemini.GenerateContentResponse{
+				ResponseID:   "test-reasoning-only",
+				ModelVersion: "gemini-2.5-flash",
+				Candidates:   []*gemini.Candidate{tt.candidate},
+				UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+					PromptTokenCount: 2,
+					TotalTokenCount:  15,
+				},
+			}
+
+			bifrostResp := resp.ToBifrostChatResponse()
+
+			require.NotNil(t, bifrostResp, "Response should not be nil")
+			// The defect: this was nil, which marshals to `"choices": null`.
+			require.NotNil(t, bifrostResp.Choices, "choices must never be nil — it marshals to null and breaks OpenAI SDKs")
+			require.Len(t, bifrostResp.Choices, 1, "should still surface exactly one choice")
+
+			choice := bifrostResp.Choices[0]
+			require.NotNil(t, choice.FinishReason, "finish_reason must survive an empty-content candidate")
+			assert.Equal(t, tt.expectFinish, *choice.FinishReason, "MAX_TOKENS must map to length")
+
+			require.NotNil(t, choice.ChatNonStreamResponseChoice, "non-stream choice must carry a message")
+			require.NotNil(t, choice.ChatNonStreamResponseChoice.Message, "message object must be present")
+			assert.Equal(t, schemas.ChatMessageRoleAssistant, choice.ChatNonStreamResponseChoice.Message.Role)
+		})
+	}
+
+	// Guard the actual wire shape, not just the in-memory struct: a nil slice and
+	// an empty slice are indistinguishable through most assertions but serialise
+	// differently, which is exactly what broke the SDKs.
+	t.Run("SerialisesAsArrayNotNull", func(t *testing.T) {
+		resp := &gemini.GenerateContentResponse{
+			ResponseID:   "test-wire-shape",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{{
+				Index:        0,
+				FinishReason: gemini.FinishReasonMaxTokens,
+				Content:      nil,
+			}},
+		}
+
+		raw, err := json.Marshal(resp.ToBifrostChatResponse())
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), `"choices":null`, `must not emit "choices":null`)
+		assert.Contains(t, string(raw), `"choices":[`, `must emit a choices array`)
+	})
+}
+
 func TestToBifrostEmbeddingResponsePreservesPrecision(t *testing.T) {
 	const want = 0.12345678901234568
 

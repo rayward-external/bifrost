@@ -1989,16 +1989,75 @@ func NewConfigurationError(message string) *schemas.BifrostError {
 	}
 }
 
+// InvalidRequestError marks a failure caused by the CALLER's input rather than by
+// bifrost or the upstream provider. Request-conversion helpers return it so that
+// NewBifrostOperationError can map the failure to 400 instead of the default 500.
+//
+// It exists because conversion errors are otherwise indistinguishable: a genuine
+// internal marshalling bug and "your max_tokens is below this provider's reasoning
+// minimum" both surfaced as 500, so SDKs retried an unretryable request instead of
+// telling the caller to fix it.
+//
+// Wrap with NewInvalidRequestError; detect with errors.As. The wrapped message is
+// preserved verbatim so existing error text is unchanged.
+type InvalidRequestError struct {
+	Err error
+}
+
+func (e *InvalidRequestError) Error() string {
+	if e == nil || e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e *InvalidRequestError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// NewInvalidRequestError builds a caller-input error that maps to HTTP 400.
+func NewInvalidRequestError(format string, args ...any) error {
+	return &InvalidRequestError{Err: fmt.Errorf(format, args...)}
+}
+
+// IsInvalidRequestError reports whether err (or anything it wraps) is an
+// InvalidRequestError.
+func IsInvalidRequestError(err error) bool {
+	var target *InvalidRequestError
+	return errors.As(err, &target)
+}
+
 // NewBifrostOperationError creates a standardized error for bifrost operation errors.
 // This helper reduces code duplication across providers that have bifrost operation errors.
+//
+// When the underlying cause is an InvalidRequestError the result is classified as a
+// 400 invalid_request_error, because the caller — not bifrost — has to change
+// something for the request to succeed. Everything else keeps the previous behaviour
+// of leaving StatusCode unset, which the transport renders as 500.
 func NewBifrostOperationError(message string, err error) *schemas.BifrostError {
-	return &schemas.BifrostError{
+	bifrostErr := &schemas.BifrostError{
 		IsBifrostError: true,
 		Error: &schemas.ErrorField{
 			Message: message,
 			Error:   err,
 		},
 	}
+
+	if IsInvalidRequestError(err) {
+		statusCode := 400
+		errorType := schemas.InvalidRequestErrorType
+		bifrostErr.StatusCode = &statusCode
+		bifrostErr.Type = &errorType
+		// The wrapper's message is the actionable one ("max_tokens must be greater
+		// than 1024 for reasoning"); the generic conversion banner buries it.
+		bifrostErr.Error.Type = &errorType
+		bifrostErr.Error.Message = err.Error()
+	}
+
+	return bifrostErr
 }
 
 // NewBifrostTimeoutError creates a standardized error for provider request timeout errors.
@@ -3341,7 +3400,10 @@ func GetBudgetTokensFromReasoningEffort(
 	}
 
 	if minBudgetTokens > maxTokens {
-		return 0, fmt.Errorf("max_tokens must be greater than %d for reasoning", minBudgetTokens)
+		// Caller-input failure, not an internal one: the request cannot succeed until
+		// the caller raises max_tokens. Typed so NewBifrostOperationError renders it
+		// as a 400 rather than the default 500 (which made SDKs retry it).
+		return 0, NewInvalidRequestError("max_tokens must be greater than %d for reasoning", minBudgetTokens)
 	}
 
 	// Defensive defaults

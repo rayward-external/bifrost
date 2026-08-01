@@ -1790,6 +1790,9 @@ const (
 	RequestTimedOut          = "request_timed_out"
 	RequestDropped           = "request_dropped"
 	ProviderConnectionFailed = "provider_connection_failed"
+	// InvalidRequestErrorType matches OpenAI's error.type for caller-input failures,
+	// so SDKs raise BadRequestError rather than retrying an unretryable request.
+	InvalidRequestErrorType = "invalid_request_error"
 )
 
 // BifrostStreamChunk represents a stream of responses from the Bifrost system.

@@ -278,51 +278,60 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 				})
 			}
 		}
-
-		// Build the choice with message
-		message := &schemas.ChatMessage{
-			Role: schemas.ChatMessageRoleAssistant,
-		}
-
-		if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
-			contentStr = contentBlocks[0].Text
-			contentBlocks = nil
-		}
-
-		message.Content = &schemas.ChatMessageContent{
-			ContentStr:    contentStr,
-			ContentBlocks: contentBlocks,
-		}
-
-		// Map Google Search grounding supports to OpenAI url_citation annotations
-		annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata)
-
-		if len(toolCalls) > 0 || len(reasoningDetails) > 0 || len(annotations) > 0 {
-			message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
-				ToolCalls:        toolCalls,
-				ReasoningDetails: reasoningDetails,
-				Annotations:      annotations,
-			}
-		}
-
-		// Convert finish reason to Bifrost format.
-		// Gemini uses "STOP" for both normal text completions and tool call responses —
-		// it has no dedicated finish reason for tool calls. Override to "tool_calls" when
-		// tool calls are present so downstream consumers see a uniform signal.
-		finishReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
-		if len(toolCalls) > 0 && finishReason == "stop" {
-			finishReason = "tool_calls"
-		}
-
-		bifrostResp.Choices = append(bifrostResp.Choices, schemas.BifrostResponseChoice{
-			Index:        0,
-			FinishReason: &finishReason,
-			LogProbs:     ConvertGeminiLogprobsResultToBifrost(candidate.LogprobsResult),
-			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
-				Message: message,
-			},
-		})
 	}
+
+	// Build the choice with message.
+	//
+	// Deliberately OUTSIDE the content-parts guard above. A candidate can legitimately
+	// carry a finish reason and no content parts — most commonly MAX_TOKENS when the
+	// model spent its entire budget on thinking. isErrorFinishReason() has already
+	// diverted the genuinely-failed reasons to createErrorResponse, so anything still
+	// here is a real (if empty) completion and must still produce a choice. Building
+	// this inside the guard left Choices nil, which marshals to `"choices": null` on a
+	// field with no omitempty — invalid against the OpenAI schema, and a hard
+	// deserialisation failure in the official SDKs.
+	message := &schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleAssistant,
+	}
+
+	if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
+		contentStr = contentBlocks[0].Text
+		contentBlocks = nil
+	}
+
+	message.Content = &schemas.ChatMessageContent{
+		ContentStr:    contentStr,
+		ContentBlocks: contentBlocks,
+	}
+
+	// Map Google Search grounding supports to OpenAI url_citation annotations
+	annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata)
+
+	if len(toolCalls) > 0 || len(reasoningDetails) > 0 || len(annotations) > 0 {
+		message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
+			ToolCalls:        toolCalls,
+			ReasoningDetails: reasoningDetails,
+			Annotations:      annotations,
+		}
+	}
+
+	// Convert finish reason to Bifrost format.
+	// Gemini uses "STOP" for both normal text completions and tool call responses —
+	// it has no dedicated finish reason for tool calls. Override to "tool_calls" when
+	// tool calls are present so downstream consumers see a uniform signal.
+	finishReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
+	if len(toolCalls) > 0 && finishReason == "stop" {
+		finishReason = "tool_calls"
+	}
+
+	bifrostResp.Choices = append(bifrostResp.Choices, schemas.BifrostResponseChoice{
+		Index:        0,
+		FinishReason: &finishReason,
+		LogProbs:     ConvertGeminiLogprobsResultToBifrost(candidate.LogprobsResult),
+		ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+			Message: message,
+		},
+	})
 
 	// Set usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)

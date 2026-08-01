@@ -31,10 +31,58 @@ func (h *UIHandler) RegisterRoutes(router *router.Router, middlewares ...schemas
 	router.GET("/{filepath:*}", lib.ChainMiddlewares(h.serveDashboard, middlewares...))
 }
 
+// apiPathSegments are the namespaces that belong to the HTTP APIs rather than to
+// the dashboard SPA. "v1" is matched both at the root (/v1/...) and as the second
+// segment (/{provider}/v1/... for the provider-pinned routes).
+var apiPathSegments = []string{"v1", "api"}
+
+// isAPIPath reports whether requestPath addresses an API namespace rather than a
+// dashboard route.
+//
+// RegisterRoutes installs `GET /{filepath:*}` as a global catch-all after every
+// real route, so an unmatched API GET would otherwise be served the SPA shell
+// with HTTP 200 — which an SDK then fails to JSON-decode. Router.NotFound already
+// produces a correct JSON 404; this predicate lets API paths reach it.
+//
+// Matching is on whole path SEGMENTS, never on prefixes: a `strings.HasPrefix`
+// check would misclassify UI routes like /v1beta or /apiary and break the
+// dashboard, which is a worse failure than the bug being fixed.
+func isAPIPath(requestPath string) bool {
+	trimmed := strings.Trim(path.Clean("/"+strings.TrimPrefix(requestPath, "/")), "/")
+	if trimmed == "" {
+		return false
+	}
+
+	segments := strings.Split(trimmed, "/")
+
+	for _, apiSegment := range apiPathSegments {
+		if segments[0] == apiSegment {
+			return true
+		}
+	}
+
+	// Provider-pinned inference routes: /openai/v1/..., /anthropic/v1/..., etc.
+	// Only "v1" is namespaced this way; "api" is root-only.
+	if len(segments) >= 2 && segments[1] == "v1" {
+		return true
+	}
+
+	return false
+}
+
 // ServeDashboard serves the dashboard UI.
 func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 	// Get the request path
 	requestPath := string(ctx.Path())
+
+	// An unmatched path under an API namespace is a genuine 404, not an SPA route.
+	// Without this, the catch-all below answers it with index.html and HTTP 200,
+	// so an SDK sees a success status and an HTML body. Message matches the
+	// server's Router.NotFound handler so the two are indistinguishable to callers.
+	if isAPIPath(requestPath) {
+		SendError(ctx, fasthttp.StatusNotFound, "Route not found: "+requestPath)
+		return
+	}
 
 	// Clean the path to prevent directory traversal
 	cleanPath := path.Clean(requestPath)

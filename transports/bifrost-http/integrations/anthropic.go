@@ -165,7 +165,8 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 					return anthropic.ToAnthropicResponsesStreamError(err)
 				},
 			},
-			PreCallback: checkAnthropicPassthrough,
+			PreCallback:  checkAnthropicPassthrough,
+			ShortCircuit: rejectAnthropicMessagesInvalidMaxTokens,
 		})
 	}
 	return routes
@@ -301,6 +302,63 @@ func hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx *schemas.Bifrost
 			r.Stream = schemas.Ptr(*metadata.StreamRequested)
 		}
 	}
+}
+
+// anthropicMessagesPathSuffix is the single endpoint the max_tokens contract
+// applies to. The messages route is also registered for "/v1/messages/{path:*}",
+// so sibling endpoints under that prefix can reach this callback and must not be
+// held to the contract — count_tokens carries no max_tokens at all.
+const anthropicMessagesPathSuffix = "/v1/messages"
+
+// rejectAnthropicMessagesInvalidMaxTokens enforces the Anthropic Messages API
+// contract that max_tokens is required and at least 1.
+//
+// Bifrost otherwise fills a missing max_tokens in on the caller's behalf — from
+// the model's datasheet ceiling when it is known, and from
+// AnthropicDefaultMaxTokens (4096) when it is not. That substitution is silent
+// and lossy. Measured 2026-08-01: a claude-opus-5 request with no max_tokens
+// came back stop_reason "max_tokens" at exactly 4096 tokens against that model's
+// own 128000 ceiling, indistinguishable to the caller from a completed answer.
+// api.anthropic.com rejects that request outright, and so does the LiteLLM
+// gateway, so accepting it here also meant one request behaved two different
+// ways depending on which gateway happened to be primary that day.
+func rejectAnthropicMessagesInvalidMaxTokens(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error) {
+	r, ok := req.(*anthropic.AnthropicMessageRequest)
+	if !ok {
+		return false, nil
+	}
+	// ctx.Path() rather than extractExactPath(): the latter strips the
+	// integration prefix (leaving "v1/messages", no leading slash) and appends
+	// the query string, so neither end of a suffix match survives it.
+	if path := strings.TrimSuffix(string(ctx.Path()), "/"); !strings.HasSuffix(path, anthropicMessagesPathSuffix) {
+		return false, nil
+	}
+	if r.MaxTokens >= 1 {
+		return false, nil
+	}
+
+	// MaxTokens is a plain int, so an absent field and an explicit 0 both arrive
+	// here as 0. Anthropic words those two rejections differently, so read the
+	// raw body to tell them apart rather than guessing.
+	message := "max_tokens: Field required"
+	if gjson.GetBytes(ctx.PostBody(), "max_tokens").Exists() {
+		message = "max_tokens: Input should be greater than or equal to 1"
+	}
+
+	body, err := sonic.Marshal(&anthropic.AnthropicMessageError{
+		Type: "error",
+		Error: anthropic.AnthropicMessageErrorStruct{
+			Type:    "invalid_request_error",
+			Message: message,
+		},
+	})
+	if err != nil {
+		return true, fmt.Errorf("failed to encode max_tokens validation error: %w", err)
+	}
+	ctx.SetStatusCode(fasthttp.StatusBadRequest)
+	ctx.SetContentType("application/json")
+	ctx.SetBody(body)
+	return true, nil
 }
 
 // checkAnthropicPassthrough pre-callback checks if the request is for a claude model.

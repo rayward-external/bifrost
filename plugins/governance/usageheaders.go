@@ -183,8 +183,38 @@ func (s *UsageSnapshot) Headers(includeCost bool) map[string]string {
 //
 // Returns "" when there is nothing to say, which keeps the header ABSENT. An
 // empty value would parse as a real cap of zero.
+//
+// SAME-DURATION WINDOWS ARE COLLAPSED TO THE MOST BINDING ONE. The window name
+// is a DURATION, and duration is not unique here: budgets hang off several
+// entities at once (virtual key, team, customer, model scope), so two of them
+// can easily both reset daily. Emitting both produced a header with two `1d`
+// entries — and the published format is a list keyed by window name, which the
+// parser in our own customer documentation turns into a dict. The duplicate key
+// silently overwrote one cap with the other.
+//
+// Measured live on 2026-08-02, before this fix, from a real external key:
+//
+//	1d;limit=1000;spent=0.0066, 1M;limit=10000;..., 1w;limit=5000;..., 1d;limit=5000;spent=0.087
+//
+// Run through the documented parser that reports $4999.89 of daily headroom
+// against a real binding cap of $999.99 — the LOOSER duplicate won because it
+// came last, so the error is always in the dangerous direction.
+//
+// Collapsing rather than renaming is deliberate. Disambiguating the entries
+// would mean publishing WHICH entity each budget belongs to, i.e. our internal
+// governance hierarchy, to the party it constrains. The caller does not need
+// that: enforcement stops them when the first cap runs out, so for a given
+// duration the only figure that can change their behaviour is the one with the
+// least headroom. Least REMAINING, not the smallest limit — a large, nearly
+// exhausted cap binds before a small, untouched one.
 func formatBudgetWindows(windows []UsageBudgetWindow) string {
-	rendered := make([]string, 0, len(windows))
+	type entry struct {
+		limit, spent string
+		remaining    float64
+	}
+	binding := make(map[string]entry, len(windows))
+	order := make([]string, 0, len(windows))
+
 	for _, w := range windows {
 		if w.Duration == "" {
 			continue
@@ -197,7 +227,24 @@ func formatBudgetWindows(windows []UsageBudgetWindow) string {
 		if !ok {
 			continue
 		}
-		rendered = append(rendered, w.Duration+";limit="+limit+";spent="+spent)
+		candidate := entry{limit: limit, spent: spent, remaining: w.Limit - w.Spent}
+		existing, seen := binding[w.Duration]
+		if !seen {
+			binding[w.Duration] = candidate
+			order = append(order, w.Duration)
+			continue
+		}
+		if candidate.remaining < existing.remaining {
+			binding[w.Duration] = candidate
+		}
+	}
+
+	// First-appearance order, which is enforcement's evaluation order. A sort
+	// would be a silent change to a published contract.
+	rendered := make([]string, 0, len(order))
+	for _, duration := range order {
+		e := binding[duration]
+		rendered = append(rendered, duration+";limit="+e.limit+";spent="+e.spent)
 	}
 	return strings.Join(rendered, ", ")
 }

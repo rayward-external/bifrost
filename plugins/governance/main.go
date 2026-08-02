@@ -507,6 +507,13 @@ func (p *GovernancePlugin) runPreRequestRouting(ctx *schemas.BifrostContext, vir
 
 // HTTPTransportPostHook intercepts requests after they are processed (governance decision point)
 // It modifies the response in-place and returns nil to continue
+//
+// Usage headers are NOT written here even though this hook owns resp.Headers on
+// the buffered path. It does not run for streaming responses at all, so using it
+// would need a second emitter for streams and two places to keep in step. The
+// transport's ApplyBifrostResponseHeaders is one seam that already covers
+// buffered, streamed and error responses alike; the snapshot goes through the
+// context to reach it. See usageheaders.go.
 func (p *GovernancePlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
 	return nil
 }
@@ -1276,8 +1283,13 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 		if newModel != "" && newModel != metadata.Model {
 			metadata.Model = newModel
 		}
-		_, routedModel := schemas.ParseModelString(metadata.Model, "")
+		largeProvider, routedModel := schemas.ParseModelString(metadata.Model, "")
 		p.publishRoutingAllowlist(ctx, virtualKey, routedModel)
+		// This branch RETURNS, so it needs its own snapshot call — the one at the
+		// end of the function is unreachable from here. Without it a governed
+		// large-payload request emits no usage headers at all, which is invisible
+		// from the outside: an absent header reads the same as "no budget set".
+		p.recordUsageSnapshot(ctx, virtualKey, largeProvider, routedModel)
 		return nil
 	}
 
@@ -1316,7 +1328,87 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 		}
 	}
 
+	// Record what enforcement just read, so the transport can tell the caller
+	// their own budget position. Deliberately here and not at header-write time:
+	// a STREAMED response has its headers written before the first chunk, long
+	// before any post-hook, and the deferred post-hook that runs at stream end
+	// is invoked with applyResponse=false because the response is already on the
+	// wire. Pre-request is the only point both response shapes can read from.
+	//
+	// Fields are RE-READ rather than reusing routedProvider from above, because
+	// loadBalanceProvider mutates the request in between. For a virtual key with
+	// weighted providers and a bare model the earlier read has an empty provider,
+	// which would collect a different set of budgets than the ones the request is
+	// then billed against — the header would disagree with enforcement, the exact
+	// failure this snapshot exists to prevent.
+	//
+	// Failure is not propagated — a caller's informational header must never be
+	// able to fail their request.
+	billedProvider, billedModel, _ := req.GetRequestFields()
+	p.recordUsageSnapshot(ctx, virtualKey, billedProvider, billedModel)
+
 	return nil
+}
+
+// recordUsageSnapshot stashes the caller's budget position for the response
+// headers. See usageheaders.go for why the numbers are snapshotted rather than
+// read when the headers are written.
+//
+// Reuses CollectApplicableGovernanceIDs — the same helper the usage tracker
+// uses to decide which budgets a request bills against — so the windows a
+// caller is shown are exactly the ones that will be charged and enforced. A
+// second, independently-derived list would be free to disagree, and would do so
+// silently.
+func (p *GovernancePlugin) recordUsageSnapshot(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, model string) {
+	if ctx == nil || p.store == nil || virtualKey == nil {
+		return
+	}
+
+	// The VK TOKEN from the context, matching what the usage tracker passes —
+	// CollectApplicableGovernanceIDs resolves the key itself, and handing it the
+	// row's Value (a SecretVar that may hold an unresolved reference) would find
+	// no budgets and silently produce no header.
+	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	if virtualKeyValue == "" {
+		return
+	}
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
+	budgetIDs, _ := p.store.CollectApplicableGovernanceIDs(ctx, virtualKeyValue, userID, provider, model)
+	if len(budgetIDs) == 0 {
+		return
+	}
+
+	now := time.Now()
+	windows := make([]UsageBudgetWindow, 0, len(budgetIDs))
+	for _, budgetID := range budgetIDs {
+		budget := p.store.LoadBudget(ctx, budgetID)
+		if budget == nil || budget.ResetDuration == "" {
+			continue
+		}
+		// An expired-but-unswept window would otherwise report last cycle's
+		// spend as this cycle's. Enforcement already skips these (CheckBudget
+		// treats a due-for-reset budget as not-yet-enforced), so reporting the
+		// stale figure would also contradict what is actually being enforced.
+		// Publish the limit with a zeroed spend rather than dropping the window:
+		// the cap is still real, and an absent window reads as "no cap".
+		spent := budget.CurrentUsage
+		if budget.WindowStart(now).After(budget.LastReset) {
+			spent = 0
+		}
+		windows = append(windows, UsageBudgetWindow{
+			Duration: budget.ResetDuration,
+			// EffectiveMaxLimit, not MaxLimit: an active override raises the cap,
+			// and showing the un-overridden figure would tell a caller they are
+			// out of budget while their requests keep succeeding.
+			Limit: budget.EffectiveMaxLimit(),
+			Spent: spent,
+		})
+	}
+	if len(windows) == 0 {
+		return
+	}
+
+	ctx.SetValue(ContextKeyUsageSnapshot, &UsageSnapshot{Budgets: windows})
 }
 
 // PreLLMHook intercepts requests before they are processed (governance decision point)
@@ -1500,6 +1592,24 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			// Use the requested model for usage tracking
 			p.postHookWorker(result, err, provider, requestedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, attemptNumber, pricingScopes)
 		}()
+
+		// Publish this call's cost to the caller, for a BUFFERED response only.
+		//
+		// The worker above owns billing and runs asynchronously, so the header
+		// cannot wait on it. Rather than let the two derive a cost separately —
+		// where a divergence would show the customer one number and bill another,
+		// silently — this reuses the identical CalculateCost call the worker
+		// makes for the same success path.
+		//
+		// Deliberately NOT covering the worker's partial-usage-on-error branch:
+		// that path bills tokens for a request the caller received an error for,
+		// and there are no success headers to hang a cost on.
+		if !bifrost.IsStreamRequestType(requestType) && result != nil && p.modelCatalog != nil {
+			if snapshot := UsageSnapshotFromContext(ctx); snapshot != nil {
+				cost := p.modelCatalog.CalculateCost(result, pricingScopes)
+				snapshot.Cost = &cost
+			}
+		}
 	}
 
 	return result, err, nil

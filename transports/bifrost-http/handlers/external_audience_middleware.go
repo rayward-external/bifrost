@@ -68,6 +68,7 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -192,11 +193,34 @@ func isExternalAudience(ctx *fasthttp.RequestCtx) bool {
 	return lib.IsExternalAudience(ctx)
 }
 
-// applyExternalHeaderPolicy deletes every response header outside the allowlist.
+// applyExternalHeaderPolicy deletes every response header outside the allowlist,
+// after preserving the caller's OWN usage figures under neutral names.
 //
 // Two passes on purpose: fasthttp documents mutation during VisitAll as
 // undefined behavior, so the names are collected first and deleted after.
+//
+// ORDER IS THE WHOLE DESIGN HERE — capture, then delete, then write.
+//
+// The gateway emits each usage figure twice, under a branded name and a neutral
+// one. Both are absent from the allowlist, so the delete pass removes BOTH, and
+// only then are the neutral names written back from the captured values. A
+// caller therefore receives exactly one copy of each.
+//
+// The alternative — allowlisting the neutral names so they survive on their own
+// — looks simpler and is wrong. applyBifrostResponseHeaders copies the
+// upstream's response headers onto the response verbatim and un-prefixed, so a
+// provider that starts sending its own `x-usage-cost` would then survive too,
+// sitting beside ours to be comma-joined by the client into "999, 0.004". Making
+// the rename the ONLY way a neutral name can be minted is what forecloses that,
+// and it costs one extra map.
 func applyExternalHeaderPolicy(h *fasthttp.ResponseHeader) {
+	preserved := make(map[string]string, len(governance.UsageHeaderRenames))
+	for _, rename := range governance.UsageHeaderRenames {
+		if value := h.Peek(rename[0]); len(value) > 0 {
+			preserved[rename[1]] = string(value)
+		}
+	}
+
 	var doomed []string
 	h.VisitAll(func(key, _ []byte) {
 		name := string(key)
@@ -209,6 +233,10 @@ func applyExternalHeaderPolicy(h *fasthttp.ResponseHeader) {
 		// Del handles fasthttp's special-cased fields, including Set-Cookie,
 		// which it clears wholesale rather than one cookie at a time.
 		h.Del(name)
+	}
+
+	for name, value := range preserved {
+		h.Set(name, value)
 	}
 }
 

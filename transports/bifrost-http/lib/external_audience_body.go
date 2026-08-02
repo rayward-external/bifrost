@@ -58,7 +58,7 @@
 // The header policy can fail safe by deleting: an unparseable header is still a
 // name it can drop. A body must survive as valid JSON, so "delete everything
 // unrecognized" is not available and the policy is necessarily a targeted
-// removal of the known keys in strippedTopLevelKeys.
+// removal of the known keys in strippedEnvelopeKeys.
 //
 // That makes the parse failure the interesting case, handled asymmetrically ON
 // PURPOSE:
@@ -89,8 +89,8 @@ const AudienceRequestHeader = "x-gateway-audience"
 // ExternalAudience is the only value that turns suppression on.
 const ExternalAudience = "external"
 
-// strippedTopLevelKeys are the top-level JSON keys removed from an external
-// caller's response body. Each is about US rather than about the completion.
+// strippedEnvelopeKeys are the JSON keys removed from an external caller's
+// response body. Each is about US rather than about the completion.
 //
 //   - extra_fields    the routing metadata: provider, internal key alias,
 //     purchased quota, deployment region (#467).
@@ -102,14 +102,23 @@ const ExternalAudience = "external"
 //     it and dropping it externally breaks no standard client.
 //     The `error` object beside it carries the actual status,
 //     type, code and message, so nothing actionable is lost.
-var strippedTopLevelKeys = []string{"extra_fields", "is_bifrost_error"}
+//
+// NAMED "ENVELOPE" AND NOT "TOP LEVEL", because the previous name was a lie
+// that shipped a leak. These are removed at every path in envelopePaths, not
+// just the document root — see that variable for what a root-only Unset missed
+// on /v1/responses.
+var strippedEnvelopeKeys = []string{"extra_fields", "is_bifrost_error"}
 
 // strippedKeyProbes are the raw-bytes tests used both as a fast path and to
 // decide whether an UNPARSEABLE body is dangerous. Quoted deliberately —
 // matching the bare word would trip on a model that writes one in prose.
+//
+// Depth-blind by construction, which is what makes it still correct now that
+// the removal reaches nested envelopes: a substring scan does not care where in
+// the document the key sits.
 var strippedKeyProbes = func() [][]byte {
-	probes := make([][]byte, 0, len(strippedTopLevelKeys))
-	for _, key := range strippedTopLevelKeys {
+	probes := make([][]byte, 0, len(strippedEnvelopeKeys))
+	for _, key := range strippedEnvelopeKeys {
 		probes = append(probes, []byte(`"`+key+`"`))
 	}
 	return probes
@@ -123,23 +132,57 @@ func looksLikeJSON(body []byte) bool {
 	return len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
 }
 
-// rewriteModelAt sets `model` to requestedModel inside the object at path,
-// reporting whether it changed anything.
+// envelopeAt resolves one path from envelopePaths to the object it names, or
+// nil when the document has no such envelope.
+//
+// THE OBJECT TEST IS THE WHOLE GUARD, not a nil-safety formality. `response`
+// and `message` are ordinary English words, and a body is free to carry either
+// as a plain string, a number or an array — an upstream error saying
+// `{"message":"upstream said no"}`, a caller's own echoed field. Those are not
+// envelopes, and descending into one (or re-marshalling the document on account
+// of one) would damage a body that discloses nothing.
+//
+// Shared by BOTH policies below, which is the point: one resolver means the
+// strip and the model rewrite cannot come to disagree about what an envelope is.
+func envelopeAt(root *ast.Node, path []string) *ast.Node {
+	owner := root
+	for _, segment := range path {
+		next := owner.Get(segment)
+		if next == nil || !next.Valid() || next.Type() != ast.V_OBJECT {
+			return nil
+		}
+		owner = next
+	}
+	return owner
+}
+
+// stripKeysIn removes every strippedEnvelopeKeys entry from one already-resolved
+// envelope, reporting whether it removed anything.
+//
+// The error is returned rather than swallowed: ApplyBodyPolicy fails the body
+// CLOSED on it. A removal that reports an error is a removal we cannot claim
+// happened, and shipping a body we could not scrub is the one outcome this file
+// exists to prevent.
+func stripKeysIn(owner *ast.Node) (bool, error) {
+	changed := false
+	for _, key := range strippedEnvelopeKeys {
+		existed, err := owner.Unset(key)
+		if err != nil {
+			return false, err
+		}
+		changed = changed || existed
+	}
+	return changed, nil
+}
+
+// rewriteModelIn sets `model` to requestedModel inside an already-resolved
+// envelope, reporting whether it changed anything.
 //
 // Only a STRING model is rewritten. StrictString errors on null/number/object
 // rather than coercing, so those fall through untouched — rewriting one would
 // change the document's TYPE, a compatibility break in exchange for nothing,
 // since a non-string cannot carry the wire id.
-func rewriteModelAt(root *ast.Node, path []string, requestedModel string) bool {
-	owner := root
-	for _, segment := range path {
-		next := owner.Get(segment)
-		if next == nil || !next.Valid() || next.Type() != ast.V_OBJECT {
-			return false
-		}
-		owner = next
-	}
-
+func rewriteModelIn(owner *ast.Node, requestedModel string) bool {
 	current := owner.Get(modelKey)
 	if current == nil || !current.Valid() {
 		return false
@@ -165,8 +208,8 @@ func bodyCarriesStrippedKey(body []byte) bool {
 	return false
 }
 
-// modelKey is the top-level field REWRITTEN rather than removed, which is why it
-// is not in strippedTopLevelKeys and needs its own machinery.
+// modelKey is the envelope field REWRITTEN rather than removed, which is why it
+// is not in strippedEnvelopeKeys and needs its own machinery.
 //
 // Bifrost echoes the model string the UPSTREAM returned, not the one the caller
 // asked for. On Bedrock that string is the wire id:
@@ -189,7 +232,7 @@ func bodyCarriesStrippedKey(body []byte) bool {
 // clients read `model`, and both the OpenAI and Anthropic dialects require it.
 // Deleting it breaks conforming SDKs. The policy for everything else is removal,
 // and removal is simply not available here — which is exactly how this leak
-// survived #466, #467 and #468: strippedTopLevelKeys had no branch for a key that
+// survived #466, #467 and #468: strippedEnvelopeKeys had no branch for a key that
 // must survive with a different value.
 //
 // Echoing the request's own model is also what the caller already expects: it is
@@ -202,25 +245,35 @@ const modelKey = "model"
 // completions are full of ordinary prose.
 var modelKeyProbe = []byte(`"` + modelKey + `"`)
 
-// modelEnvelopePaths are the objects whose `model` names the RESPONSE rather
-// than something a caller wrote. The empty path is the document root.
+// envelopePaths are the objects that describe the RESPONSE rather than holding
+// something a caller wrote. The empty path is the document root.
 //
-// THE TOP LEVEL IS NOT ENOUGH, and missing that shipped the leak in the first
-// version of this patch. The Anthropic dialect nests it one level down:
+// ONE LIST GOVERNS BOTH POLICIES — the key removal and the model rewrite — and
+// that is a correctness decision, not tidiness. #487 is what two lists cost:
+// the rewrite already knew the document root was not enough, and the removal
+// still did `root.Unset(key)`, so the SAME frame that had its nested `model`
+// correctly rewritten sailed through with its nested `extra_fields` intact.
+// Two mechanisms over one shape drift, and the drift is silent.
 //
-//	{"type":"message_start","message":{"id":"…","model":"global.anthropic.…"}}
+// THE TOP LEVEL IS NOT ENOUGH, measured twice on two different keys:
 //
-// So a STREAMED /v1/messages response still disclosed Bedrock and our
-// inference-profile scope on every message_start, while the buffered response on
-// the same route was clean. `response` covers the same shape on /v1/responses
-// events (`{"type":"response.created","response":{"model":…}}`).
+//	#481  {"type":"message_start","message":{"id":"…","model":"global.anthropic.…"}}
+//	#487  {"type":"response.created","response":{…,"extra_fields":{"routing_info":{…}}}}
+//
+// So a STREAMED /v1/messages response disclosed Bedrock and our
+// inference-profile scope on every message_start, and a STREAMED /v1/responses
+// response republished the #467 routing metadata under `response`, while the
+// buffered response on each route was clean.
 //
 // An ALLOWLIST of envelope names, deliberately, rather than walking the document
-// and rewriting every `model` it finds. A completion can legitimately contain
-// the word — a caller asking "show me a JSON body with a model field" gets one
-// back — and silently rewriting text the model wrote would corrupt the answer.
-// These two names are response envelopes; nothing a caller authored lands there.
-var modelEnvelopePaths = [][]string{
+// and acting on every `model` or `extra_fields` it finds. A completion can
+// legitimately contain either — a caller asking "show me a JSON body with a
+// model field" gets one back — and silently rewriting or deleting text the model
+// wrote would corrupt the answer. These two names are response envelopes;
+// nothing a caller authored lands there. Note the scope is deliberately narrow:
+// `choices[].message` is NOT this list's `message`, which is the document-root
+// one Anthropic's message_start uses.
+var envelopePaths = [][]string{
 	{},           // the document root: OpenAI chat/completions, Anthropic non-streaming
 	{"message"},  // Anthropic message_start
 	{"response"}, // OpenAI /v1/responses events
@@ -355,9 +408,12 @@ func StripExtraFields(body []byte) (out []byte, ok bool) {
 	return ApplyBodyPolicy(body, "")
 }
 
-// ApplyBodyPolicy removes the stripped top-level keys from one JSON document and
-// rewrites its top-level `model` to requestedModel, returning the input unchanged
-// when there is nothing to do. An empty requestedModel skips the rewrite.
+// ApplyBodyPolicy removes the stripped keys from one JSON document and rewrites
+// its `model` to requestedModel, returning the input unchanged when there is
+// nothing to do. An empty requestedModel skips the rewrite.
+//
+// Both act at the envelopePaths allowlist — the document root plus the two
+// nested response envelopes — never on a recursive walk.
 //
 // Returns ok=false only for the dangerous case described in the file header: the
 // document did not parse but its bytes contain a STRIPPED key. An unparseable
@@ -401,20 +457,30 @@ func ApplyBodyPolicy(body []byte, requestedModel string) (out []byte, ok bool) {
 		return body, true
 	}
 
+	// ONE PASS OVER ONE ALLOWLIST, applying both policies to each envelope it
+	// resolves. Walking the envelopes once rather than once per policy is what
+	// makes it structurally impossible for the strip to reach a shallower set of
+	// objects than the rewrite — the divergence that was #487.
 	changedAny := false
-	for _, key := range strippedTopLevelKeys {
-		existed, unsetErr := root.Unset(key)
-		if unsetErr != nil {
-			return nil, false
+	for _, envelope := range envelopePaths {
+		owner := envelopeAt(&root, envelope)
+		if owner == nil {
+			continue
 		}
-		changedAny = changedAny || existed
-	}
 
-	if mayCarryModel {
-		for _, envelope := range modelEnvelopePaths {
-			if rewriteModelAt(&root, envelope, requestedModel) {
-				changedAny = true
+		// Gated on the raw-bytes probe: if the key is nowhere in the document it
+		// is not in this envelope either, and the Unset pair is pure cost on
+		// every streamed chunk.
+		if carriesStrippedKey {
+			stripped, stripErr := stripKeysIn(owner)
+			if stripErr != nil {
+				return nil, false
 			}
+			changedAny = changedAny || stripped
+		}
+
+		if mayCarryModel && rewriteModelIn(owner, requestedModel) {
+			changedAny = true
 		}
 	}
 

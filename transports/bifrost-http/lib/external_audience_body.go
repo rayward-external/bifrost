@@ -77,6 +77,7 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	"github.com/valyala/fasthttp"
 )
 
@@ -125,6 +126,43 @@ func bodyCarriesStrippedKey(body []byte) bool {
 	return false
 }
 
+// modelKey is the top-level field REWRITTEN rather than removed, which is why it
+// is not in strippedTopLevelKeys and needs its own machinery.
+//
+// Bifrost echoes the model string the UPSTREAM returned, not the one the caller
+// asked for. On Bedrock that string is the wire id:
+//
+//	request  {"model":"claude-haiku-4-5"}
+//	response {"model":"global.anthropic.claude-haiku-4-5-20251001-v1:0"}
+//
+// Two disclosures in one value. `anthropic.<model>-v1:0` is Bedrock's id format,
+// naming AWS as the supplier — the same fact the header allowlist drops
+// `x-amzn-`/`x-amz-` for, and the same fact the LiteLLM fork rewrites
+// `msg_bdrk_` -> `msg_` to hide. And `global.` is our inference-profile scope,
+// i.e. a routing decision of ours that is nobody else's business. Azure leaks a
+// milder version of the same shape (`gpt-5.4-nano` -> `gpt-5.4-nano-2026-03-17`).
+//
+// Vertex happens to echo the name we sent, so Gemini looks clean. That is luck,
+// not policy: nothing stops the next provider from behaving like Bedrock, so the
+// rewrite is unconditional rather than a per-provider denylist.
+//
+// WHY REWRITE AND NOT DELETE, which is the whole reason this is separate:
+// clients read `model`, and both the OpenAI and Anthropic dialects require it.
+// Deleting it breaks conforming SDKs. The policy for everything else is removal,
+// and removal is simply not available here — which is exactly how this leak
+// survived #466, #467 and #468: strippedTopLevelKeys had no branch for a key that
+// must survive with a different value.
+//
+// Echoing the request's own model is also what the caller already expects: it is
+// what LiteLLM does on the sibling router, and what a client that keys a response
+// map off the model name needs in order to work at all.
+const modelKey = "model"
+
+// modelKeyProbe is the raw-bytes fast path for modelKey. Quoted for the same
+// reason as strippedKeyProbes: the bare word appears in ordinary prose, and
+// completions are full of ordinary prose.
+var modelKeyProbe = []byte(`"` + modelKey + `"`)
+
 // bodyReplacementOnParseFailure is what an external caller gets when a body both
 // fails to parse and looks like it carries routing metadata. Deliberately
 // content-free: this is the branch where we know something is wrong and have
@@ -154,35 +192,118 @@ func IsExternalAudience(ctx *fasthttp.RequestCtx) bool {
 	return false
 }
 
-// StripExtraFields removes the top-level extra_fields key from one JSON
-// document, returning the input unchanged when there is nothing to do.
+// requestedModelUserValue is the RequestCtx key holding the model the caller
+// asked for, so both body policies can echo it back.
+//
+// Captured ONCE, before the handler runs, rather than read from ctx.Request at
+// scrub time. The two policies observe the request at different moments — the
+// buffered one from a defer after the handler returns, the SSE one from inside
+// it — and a handler is free to rewrite ctx.Request in between. One read at a
+// known-good moment beats two reads at moments we would have to keep verifying.
+const requestedModelUserValue = "rayward_external_requested_model"
+
+// CaptureRequestedModel records the request's top-level `model` on ctx for the
+// body policies to read back. No-op for a body that is absent, is not JSON, or
+// names no model — a GET, a malformed request, or a route that takes no model.
+//
+// Errors are swallowed on purpose. This is best-effort enrichment: with no
+// captured model the policies leave `model` alone, which is the pre-existing
+// behaviour rather than a new failure. A request whose body we cannot parse is
+// one the handler is about to reject anyway.
+func CaptureRequestedModel(ctx *fasthttp.RequestCtx) {
+	body := ctx.Request.Body()
+	if len(body) == 0 || !bytes.Contains(body, modelKeyProbe) {
+		return
+	}
+	node, err := sonic.Get(body, modelKey)
+	if err != nil {
+		return
+	}
+	// StrictString, not String: String() COERCES, so a numeric `"model": 42`
+	// would be captured as "42" and then written back into the response as a
+	// string the caller never sent. Caught by TestCaptureRequestedModel.
+	model, err := node.StrictString()
+	if err != nil || model == "" {
+		return
+	}
+	ctx.SetUserValue(requestedModelUserValue, model)
+}
+
+// RequestedModel returns what CaptureRequestedModel stored, or "" if it stored
+// nothing. "" means "leave the response's model field alone".
+func RequestedModel(ctx *fasthttp.RequestCtx) string {
+	model, _ := ctx.UserValue(requestedModelUserValue).(string)
+	return model
+}
+
+// StripExtraFields applies the body policy with no model rewrite.
+//
+// Kept as its own name because the stripping half is independently meaningful
+// and independently tested: a body policy that only removed keys is exactly what
+// this was before the model rewrite, and the tests for that half should not have
+// to thread a model through to say what they mean.
+func StripExtraFields(body []byte) (out []byte, ok bool) {
+	return ApplyBodyPolicy(body, "")
+}
+
+// ApplyBodyPolicy removes the stripped top-level keys from one JSON document and
+// rewrites its top-level `model` to requestedModel, returning the input unchanged
+// when there is nothing to do. An empty requestedModel skips the rewrite.
 //
 // Returns ok=false only for the dangerous case described in the file header: the
-// document did not parse but its bytes contain the key.
-func StripExtraFields(body []byte) (out []byte, ok bool) {
-	if !bodyCarriesStrippedKey(body) {
+// document did not parse but its bytes contain a STRIPPED key. An unparseable
+// body that merely mentions `model` is passed through — it is not a
+// Bifrost-marshaled response, so the field a client would read is not in it, and
+// failing closed there would replace bodies that leak nothing.
+func ApplyBodyPolicy(body []byte, requestedModel string) (out []byte, ok bool) {
+	carriesStrippedKey := bodyCarriesStrippedKey(body)
+	mayCarryModel := requestedModel != "" && bytes.Contains(body, modelKeyProbe)
+	if !carriesStrippedKey && !mayCarryModel {
 		// Overwhelmingly the common path for SSE: most chunks are small and the
 		// scan is cheaper than a parse. Also the correct answer for every body
-		// that never had a stripped key.
+		// that never had a stripped key and never named a model.
 		return body, true
 	}
 
 	root, err := sonic.Get(body)
 	if err != nil {
-		return nil, false
+		if carriesStrippedKey {
+			return nil, false
+		}
+		return body, true
 	}
 
-	removedAny := false
+	changedAny := false
 	for _, key := range strippedTopLevelKeys {
 		existed, unsetErr := root.Unset(key)
 		if unsetErr != nil {
 			return nil, false
 		}
-		removedAny = removedAny || existed
+		changedAny = changedAny || existed
 	}
-	if !removedAny {
-		// The bytes matched inside a nested value rather than at the top level.
-		// Leave the document alone rather than guess at what it meant.
+
+	if mayCarryModel {
+		// Only a top-level STRING model is rewritten. A nested "model" — inside a
+		// completion the model itself wrote, say — is reached by neither Get nor
+		// Set here, and a non-string value is not ours to reinterpret.
+		if current := root.Get(modelKey); current != nil && current.Valid() {
+			// StrictString errors on a null/number/object model rather than
+			// coercing it, so those fall through untouched. Rewriting one would
+			// change the document's TYPE — a compatibility break taken in
+			// exchange for nothing, since a non-string cannot carry the wire id.
+			if existing, strErr := current.StrictString(); strErr == nil && existing != requestedModel {
+				if _, setErr := root.Set(modelKey, ast.NewString(requestedModel)); setErr != nil {
+					return nil, false
+				}
+				changedAny = true
+			}
+		}
+	}
+
+	if !changedAny {
+		// The bytes matched inside a nested value rather than at the top level,
+		// or the model already said what the caller asked for. Leave the document
+		// alone rather than guess at what it meant.
 		return body, true
 	}
 
@@ -207,7 +328,7 @@ func ApplyExternalBodyPolicy(ctx *fasthttp.RequestCtx) {
 	if len(body) == 0 {
 		return
 	}
-	scrubbed, ok := StripExtraFields(body)
+	scrubbed, ok := ApplyBodyPolicy(body, RequestedModel(ctx))
 	if !ok {
 		ctx.Response.SetBody(bodyReplacementOnParseFailure)
 		return
@@ -250,7 +371,11 @@ func WrapSSEForExternalAudience(ctx *fasthttp.RequestCtx, src io.ReadCloser) io.
 	if !bytes.Contains(ctx.Response.Header.ContentType(), []byte(sseContentType)) {
 		return src
 	}
-	return &sseScrubbingReader{src: src}
+	// Resolved HERE rather than per chunk: ctx is the request's, the reader
+	// outlives the handler that owns it, and reading ctx from the producer
+	// goroutine on every frame would be a data race for a value that cannot
+	// change mid-stream.
+	return &sseScrubbingReader{src: src, requestedModel: RequestedModel(ctx)}
 }
 
 // sseScrubbingReader rewrites `data:` payloads in an SSE stream as they pass.
@@ -259,10 +384,15 @@ func WrapSSEForExternalAudience(ctx *fasthttp.RequestCtx, src io.ReadCloser) io.
 // anywhere — including mid-token — so scrubbing per Read would corrupt the
 // stream. Whole lines are the smallest unit that is always valid to parse.
 type sseScrubbingReader struct {
-	src     io.ReadCloser
-	pending bytes.Buffer // complete, already-scrubbed bytes waiting to go out
-	partial bytes.Buffer // bytes of a line not yet terminated by \n
-	srcErr  error        // sticky: returned only once pending is drained
+	src io.ReadCloser
+	// requestedModel is snapshotted at construction — see WrapSSEForExternalAudience.
+	// Every chunk of an OpenAI-dialect stream carries its own `model`, so without
+	// this the wire id leaks once per chunk, the same shape as the #467
+	// extra_fields leak this reader was built for.
+	requestedModel string
+	pending        bytes.Buffer // complete, already-scrubbed bytes waiting to go out
+	partial        bytes.Buffer // bytes of a line not yet terminated by \n
+	srcErr         error        // sticky: returned only once pending is drained
 }
 
 // Close releases the stream this reader wrapped.
@@ -345,8 +475,8 @@ func (r *sseScrubbingReader) emit(line []byte) {
 	}
 
 	// `data: [DONE]` and any other non-JSON sentinel falls through untouched:
-	// StripExtraFields finds no probe match and returns it unchanged.
-	scrubbed, ok := StripExtraFields(payload)
+	// ApplyBodyPolicy finds no probe match and returns it unchanged.
+	scrubbed, ok := ApplyBodyPolicy(payload, r.requestedModel)
 	if !ok {
 		scrubbed = bodyReplacementOnParseFailure
 	}

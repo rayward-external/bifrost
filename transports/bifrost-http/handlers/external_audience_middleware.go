@@ -236,6 +236,10 @@ func ExternalAudienceHeaderMiddleware() schemas.BifrostHTTPMiddleware {
 				next(ctx)
 				return
 			}
+			// BEFORE next: the body policies echo the caller's own model back in
+			// place of the upstream wire id, and this is the last moment the
+			// request is guaranteed to be the one the caller sent.
+			lib.CaptureRequestedModel(ctx)
 			// Deferred, not sequential: a panic below must not be the one path
 			// that ships a full header set to an external caller. Runs after the
 			// handler has finished writing headers — including the CORS preflight

@@ -3,6 +3,7 @@ package governance
 import (
 	"math"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -192,5 +193,74 @@ func TestEveryRenameSourceIsAHeaderThisPackageActuallyEmits(t *testing.T) {
 		if _, ok := emitted[rename[1]]; !ok {
 			t.Errorf("rename target %q is not emitted at source, so internal callers lose it", rename[1])
 		}
+	}
+}
+
+// ── duplicate window names — a live defect, shipped and then fixed ───────────
+//
+// Budgets hang off several entities at once, so two can share a reset duration.
+// The published format is a list keyed by window NAME and the parser in our own
+// customer docs turns it into a dict, so a duplicate silently overwrote one cap
+// with the other — and since the later entry won, the survivor was whichever
+// happened to be last, not whichever actually binds.
+
+func TestSameDurationWindowsCollapseToTheMostBinding(t *testing.T) {
+	// The exact shape measured live on 2026-08-02 from a real external key.
+	got := formatBudgetWindows([]UsageBudgetWindow{
+		{Duration: "1d", Limit: 1000, Spent: 0.0066209},
+		{Duration: "1M", Limit: 10000, Spent: 0.1064657},
+		{Duration: "1w", Limit: 5000, Spent: 0.1064657},
+		{Duration: "1d", Limit: 5000, Spent: 0.08710015},
+	})
+	want := "1d;limit=1000;spent=0.0066209, 1M;limit=10000;spent=0.1064657, 1w;limit=5000;spent=0.1064657"
+	if got != want {
+		t.Errorf("formatBudgetWindows() =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+func TestTheSurvivingWindowIsLeastREMAINING_NotSmallestLimit(t *testing.T) {
+	// A large, nearly exhausted cap binds before a small, untouched one. Picking
+	// by limit would report the wrong one and overstate headroom.
+	got := formatBudgetWindows([]UsageBudgetWindow{
+		{Duration: "1d", Limit: 10, Spent: 0},       // 10 left
+		{Duration: "1d", Limit: 10000, Spent: 9999}, // 1 left — this one binds
+	})
+	if want := "1d;limit=10000;spent=9999"; got != want {
+		t.Errorf("formatBudgetWindows() = %q, want %q", got, want)
+	}
+}
+
+func TestCollapsingNeverDropsADistinctDuration(t *testing.T) {
+	got := formatBudgetWindows([]UsageBudgetWindow{
+		{Duration: "1d", Limit: 50, Spent: 1},
+		{Duration: "1w", Limit: 200, Spent: 2},
+		{Duration: "1M", Limit: 500, Spent: 3},
+	})
+	want := "1d;limit=50;spent=1, 1w;limit=200;spent=2, 1M;limit=500;spent=3"
+	if got != want {
+		t.Errorf("formatBudgetWindows() = %q, want %q", got, want)
+	}
+}
+
+// Guards the property the whole fix exists for, stated the way a customer meets
+// it: parse the header into a dict, as our documentation instructs, and no cap
+// may go missing.
+func TestNoWindowIsLostWhenParsedAsADictLikeTheDocsInstruct(t *testing.T) {
+	raw := formatBudgetWindows([]UsageBudgetWindow{
+		{Duration: "1d", Limit: 1000, Spent: 0},
+		{Duration: "1d", Limit: 5000, Spent: 0},
+		{Duration: "1w", Limit: 5000, Spent: 0},
+	})
+	seen := map[string]bool{}
+	entries := strings.Split(raw, ", ")
+	for _, e := range entries {
+		name := strings.Split(e, ";")[0]
+		if seen[name] {
+			t.Fatalf("duplicate window name %q in %q — a dict-based parser drops one", name, raw)
+		}
+		seen[name] = true
+	}
+	if len(seen) != len(entries) {
+		t.Fatalf("entry count %d disagrees with unique names %d", len(entries), len(seen))
 	}
 }

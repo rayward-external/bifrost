@@ -110,3 +110,55 @@ func TestOnTheWireBufferedBodyIsScrubbedAndWellFramed(t *testing.T) {
 		t.Errorf("Content-Length %d does not match delivered body length %d", got, want)
 	}
 }
+
+// modelLeakFixture is the ACTUAL /v1/messages body measured on
+// router2.trueward.ai on 2026-08-02, trimmed only of the completion text. The
+// `model` value names AWS as our Claude supplier (`anthropic.<model>-v1:0` is
+// Bedrock's wire-id format) and discloses our inference-profile scope
+// (`global.`).
+const modelLeakFixture = `{"id":"04520256-585b-4571-9bb1-2559d06beb91","type":"message","role":"assistant","content":[{"type":"text","text":"Hello!"}],"model":"global.anthropic.claude-haiku-4-5-20251001-v1:0","stop_reason":"end_turn"}`
+
+// This is the test that would fail if lib.CaptureRequestedModel were dropped
+// from the middleware. The lib tests call it directly, so they prove the rewrite
+// WORKS while saying nothing about whether it is WIRED — the exact gap that let
+// the leak survive three closed issues.
+func TestMiddlewareRewritesModelToTheRequestedAlias(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set(AudienceRequestHeader, ExternalAudience)
+	ctx.Request.SetBody([]byte(`{"model":"claude-haiku-4-5","max_tokens":16,"messages":[]}`))
+
+	ExternalAudienceHeaderMiddleware()(func(c *fasthttp.RequestCtx) {
+		c.SetBodyString(modelLeakFixture)
+	})(ctx)
+
+	got := string(ctx.Response.Body())
+	for _, marker := range []string{"global.", "anthropic.c", "-v1:0", "20251001"} {
+		if strings.Contains(got, marker) {
+			t.Errorf("external body still discloses %q\nbody: %s", marker, got)
+		}
+	}
+	if !strings.Contains(got, `"model":"claude-haiku-4-5"`) {
+		t.Errorf("model was not rewritten to the requested alias: %s", got)
+	}
+	if !strings.Contains(got, "Hello!") {
+		t.Errorf("rewrite destroyed the completion: %s", got)
+	}
+}
+
+// The internal counterpart, asserted for the same reason as
+// TestMiddlewareLeavesInternalBodyByteIdentical: internal traffic must keep FULL
+// fidelity. Knowing which Bedrock profile actually served a request is how we
+// debug routing, and an over-broad fix that scrubbed everywhere would destroy it
+// while still passing every external assertion above.
+func TestMiddlewareLeavesInternalModelByteIdentical(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody([]byte(`{"model":"claude-haiku-4-5","messages":[]}`))
+
+	ExternalAudienceHeaderMiddleware()(func(c *fasthttp.RequestCtx) {
+		c.SetBodyString(modelLeakFixture)
+	})(ctx)
+
+	if string(ctx.Response.Body()) != modelLeakFixture {
+		t.Errorf("internal body was modified:\ngot  %s\nwant %s", ctx.Response.Body(), modelLeakFixture)
+	}
+}

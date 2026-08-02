@@ -1283,8 +1283,13 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 		if newModel != "" && newModel != metadata.Model {
 			metadata.Model = newModel
 		}
-		_, routedModel := schemas.ParseModelString(metadata.Model, "")
+		largeProvider, routedModel := schemas.ParseModelString(metadata.Model, "")
 		p.publishRoutingAllowlist(ctx, virtualKey, routedModel)
+		// This branch RETURNS, so it needs its own snapshot call — the one at the
+		// end of the function is unreachable from here. Without it a governed
+		// large-payload request emits no usage headers at all, which is invisible
+		// from the outside: an absent header reads the same as "no budget set".
+		p.recordUsageSnapshot(ctx, virtualKey, largeProvider, routedModel)
 		return nil
 	}
 
@@ -1297,7 +1302,7 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 	// Publish the VK provider allowlist for the (post routing-rules) model so downstream routing
 	// layers (load balancing, model-catalog resolution) and core enforcement intersect their
 	// candidates with it — a later layer must not select a provider the VK forbids for this model.
-	routedProvider, routedModel, _ := req.GetRequestFields()
+	_, routedModel, _ := req.GetRequestFields()
 	p.publishRoutingAllowlist(ctx, virtualKey, routedModel)
 
 	if virtualKey != nil {
@@ -1330,9 +1335,17 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 	// is invoked with applyResponse=false because the response is already on the
 	// wire. Pre-request is the only point both response shapes can read from.
 	//
+	// Fields are RE-READ rather than reusing routedProvider from above, because
+	// loadBalanceProvider mutates the request in between. For a virtual key with
+	// weighted providers and a bare model the earlier read has an empty provider,
+	// which would collect a different set of budgets than the ones the request is
+	// then billed against — the header would disagree with enforcement, the exact
+	// failure this snapshot exists to prevent.
+	//
 	// Failure is not propagated — a caller's informational header must never be
 	// able to fail their request.
-	p.recordUsageSnapshot(ctx, virtualKey, routedProvider, routedModel)
+	billedProvider, billedModel, _ := req.GetRequestFields()
+	p.recordUsageSnapshot(ctx, virtualKey, billedProvider, billedModel)
 
 	return nil
 }

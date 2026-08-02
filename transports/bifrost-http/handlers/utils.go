@@ -158,6 +158,11 @@ func streamLargeResponseIfActive(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 	if !ok || !isLargeResponse {
 		return false
 	}
+	// Large-response mode returns before the shared header writer runs, so the
+	// usage headers must be applied here or a successful large response silently
+	// loses them. Before the body stream is installed: fasthttp will not accept
+	// header writes afterwards.
+	lib.ApplyUsageHeaders(ctx, bifrostCtx)
 	if !lib.StreamLargeResponseBody(ctx, bifrostCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Large response reader not available")
 	}

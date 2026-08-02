@@ -81,14 +81,23 @@ func ApplyBifrostStreamResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 // BifrostErrorExtraFields to the shared writer (a different type than the
 // success path's BifrostResponseExtraFields); provider response headers are
 // forwarded separately by the caller.
+//
+// Usage headers are deliberately NOT emitted here. The published contract says
+// they ride on SUCCESSFUL responses and that a request rejected before it
+// reaches a model carries none, and one error path structurally cannot produce
+// them anyway — SendBifrostError has no BifrostContext to read a snapshot from,
+// and it is called from dozens of sites. Emitting on the error paths that DO
+// have a context would make the behaviour depend on which handler failed, which
+// is worse than uniformly absent: a caller cannot tell "no budget configured"
+// from "this particular error path happened to drop it".
 func ApplyBifrostErrorResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostErrorExtraFields) {
-	ApplyBifrostResponseHeaders(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{
+	applyBifrostResponseHeaders(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{
 		RequestType:            extra.RequestType,
 		RoutingInfo:            extra.RoutingInfo,
 		Provider:               extra.Provider,
 		OriginalModelRequested: extra.OriginalModelRequested,
 		ResolvedModelUsed:      extra.ResolvedModelUsed,
-	})
+	}, false)
 }
 
 // ApplyBifrostResponseHeaders writes both the upstream provider response
@@ -98,10 +107,18 @@ func ApplyBifrostErrorResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 // didn't populate `extra` — the zero value for ExtraFields produces no
 // headers.
 func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) {
+	applyBifrostResponseHeaders(ctx, bifrostCtx, extra, true)
+}
+
+// applyBifrostResponseHeaders is the shared body. emitUsage is false only on the
+// error path — see ApplyBifrostErrorResponseHeaders for why.
+func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields, emitUsage bool) {
 	for key, value := range extra.ProviderResponseHeaders {
 		ctx.Response.Header.Set(key, value)
 	}
-	applyUsageHeaders(ctx, bifrostCtx)
+	if emitUsage {
+		ApplyUsageHeaders(ctx, bifrostCtx)
+	}
 	if extra.Provider != "" {
 		ctx.Response.Header.Set(HeaderBifrostProvider, string(extra.Provider))
 	}
@@ -163,8 +180,14 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 	}
 }
 
-// applyUsageHeaders emits the caller's own spend position, if governance
+// ApplyUsageHeaders emits the caller's own spend position, if governance
 // recorded one for this request.
+//
+// Exported because ApplyBifrostResponseHeaders is NOT the single choke point it
+// looked like. Large-response mode returns from streamLargeResponseIfActive
+// before the shared writer runs, so that path has to call this itself — a
+// successful response that silently lost its usage headers is exactly the
+// failure this feature is about.
 //
 // Written here rather than in the governance plugin's HTTPTransportPostHook
 // because this is the ONE writer all three response shapes pass through —
@@ -187,7 +210,7 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 // external-audience middleware renames the branded value into the neutral slot
 // and drops everything outside its allowlist, so an external caller ends up with
 // exactly one copy under the neutral name; an internal caller keeps both.
-func applyUsageHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) {
+func ApplyUsageHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) {
 	snapshot := governance.UsageSnapshotFromContext(bifrostCtx)
 	if snapshot == nil {
 		return

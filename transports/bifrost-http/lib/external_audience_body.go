@@ -115,6 +115,45 @@ var strippedKeyProbes = func() [][]byte {
 	return probes
 }()
 
+// looksLikeJSON reports whether the body opens like a JSON document. Used only
+// to decide whether an UNPARSEABLE body is a truncated response of ours (fail
+// closed) or something that was never JSON to begin with (pass through).
+func looksLikeJSON(body []byte) bool {
+	trimmed := bytes.TrimLeft(body, " \t\r\n")
+	return len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
+}
+
+// rewriteModelAt sets `model` to requestedModel inside the object at path,
+// reporting whether it changed anything.
+//
+// Only a STRING model is rewritten. StrictString errors on null/number/object
+// rather than coercing, so those fall through untouched — rewriting one would
+// change the document's TYPE, a compatibility break in exchange for nothing,
+// since a non-string cannot carry the wire id.
+func rewriteModelAt(root *ast.Node, path []string, requestedModel string) bool {
+	owner := root
+	for _, segment := range path {
+		next := owner.Get(segment)
+		if next == nil || !next.Valid() || next.Type() != ast.V_OBJECT {
+			return false
+		}
+		owner = next
+	}
+
+	current := owner.Get(modelKey)
+	if current == nil || !current.Valid() {
+		return false
+	}
+	existing, err := current.StrictString()
+	if err != nil || existing == requestedModel {
+		return false
+	}
+	if _, setErr := owner.Set(modelKey, ast.NewString(requestedModel)); setErr != nil {
+		return false
+	}
+	return true
+}
+
 // bodyCarriesStrippedKey reports whether any stripped key appears in the raw
 // bytes. Used for the fast path and for the fail-closed decision.
 func bodyCarriesStrippedKey(body []byte) bool {
@@ -163,6 +202,30 @@ const modelKey = "model"
 // completions are full of ordinary prose.
 var modelKeyProbe = []byte(`"` + modelKey + `"`)
 
+// modelEnvelopePaths are the objects whose `model` names the RESPONSE rather
+// than something a caller wrote. The empty path is the document root.
+//
+// THE TOP LEVEL IS NOT ENOUGH, and missing that shipped the leak in the first
+// version of this patch. The Anthropic dialect nests it one level down:
+//
+//	{"type":"message_start","message":{"id":"…","model":"global.anthropic.…"}}
+//
+// So a STREAMED /v1/messages response still disclosed Bedrock and our
+// inference-profile scope on every message_start, while the buffered response on
+// the same route was clean. `response` covers the same shape on /v1/responses
+// events (`{"type":"response.created","response":{"model":…}}`).
+//
+// An ALLOWLIST of envelope names, deliberately, rather than walking the document
+// and rewriting every `model` it finds. A completion can legitimately contain
+// the word — a caller asking "show me a JSON body with a model field" gets one
+// back — and silently rewriting text the model wrote would corrupt the answer.
+// These two names are response envelopes; nothing a caller authored lands there.
+var modelEnvelopePaths = [][]string{
+	{},           // the document root: OpenAI chat/completions, Anthropic non-streaming
+	{"message"},  // Anthropic message_start
+	{"response"}, // OpenAI /v1/responses events
+}
+
 // bodyReplacementOnParseFailure is what an external caller gets when a body both
 // fails to parse and looks like it carries routing metadata. Deliberately
 // content-free: this is the branch where we know something is wrong and have
@@ -202,37 +265,63 @@ func IsExternalAudience(ctx *fasthttp.RequestCtx) bool {
 // known-good moment beats two reads at moments we would have to keep verifying.
 const requestedModelUserValue = "rayward_external_requested_model"
 
-// CaptureRequestedModel records the request's top-level `model` on ctx for the
-// body policies to read back. No-op for a body that is absent, is not JSON, or
-// names no model — a GET, a malformed request, or a route that takes no model.
+// CaptureRequestedModel resolves and caches the request's model on ctx.
 //
-// Errors are swallowed on purpose. This is best-effort enrichment: with no
-// captured model the policies leave `model` alone, which is the pre-existing
-// behaviour rather than a new failure. A request whose body we cannot parse is
-// one the handler is about to reject anyway.
+// Exported so a caller can force resolution at a chosen moment; RequestedModel
+// calls it on demand, which is how every production path reaches it.
 func CaptureRequestedModel(ctx *fasthttp.RequestCtx) {
-	body := ctx.Request.Body()
+	ctx.SetUserValue(requestedModelUserValue, parseRequestedModel(ctx.Request.Body()))
+}
+
+// RequestedModel returns the model the caller asked for, or "" — which means
+// "leave the response's `model` alone".
+//
+// RESOLVED LAZILY, AND THAT IS THE FIX FOR A REAL LEAK, not a style choice.
+//
+// The first version captured eagerly at the top of the audience middleware,
+// which is registered OUTERMOST. RequestDecompressionMiddleware is INNER, and it
+// is what replaces the body via ctx.Request.SetBodyRaw. So for a request sent
+// with `Content-Encoding: gzip` — an ordinary SDK option — the eager read saw
+// COMPRESSED BYTES, found no `"model"`, captured nothing, and the response
+// shipped the raw Bedrock wire id. Every test and the leak-check send
+// uncompressed bodies, so all of them reported green.
+//
+// Resolving on demand instead means both consumers observe the body AFTER the
+// inner middleware has decompressed it: the SSE wrapper runs inside the handler,
+// and the buffered policy runs in a defer after it. The result is cached on ctx
+// so a streamed response parses the request body once, not once per chunk.
+func RequestedModel(ctx *fasthttp.RequestCtx) string {
+	if cached, ok := ctx.UserValue(requestedModelUserValue).(string); ok {
+		return cached
+	}
+	model := parseRequestedModel(ctx.Request.Body())
+	ctx.SetUserValue(requestedModelUserValue, model)
+	return model
+}
+
+// parseRequestedModel reads the top-level `model` out of a request body, or ""
+// for a body that is absent, is not JSON, or names no model — a GET, a malformed
+// request, or a route that takes no model.
+//
+// Errors are swallowed on purpose. This is best-effort: with no model the
+// policies leave `model` alone, which is the pre-existing behaviour rather than
+// a new failure. A request whose body we cannot parse is one the handler is
+// about to reject anyway.
+func parseRequestedModel(body []byte) string {
 	if len(body) == 0 || !bytes.Contains(body, modelKeyProbe) {
-		return
+		return ""
 	}
 	node, err := sonic.Get(body, modelKey)
 	if err != nil {
-		return
+		return ""
 	}
 	// StrictString, not String: String() COERCES, so a numeric `"model": 42`
 	// would be captured as "42" and then written back into the response as a
 	// string the caller never sent. Caught by TestCaptureRequestedModel.
 	model, err := node.StrictString()
-	if err != nil || model == "" {
-		return
+	if err != nil {
+		return ""
 	}
-	ctx.SetUserValue(requestedModelUserValue, model)
-}
-
-// RequestedModel returns what CaptureRequestedModel stored, or "" if it stored
-// nothing. "" means "leave the response's model field alone".
-func RequestedModel(ctx *fasthttp.RequestCtx) string {
-	model, _ := ctx.UserValue(requestedModelUserValue).(string)
 	return model
 }
 
@@ -267,9 +356,28 @@ func ApplyBodyPolicy(body []byte, requestedModel string) (out []byte, ok bool) {
 
 	root, err := sonic.Get(body)
 	if err != nil {
-		if carriesStrippedKey {
+		// FAIL CLOSED on anything that LOOKS like JSON. A Bifrost-marshaled
+		// response is always valid JSON, so an unparseable body that still opens
+		// with `{` or `[` is a truncated or corrupted one — and a truncated
+		// response can carry the wire id in the bytes that did arrive. Passing
+		// it through would ship the disclosure this file exists to remove.
+		//
+		// Genuinely non-JSON bodies (plain-text upstream 5xx, binary) pass
+		// through untouched: they are not ours, they cannot carry a top-level
+		// `model` a client would read, and replacing them would destroy error
+		// detail that leaks nothing.
+		if carriesStrippedKey || looksLikeJSON(body) {
 			return nil, false
 		}
+		return body, true
+	}
+
+	// Non-OBJECT documents are left entirely alone. Unset/Set are meaningless on
+	// an array or scalar, and re-marshalling one through sonic is a real
+	// corruption risk: widening the parse trigger from the two stripped keys to
+	// "any body mentioning model" newly routes such bodies down this path, so
+	// the check has to exist even though the old code never needed it.
+	if root.Type() != ast.V_OBJECT {
 		return body, true
 	}
 
@@ -283,18 +391,8 @@ func ApplyBodyPolicy(body []byte, requestedModel string) (out []byte, ok bool) {
 	}
 
 	if mayCarryModel {
-		// Only a top-level STRING model is rewritten. A nested "model" — inside a
-		// completion the model itself wrote, say — is reached by neither Get nor
-		// Set here, and a non-string value is not ours to reinterpret.
-		if current := root.Get(modelKey); current != nil && current.Valid() {
-			// StrictString errors on a null/number/object model rather than
-			// coercing it, so those fall through untouched. Rewriting one would
-			// change the document's TYPE — a compatibility break taken in
-			// exchange for nothing, since a non-string cannot carry the wire id.
-			if existing, strErr := current.StrictString(); strErr == nil && existing != requestedModel {
-				if _, setErr := root.Set(modelKey, ast.NewString(requestedModel)); setErr != nil {
-					return nil, false
-				}
+		for _, envelope := range modelEnvelopePaths {
+			if rewriteModelAt(&root, envelope, requestedModel) {
 				changedAny = true
 			}
 		}

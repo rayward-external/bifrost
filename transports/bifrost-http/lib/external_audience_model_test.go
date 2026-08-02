@@ -292,3 +292,157 @@ func TestApplyExternalBodyPolicyRewritesModel(t *testing.T) {
 		t.Errorf("model was not rewritten on the buffered path:\n%s", got)
 	}
 }
+
+// The ACTUAL Anthropic streaming envelope. `model` is NESTED under `message`,
+// which the first version of this patch missed entirely: a streamed
+// /v1/messages response disclosed Bedrock and our profile scope on every
+// message_start while the buffered response on the same route was clean.
+const prodAnthropicMessageStart = `{"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"global.anthropic.claude-haiku-4-5-20251001-v1:0","stop_reason":null,"usage":{"input_tokens":42,"output_tokens":1}}}`
+
+// The same shape on /v1/responses events.
+const prodResponsesCreated = `{"type":"response.created","response":{"id":"resp_01","model":"global.anthropic.claude-haiku-4-5-20251001-v1:0","status":"in_progress"}}`
+
+func TestModelRewriteReachesTheNestedEnvelopes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"anthropic message_start", prodAnthropicMessageStart},
+		{"openai response.created", prodResponsesCreated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ApplyBodyPolicy([]byte(tc.body), "claude-haiku-4-5")
+			if !ok {
+				t.Fatal("ApplyBodyPolicy reported failure on a well-formed body")
+			}
+			assertNoModelLeak(t, string(got))
+			if !strings.Contains(string(got), `"model":"claude-haiku-4-5"`) {
+				t.Errorf("the nested model was not rewritten:\n%s", got)
+			}
+		})
+	}
+}
+
+// A `model` a CALLER wrote must survive. The envelope list is an allowlist for
+// exactly this reason — walking the document and rewriting every `model` would
+// corrupt an answer to "show me a JSON body with a model field".
+func TestModelRewriteLeavesCallerAuthoredEnvelopesAlone(t *testing.T) {
+	const body = `{"model":"global.anthropic.claude-haiku-4-5-20251001-v1:0","choices":[{"message":{"role":"assistant","content":"{\"model\":\"gpt-4\"}"}}],"custom":{"model":"user-supplied"}}`
+	got, ok := ApplyBodyPolicy([]byte(body), "claude-haiku-4-5")
+	if !ok {
+		t.Fatal("ApplyBodyPolicy reported failure on a well-formed body")
+	}
+	assertNoModelLeak(t, string(got))
+	if !strings.Contains(string(got), "user-supplied") {
+		t.Errorf("a non-envelope nested model was rewritten:\n%s", got)
+	}
+	if !strings.Contains(string(got), `gpt-4`) {
+		t.Errorf("the completion text was mangled:\n%s", got)
+	}
+}
+
+// The Anthropic stream end to end: EVERY frame, including the nested one.
+func TestSSEStreamRewritesTheAnthropicMessageStart(t *testing.T) {
+	sse := "event: message_start\ndata: " + prodAnthropicMessageStart + "\n\n" +
+		`data: {"type":"content_block_delta","delta":{"text":"hi"}}` + "\n\n"
+	ctx := externalCtx()
+	ctx.Request.SetBody([]byte(`{"model":"claude-haiku-4-5","max_tokens":16,"messages":[]}`))
+
+	wrapped := WrapSSEForExternalAudience(ctx, &nopReadCloser{Reader: strings.NewReader(sse)})
+	out, err := io.ReadAll(wrapped)
+	if err != nil {
+		t.Fatalf("reading the wrapped stream: %v", err)
+	}
+	assertNoModelLeak(t, string(out))
+	if !strings.Contains(string(out), `"model":"claude-haiku-4-5"`) {
+		t.Errorf("message_start still carries the wire id:\n%s", out)
+	}
+	if !strings.Contains(string(out), "event: message_start") {
+		t.Errorf("SSE framing was mangled:\n%s", out)
+	}
+}
+
+// A NON-OBJECT document must not be re-marshalled. Widening the parse trigger to
+// "any body mentioning model" newly routes these down the parse path, and
+// re-serializing an array through sonic risks corrupting a body that leaked
+// nothing.
+func TestNonObjectDocumentsAreLeftByteIdentical(t *testing.T) {
+	for _, body := range []string{
+		`[{"model":"global.anthropic.claude-haiku-4-5-20251001-v1:0"}]`,
+		`"model"`,
+		`123`,
+		`null`,
+	} {
+		got, ok := ApplyBodyPolicy([]byte(body), "claude-haiku-4-5")
+		if !ok {
+			t.Fatalf("ApplyBodyPolicy failed closed on a non-object body: %s", body)
+		}
+		if string(got) != body {
+			t.Errorf("a non-object document was rewritten:\ngot  %s\nwant %s", got, body)
+		}
+	}
+}
+
+// FAIL CLOSED on a TRUNCATED response. A Bifrost-marshaled body is always valid
+// JSON, so one that opens with `{` and does not parse is corrupted — and the
+// bytes that did arrive can carry the wire id.
+func TestTruncatedJSONCarryingTheWireIDFailsClosed(t *testing.T) {
+	const truncated = `{"id":"msg_01","model":"global.anthropic.claude-haiku-4-5-20251001-v1:0","content":[`
+	got, ok := ApplyBodyPolicy([]byte(truncated), "claude-haiku-4-5")
+	if ok {
+		t.Errorf("truncated JSON carrying the wire id passed through:\n%s", got)
+	}
+}
+
+// ...but a body that was never JSON still passes through. Replacing it would
+// destroy upstream error detail that discloses nothing.
+func TestNonJSONBodyStillPassesThrough(t *testing.T) {
+	const plain = `502 Bad Gateway: upstream said "model" unavailable`
+	got, ok := ApplyBodyPolicy([]byte(plain), "claude-haiku-4-5")
+	if !ok {
+		t.Fatal("a non-JSON body must not fail closed")
+	}
+	if string(got) != plain {
+		t.Errorf("a non-JSON body was rewritten:\n%s", got)
+	}
+}
+
+// THE GZIP HOLE. The audience middleware is registered OUTERMOST and
+// RequestDecompressionMiddleware is INNER, so an eager capture at the top of the
+// middleware read COMPRESSED bytes, found no "model", and the response shipped
+// the raw wire id. Lazy resolution observes the body after the inner middleware
+// has replaced it.
+func TestRequestedModelResolvesAfterAnInnerMiddlewareReplacesTheBody(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set(AudienceRequestHeader, ExternalAudience)
+	// Stand in for gzip bytes: whatever the outer middleware would have seen,
+	// it is not the JSON the handler eventually parses.
+	ctx.Request.SetBody([]byte{0x1f, 0x8b, 0x08, 0x00, 0x00})
+
+	if got := RequestedModel(ctx); got != "" {
+		t.Fatalf("compressed body should yield no model, got %q", got)
+	}
+
+	// The decompression middleware runs and replaces the body...
+	ctx2 := &fasthttp.RequestCtx{}
+	ctx2.Request.Header.Set(AudienceRequestHeader, ExternalAudience)
+	ctx2.Request.SetBody([]byte{0x1f, 0x8b, 0x08, 0x00, 0x00})
+	ctx2.Request.SetBodyRaw([]byte(`{"model":"claude-haiku-4-5","messages":[]}`))
+
+	// ...and because resolution is LAZY, the body policy sees the real model.
+	if got := RequestedModel(ctx2); got != "claude-haiku-4-5" {
+		t.Errorf("lazy resolution missed the decompressed model: got %q", got)
+	}
+}
+
+func TestRequestedModelIsCachedAcrossCalls(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody([]byte(`{"model":"claude-haiku-4-5"}`))
+	first := RequestedModel(ctx)
+	// A streamed response calls this once per wrap; the body must not be
+	// re-parsed per chunk, and a later body change must not shift mid-stream.
+	ctx.Request.SetBody([]byte(`{"model":"something-else"}`))
+	if second := RequestedModel(ctx); second != first {
+		t.Errorf("resolution is not cached: %q then %q", first, second)
+	}
+}

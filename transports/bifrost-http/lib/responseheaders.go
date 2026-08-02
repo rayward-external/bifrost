@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/valyala/fasthttp"
 )
 
@@ -100,6 +101,7 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 	for key, value := range extra.ProviderResponseHeaders {
 		ctx.Response.Header.Set(key, value)
 	}
+	applyUsageHeaders(ctx, bifrostCtx)
 	if extra.Provider != "" {
 		ctx.Response.Header.Set(HeaderBifrostProvider, string(extra.Provider))
 	}
@@ -158,5 +160,39 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 			ctx.Response.Header.Set(HeaderBifrostUpstreamLatency,
 				strconv.FormatFloat(float64(upstream)/float64(time.Millisecond), 'f', 3, 64))
 		}
+	}
+}
+
+// applyUsageHeaders emits the caller's own spend position, if governance
+// recorded one for this request.
+//
+// Written here rather than in the governance plugin's HTTPTransportPostHook
+// because this is the ONE writer all three response shapes pass through —
+// buffered, streamed and error. That hook owns resp.Headers on the buffered
+// path but is never invoked for a stream, so using it would need a second
+// emitter and two places to keep in step.
+//
+// The cost/no-cost split falls out of ordering rather than a flag, which is
+// what makes it correct by construction on every route at once:
+//
+//   - BUFFERED: core has already run PostLLMHook, which put this call's cost on
+//     the snapshot, so Cost is set and ships.
+//   - STREAMED: these headers are written before the first chunk, so PostLLMHook
+//     has not run and Cost is still nil. The header is simply absent — which is
+//     the honest answer, since the call does not yet have a cost.
+//
+// Spend and budget come from a pre-request snapshot and are present on both.
+//
+// AUDIENCE: this deliberately writes both the branded and the neutral name. The
+// external-audience middleware renames the branded value into the neutral slot
+// and drops everything outside its allowlist, so an external caller ends up with
+// exactly one copy under the neutral name; an internal caller keeps both.
+func applyUsageHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) {
+	snapshot := governance.UsageSnapshotFromContext(bifrostCtx)
+	if snapshot == nil {
+		return
+	}
+	for name, value := range snapshot.Headers(snapshot.Cost != nil) {
+		ctx.Response.Header.Set(name, value)
 	}
 }

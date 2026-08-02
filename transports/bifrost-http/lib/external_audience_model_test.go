@@ -446,3 +446,56 @@ func TestRequestedModelIsCachedAcrossCalls(t *testing.T) {
 		t.Errorf("resolution is not cached: %q then %q", first, second)
 	}
 }
+
+// THE CACHE-POISONING REGRESSION, measured live on router2 2026-08-02 AFTER the
+// lazy-resolution fix had already deployed.
+//
+// Lazy resolution alone was not enough. Anything that resolved BEFORE the inner
+// decompression middleware stored "" and every later RequestedModel returned
+// that empty string from cache. The gzip request then got no rewrite and shipped
+// the wire id, while every uncompressed path looked clean — which is exactly
+// what shipped to production.
+//
+// The earlier test passed because it called RequestedModel on a FRESH ctx and
+// never exercised the resolve-early-then-resolve-again ordering production had.
+func TestAnEarlyResolutionMustNotPoisonLaterOnes(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set(AudienceRequestHeader, ExternalAudience)
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.SetBody([]byte{0x1f, 0x8b, 0x08, 0x00, 0x00}) // compressed: carries no "model"
+
+	// Something resolves too early — an outer middleware, a future caller.
+	if got := RequestedModel(ctx); got != "" {
+		t.Fatalf("precondition: a compressed body should resolve empty, got %q", got)
+	}
+	CaptureRequestedModel(ctx) // the explicit form of the same mistake
+
+	// The inner decompression middleware then replaces the body.
+	ctx.Request.SetBodyRaw([]byte(`{"model":"claude-haiku-4-5","messages":[]}`))
+
+	// The body policy must now see the REAL model. If an empty resolution was
+	// allowed to stick, this returns "" and the response ships the wire id.
+	if got := RequestedModel(ctx); got != "claude-haiku-4-5" {
+		t.Errorf("an early empty resolution poisoned the cache: got %q, want %q", got, "claude-haiku-4-5")
+	}
+}
+
+// End to end through the buffered policy, with the production ordering.
+func TestGzipRequestStillGetsItsModelRewritten(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set(AudienceRequestHeader, ExternalAudience)
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.SetBody([]byte{0x1f, 0x8b, 0x08, 0x00, 0x00})
+	RequestedModel(ctx)        // early resolution against compressed bytes
+	CaptureRequestedModel(ctx) // and the explicit capture
+	ctx.Request.SetBodyRaw([]byte(`{"model":"claude-haiku-4-5","messages":[]}`))
+	ctx.Response.SetBody([]byte(prodBedrockMessagesBody))
+
+	ApplyExternalBodyPolicy(ctx)
+
+	got := string(ctx.Response.Body())
+	assertNoModelLeak(t, got)
+	if !strings.Contains(got, `"model":"claude-haiku-4-5"`) {
+		t.Errorf("gzip request did not get its model rewritten:\n%s", got)
+	}
+}

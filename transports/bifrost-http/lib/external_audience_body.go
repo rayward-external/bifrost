@@ -270,7 +270,11 @@ const requestedModelUserValue = "rayward_external_requested_model"
 // Exported so a caller can force resolution at a chosen moment; RequestedModel
 // calls it on demand, which is how every production path reaches it.
 func CaptureRequestedModel(ctx *fasthttp.RequestCtx) {
-	ctx.SetUserValue(requestedModelUserValue, parseRequestedModel(ctx.Request.Body()))
+	// Only a REAL answer is stored — see RequestedModel for why an empty one
+	// must never reach the cache.
+	if model := parseRequestedModel(ctx.Request.Body()); model != "" {
+		ctx.SetUserValue(requestedModelUserValue, model)
+	}
 }
 
 // RequestedModel returns the model the caller asked for, or "" — which means
@@ -290,12 +294,28 @@ func CaptureRequestedModel(ctx *fasthttp.RequestCtx) {
 // inner middleware has decompressed it: the SSE wrapper runs inside the handler,
 // and the buffered policy runs in a defer after it. The result is cached on ctx
 // so a streamed response parses the request body once, not once per chunk.
+// ONLY A NON-EMPTY RESULT IS EVER CACHED, and that is a fix for a leak that
+// reached production, not a micro-optimisation.
+//
+// Lazy resolution alone was not enough. Anything resolving BEFORE the inner
+// decompression middleware — the eager capture the audience middleware used to
+// do — stored "" and every later call returned that empty string from cache. The
+// gzip request then got no rewrite at all, so `Content-Encoding: gzip` still
+// shipped `global.anthropic.claude-haiku-4-5-20251001-v1:0` while every
+// uncompressed path measured clean. Caching only a real answer makes this
+// correct regardless of WHEN it is first called, rather than relying on every
+// caller knowing the middleware ordering.
+//
+// The cost is that a request with genuinely no model re-parses per call. That is
+// a byte scan failing on the first probe, and only on routes carrying no model.
 func RequestedModel(ctx *fasthttp.RequestCtx) string {
-	if cached, ok := ctx.UserValue(requestedModelUserValue).(string); ok {
+	if cached, ok := ctx.UserValue(requestedModelUserValue).(string); ok && cached != "" {
 		return cached
 	}
 	model := parseRequestedModel(ctx.Request.Body())
-	ctx.SetUserValue(requestedModelUserValue, model)
+	if model != "" {
+		ctx.SetUserValue(requestedModelUserValue, model)
+	}
 	return model
 }
 

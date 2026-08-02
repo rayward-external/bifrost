@@ -236,10 +236,24 @@ func ExternalAudienceHeaderMiddleware() schemas.BifrostHTTPMiddleware {
 				next(ctx)
 				return
 			}
-			// BEFORE next: the body policies echo the caller's own model back in
-			// place of the upstream wire id, and this is the last moment the
-			// request is guaranteed to be the one the caller sent.
-			lib.CaptureRequestedModel(ctx)
+			// NO EAGER CaptureRequestedModel HERE, and the omission is load-bearing.
+			//
+			// This middleware is registered OUTERMOST, so it runs BEFORE
+			// RequestDecompressionMiddleware. On a `Content-Encoding: gzip`
+			// request the body is still compressed bytes at this point, so an
+			// eager capture finds no `"model"` and caches the EMPTY STRING —
+			// which lib.RequestedModel then returned from cache for the rest of
+			// the request, defeating lazy resolution entirely.
+			//
+			// Measured live on router2 AFTER the first fix deployed: an ordinary
+			// gzipped /v1/messages request still returned
+			// `global.anthropic.claude-haiku-4-5-20251001-v1:0` while every
+			// uncompressed path was clean.
+			//
+			// lib.RequestedModel resolves on demand instead, so both body
+			// policies observe the body AFTER the inner middleware decompressed
+			// it. Do not "optimise" by hoisting a capture back up here.
+			//
 			// Deferred, not sequential: a panic below must not be the one path
 			// that ships a full header set to an external caller. Runs after the
 			// handler has finished writing headers — including the CORS preflight

@@ -128,26 +128,39 @@ func (gs *LocalGovernanceStore) SeedVirtualKeyLifetimeSpend(vkID string, persist
 // the same sequence (deadlock-free by construction rather than by luck), and
 // batched writes so locks are released between chunks.
 //
-// The in-memory base is advanced ONLY from a value read back after a confirmed
-// write. An earlier version advanced it optimistically before the write and
-// folded the delta back on failure, which double-counts: the base had already
-// absorbed the delta, so the retry added it a second time.
+// Pending is SNAPSHOTTED, never swapped out. Swapping the whole map for an
+// empty one up front (an earlier version did this) makes a delta vanish from
+// both halves of the read the instant it's swapped out — a concurrent
+// VirtualKeyLifetimeSpend call sees neither the old pending entry nor the new
+// base, and reads a value low by the whole delta until the batch commits. It
+// also meant a failing batch could only fold back ITSELF: every later,
+// not-yet-attempted batch had already been removed from the map at the swap
+// and was gone for good the moment this function returned its error.
+//
+// Each row is instead removed from pending only after its own write is
+// confirmed AND the base has been refreshed to include it — so at every
+// instant the delta lives in exactly one of the two places, never neither.
+// A batch that fails to commit simply keeps its rows in pending; there is
+// nothing to fold back, and the next tick retries them alongside whatever
+// else has accrued since.
 func (gs *LocalGovernanceStore) DumpVirtualKeyLifetimeSpend(ctx context.Context) error {
 	if gs.configStore == nil {
 		return nil
 	}
 
-	gs.LifetimeSpendMu.Lock()
+	gs.LifetimeSpendMu.RLock()
 	if len(gs.PendingVKLifetimeSpend) == 0 {
-		gs.LifetimeSpendMu.Unlock()
+		gs.LifetimeSpendMu.RUnlock()
 		return nil
 	}
-	drained := gs.PendingVKLifetimeSpend
-	gs.PendingVKLifetimeSpend = make(map[string]float64, len(drained))
-	gs.LifetimeSpendMu.Unlock()
+	snapshot := make(map[string]float64, len(gs.PendingVKLifetimeSpend))
+	for vkID, delta := range gs.PendingVKLifetimeSpend {
+		snapshot[vkID] = delta
+	}
+	gs.LifetimeSpendMu.RUnlock()
 
-	rows := make([]vkSpendDumpRow, 0, len(drained))
-	for vkID, delta := range drained {
+	rows := make([]vkSpendDumpRow, 0, len(snapshot))
+	for vkID, delta := range snapshot {
 		if delta <= 0 {
 			continue
 		}
@@ -161,29 +174,42 @@ func (gs *LocalGovernanceStore) DumpVirtualKeyLifetimeSpend(ctx context.Context)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 
-	// Folded back PER BATCH, not for the whole drain: a later batch failing must
-	// not requeue deltas that earlier batches already committed.
+	// A batch failing does not stop the rest: each batch is independent, so one
+	// bad batch should not cost every later key its dump this tick too.
+	var firstErr error
 	for start := 0; start < len(rows); start += dumpBatchSize {
 		end := min(start+dumpBatchSize, len(rows))
 		batch := rows[start:end]
 		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 			return gs.writeVKSpendBatch(ctx, tx, batch)
 		}); err != nil {
-			gs.foldBackLifetimeSpend(batch)
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
+		// Base first, pending second: the base must already reflect the commit
+		// before the matching pending entry disappears, or the sum momentarily
+		// omits the delta from both sides.
 		gs.refreshLifetimeSpendBase(ctx, batch)
+		gs.settleCommittedDelta(batch)
 	}
-	return nil
+	return firstErr
 }
 
-// foldBackLifetimeSpend returns a failed batch's deltas to the pending map, so a
-// transient DB error costs a retry rather than the spend itself.
-func (gs *LocalGovernanceStore) foldBackLifetimeSpend(batch []vkSpendDumpRow) {
+// settleCommittedDelta removes exactly the committed delta from pending, not
+// the whole current value — a bump that landed after the snapshot was taken
+// (and so is not yet persisted) must survive untouched for the next tick.
+func (gs *LocalGovernanceStore) settleCommittedDelta(batch []vkSpendDumpRow) {
 	gs.LifetimeSpendMu.Lock()
 	defer gs.LifetimeSpendMu.Unlock()
 	for _, row := range batch {
-		gs.PendingVKLifetimeSpend[row.ID] += row.Delta
+		remaining := gs.PendingVKLifetimeSpend[row.ID] - row.Delta
+		if remaining <= 0 {
+			delete(gs.PendingVKLifetimeSpend, row.ID)
+		} else {
+			gs.PendingVKLifetimeSpend[row.ID] = remaining
+		}
 	}
 }
 

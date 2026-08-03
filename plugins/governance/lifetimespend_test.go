@@ -8,7 +8,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // storeWithVK builds a store holding one virtual key at a known starting total.
@@ -87,21 +91,51 @@ func TestAnUnknownKeyIsNotInvented(t *testing.T) {
 	}
 }
 
-// A failed dump must cost a retry, not the spend. This is why the drained map is
-// folded back rather than discarded.
+// A failed dump must cost a retry, not the spend. This is now guaranteed
+// structurally rather than by a fold-back step: a row is only ever removed
+// from PendingVKLifetimeSpend after settleCommittedDelta runs, which only
+// happens once its own batch's write has already committed. A batch that
+// never commits never has its rows touched at all.
+//
+// Real SQLite, closed mid-flight, forces DumpVirtualKeyLifetimeSpend down its
+// genuine error path — a string check on the source can't tell "removes the
+// row on failure" from "never removed it in the first place", so this needs
+// an actual failing transaction, not a text assertion.
 func TestAFailedDumpDoesNotLoseTheSpend(t *testing.T) {
-	gs := storeWithVK(t, "vk1", 10)
-	gs.BumpVirtualKeyLifetimeSpend(context.Background(), "vk1", 3)
+	ctx := context.Background()
+	logger := NewMockLogger()
+	configStore, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/dump-fail.db"},
+	}, logger)
+	require.NoError(t, err)
 
-	gs.LifetimeSpendMu.Lock()
-	gs.PendingVKLifetimeSpend = make(map[string]float64)
-	gs.LifetimeSpendMu.Unlock()
-
-	gs.foldBackLifetimeSpend([]vkSpendDumpRow{{ID: "vk1", Delta: 3}})
-
-	if got := gs.PendingVKLifetimeSpend["vk1"]; got != 3 {
-		t.Errorf("pending spend after fold-back = %v, want 3", got)
+	vk := &configstoreTables.TableVirtualKey{
+		ID:            "vk-dump-fail",
+		Name:          "dump-fail",
+		Value:         *schemas.NewSecretVar("vk-dump-fail-value"),
+		IsActive:      schemas.Ptr(true),
+		LifetimeSpend: 10,
 	}
+	require.NoError(t, configStore.CreateVirtualKey(ctx, vk))
+
+	gs, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil)
+	require.NoError(t, err)
+
+	gs.BumpVirtualKeyLifetimeSpend(ctx, "vk-dump-fail", 3)
+
+	// Close the underlying DB so the transaction the dump opens fails for real.
+	require.NoError(t, configStore.Close(ctx))
+
+	err = gs.DumpVirtualKeyLifetimeSpend(ctx)
+	require.Error(t, err, "closing the store must make the dump's own transaction fail")
+
+	got, ok := gs.VirtualKeyLifetimeSpend("vk-dump-fail")
+	require.True(t, ok)
+	assert.Equal(t, 13.0, got,
+		"the bumped delta must still be visible after a failed dump — a lost "+
+			"delta here is spend that will never be billed")
 }
 
 // Concurrency: the bump path is called from the tracker's worker goroutines.
@@ -219,13 +253,19 @@ func TestTheBaseIsNotAdvancedOptimistically(t *testing.T) {
 	}
 }
 
-// A later batch failing must not requeue deltas an earlier batch already
-// committed.
-func TestFoldBackIsPerBatchNotPerDrain(t *testing.T) {
+// A batch failing must not abort the whole dump: every other batch is
+// independent and must still get its chance to persist this tick.
+func TestALaterBatchIsNotAbandonedWhenAnEarlierOneFails(t *testing.T) {
 	src := readGovernanceFile(t, "lifetimespend.go")
-	if !contains(src, "gs.foldBackLifetimeSpend(batch)") {
-		t.Error("fold-back is no longer scoped to the failing batch; a late failure " +
-			"would requeue already-persisted spend and double-count it")
+	dump := src[strings.Index(src, "func (gs *LocalGovernanceStore) DumpVirtualKeyLifetimeSpend"):]
+	dump = dump[:strings.Index(dump, "\nfunc ")]
+
+	if contains(dump, "return err\n") {
+		t.Error("a failed batch returns immediately here, abandoning every later, " +
+			"not-yet-attempted batch for this tick")
+	}
+	if !contains(dump, "firstErr") {
+		t.Error("a batch failure is no longer surfaced to the caller at all")
 	}
 }
 

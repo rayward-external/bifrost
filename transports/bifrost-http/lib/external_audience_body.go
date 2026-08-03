@@ -231,19 +231,29 @@ func rewriteModelIn(owner *ast.Node, requestedModel string) bool {
 // message sites carrying it; the MCP ones are on routes the external LB 403s),
 // so matching the exact identities closes the whole externally reachable
 // surface without touching anything else.
+// internalAuthOwnToken is the unambiguous marker that a message is OURS.
+// x-bf-vk is our own header name; no upstream provider emits it, so its
+// presence in an error message is proof of authorship in a way no English
+// phrase can be.
+const internalAuthOwnToken = "x-bf-vk"
+
+// internalAuthMessagePrefixes cover the one internal auth message that does NOT
+// name the header ("virtual key not found…"). Deliberately specific.
+//
+// The enterprise variant ("authentication is required. Provide a virtual key
+// (x-bf-vk)…") is matched by internalAuthOwnToken instead. Adding
+// "authentication is required" as a PREFIX here — the round-2 fix — reintroduced
+// exactly the false-positive class round 1 had just removed: an upstream
+// "Authentication is required to access this resource" is preserved verbatim by
+// core/providers/openai/errors.go and would have been overwritten with our
+// generic text, destroying the caller's actionable detail. Two rounds in a row
+// the over-broad match was the defect, so the rule is now: match our own TOKEN,
+// or an exact distinctive prefix — never a phrase English shares with upstreams.
 var internalAuthMessagePrefixes = []string{
 	"virtual key is required",
 	"virtual key not found",
-	// The ENTERPRISE variant of the missing-credential failure
-	// (main.go:1007, behind config.IsEnterprise): "authentication is required.
-	// Provide a virtual key (x-bf-vk), API key, or user token." It shares
-	// neither prefix above, so it slipped the first two drafts entirely — the
-	// OpenAI shape kept the leaking message after only its type was rewritten,
-	// and the Anthropic shape never even reached the parser. Latent rather than
-	// live today, but a leak sitting behind a config flag is the kind that
-	// surfaces the day someone flips it.
-	"authentication is required",
 }
+
 
 // internalAuthErrorTypes are error `type` values that are internal vocabulary
 // rather than part of any dialect. Replaced with a standard name.
@@ -264,7 +274,8 @@ const (
 // is case-insensitive. Covers the type names too: the OpenAI dialect carries the
 // internal name in the root `type`, where no prose token appears.
 var internalAuthDisclosureProbes = func() [][]byte {
-	probes := make([][]byte, 0, len(internalAuthMessagePrefixes)+len(internalAuthErrorTypes))
+	probes := make([][]byte, 0, len(internalAuthMessagePrefixes)+len(internalAuthErrorTypes)+1)
+	probes = append(probes, bytes.ToLower([]byte(internalAuthOwnToken)))
 	for _, token := range internalAuthMessagePrefixes {
 		probes = append(probes, bytes.ToLower([]byte(token)))
 	}
@@ -297,6 +308,10 @@ func bodyCarriesAuthDisclosure(body []byte) bool {
 // what to change, and it is not an auth failure at all.
 func messageIsInternalAuthFailure(message string) bool {
 	lower := strings.ToLower(strings.TrimSpace(message))
+	// Our own header name anywhere in the message is proof of authorship.
+	if strings.Contains(lower, internalAuthOwnToken) {
+		return true
+	}
 	for _, prefix := range internalAuthMessagePrefixes {
 		if strings.HasPrefix(lower, prefix) {
 			return true

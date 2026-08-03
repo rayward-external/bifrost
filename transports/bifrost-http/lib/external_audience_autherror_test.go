@@ -229,3 +229,39 @@ func TestTheNeutralMessageDoesNotMatchItsOwnDetector(t *testing.T) {
 			"already-scrubbed body re-enters the parse path", neutralAuthErrorMessage)
 	}
 }
+
+// An UPSTREAM provider's own auth error must survive verbatim. Round 2 added
+// "authentication is required" as a prefix, which would have overwritten this
+// with our generic text — reintroducing the exact false-positive class round 1
+// had just removed. Provider messages are preserved deliberately
+// (core/providers/openai/errors.go), so this is a live path, not a hypothetical.
+func TestAnUpstreamProvidersOwnAuthErrorIsNotOverwritten(t *testing.T) {
+	for name, body := range map[string]string{
+		"generic phrase": `{"error":{"message":"Authentication is required to access this resource","type":"invalid_request_error"}}`,
+		"upstream 401":   `{"error":{"message":"Authentication is required. Check the API key configured for this deployment.","type":"authentication_error"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, ok := StripExtraFields([]byte(body))
+			if !ok {
+				t.Fatalf("policy reported failure on an upstream error: %s", body)
+			}
+			if string(got) != body {
+				t.Errorf("an UPSTREAM auth error was overwritten with our generic text, "+
+					"destroying the caller's actionable detail.\n want: %s\n got:  %s", body, got)
+			}
+		})
+	}
+}
+
+// The discriminator that makes the above safe: our own header name. No upstream
+// emits x-bf-vk, so its presence proves authorship in a way no English phrase
+// can — which is why the enterprise message is matched by TOKEN, not prefix.
+func TestOurOwnHeaderNameIsWhatIdentifiesOurMessages(t *testing.T) {
+	if !messageIsInternalAuthFailure("authentication is required. Provide a virtual key (x-bf-vk), API key, or user token.") {
+		t.Error("the enterprise message is no longer recognised, so it leaks again")
+	}
+	if messageIsInternalAuthFailure("Authentication is required to access this resource") {
+		t.Error("a generic upstream phrase is being claimed as ours; that overwrites " +
+			"provider detail — the round-1 and round-3 defect, twice over")
+	}
+}

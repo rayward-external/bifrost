@@ -208,6 +208,12 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	if shouldUpdateBudget && update.Cost > 0 {
 		t.logger.Debug("updating budget usage for VK %s", vk.ID)
 		// Use atomic budget update to prevent race conditions and ensure consistency
+		// Cumulative total alongside the windowed budgets. Bumped here rather
+		// than inside UpdateVirtualKeyBudgetUsageInMemory because that helper
+		// fans out over the budgets that APPLY to this provider, and a lifetime
+		// total must count every billed request regardless of which budgets
+		// matched — a key with no budget configured still has a spend.
+		t.store.BumpVirtualKeyLifetimeSpend(ctx, vk.ID, update.Cost)
 		if err := t.store.UpdateVirtualKeyBudgetUsageInMemory(ctx, vk, update.Provider, update.Cost); err != nil {
 			t.logger.Error("failed to update budget hierarchy atomically for VK %s: %v", vk.ID, err)
 		}
@@ -266,6 +272,9 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	// ==== PART 3: Dump all rate limits and budgets to database ====
 	if err := t.store.DumpRateLimits(ctx, nil, nil); err != nil {
 		t.logger.Error("failed to dump rate limits to database: %v", err)
+	}
+	if err := t.store.DumpVirtualKeyLifetimeSpend(ctx); err != nil {
+		t.logger.Error("failed to dump virtual key lifetime spend: %v", err)
 	}
 	if err := t.store.DumpBudgets(ctx, nil); err != nil {
 		t.logger.Error("failed to dump budgets to database: %v", err)
@@ -394,6 +403,9 @@ func (t *UsageTracker) validateStartupResetDurations(ctx context.Context) []erro
 func (t *UsageTracker) Cleanup() error {
 	// Final flush of in-memory deltas to DB before shutdown. Without this,
 	// any deltas accumulated since the last `workerInterval` tick are lost.
+	if err := t.store.DumpVirtualKeyLifetimeSpend(context.Background()); err != nil {
+		t.logger.Error("failed to dump virtual key lifetime spend: %v", err)
+	}
 	if err := t.store.DumpBudgets(context.Background(), nil); err != nil {
 		t.logger.Error("final budget dump on shutdown failed: %v", err)
 	}

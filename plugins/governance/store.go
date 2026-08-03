@@ -46,6 +46,23 @@ type LocalGovernanceStore struct {
 	LastDBUsagesRequestsRateLimits   map[string]int64   // Map for last DB usages for rate limits requests
 	LastDBUsagesTokensRateLimits     map[string]int64   // Map for last DB usages for rate limits tokens
 
+	// Per-VK cumulative spend accumulated on this node and not yet persisted.
+	// Separate from the budget maps above because it is MONOTONIC — no window
+	// rollover ever zeroes it. See lifetimespend.go.
+	LifetimeSpendMu        sync.RWMutex
+	PendingVKLifetimeSpend map[string]float64
+	// Last authoritative total read back from the row, per VK. Held here
+	// rather than on the shared TableVirtualKey so it is covered by the same
+	// lock as the pending map — the dump writes it while request paths read
+	// it, which on the VK object was a data race on every active key.
+	vkLifetimeSpendBase map[string]float64
+	// Serializes DumpVirtualKeyLifetimeSpend end to end. The periodic worker
+	// and the shutdown flush both call it, and shutdown does not wait for the
+	// worker to stop first — without this, both can snapshot the SAME pending
+	// delta and each commit their own atomic increment for it, double-counting
+	// spend that was only ever spent once.
+	lifetimeSpendDumpMu sync.Mutex
+
 	// CEL caching layer for routing rules
 	compiledRoutingPrograms sync.Map // string -> cel.Program (key: ruleID -> compiled CEL program)
 	routingCELEnv           *cel.Env // Singleton CEL environment reused for all compilations
@@ -156,6 +173,10 @@ type GovernanceStore interface {
 	// Dump operations
 	DumpRateLimits(ctx context.Context, tokenBaselines map[string]int64, requestBaselines map[string]int64) error
 	DumpBudgets(ctx context.Context, baselines map[string]float64) error
+	DumpVirtualKeyLifetimeSpend(ctx context.Context) error
+	BumpVirtualKeyLifetimeSpend(ctx context.Context, vkID string, cost float64)
+	VirtualKeyLifetimeSpend(vkID string) (float64, bool)
+	SeedVirtualKeyLifetimeSpend(vkID string, persisted float64)
 	// In-memory CRUD operations
 	CreateVirtualKeyInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey)
 	UpdateVirtualKeyInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, rateLimitTokensBaselines map[string]int64, rateLimitRequestsBaselines map[string]int64)
@@ -228,6 +249,8 @@ func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configS
 		routingCELEnv:                  env,
 		modelCatalog:                   modelCatalog,
 		LastDBUsagesBudgets:            make(map[string]float64),
+		PendingVKLifetimeSpend:         make(map[string]float64),
+		vkLifetimeSpendBase:            make(map[string]float64),
 		LastDBUsagesRequestsRateLimits: make(map[string]int64),
 		LastDBUsagesTokensRateLimits:   make(map[string]int64),
 	}
@@ -1072,6 +1095,13 @@ func (gs *LocalGovernanceStore) GetVirtualKeyByID(ctx context.Context, vkID stri
 // ID-keyed secondary index, keeping the two in lock-step. Every writer to
 // virtualKeys must go through here so the ID index never diverges.
 func (gs *LocalGovernanceStore) storeVirtualKey(value string, vk *configstoreTables.TableVirtualKey) {
+	// Install the persisted cumulative total as this node's base. Done on every
+	// store — initial load AND config reload — because a reload replaces the
+	// object and would otherwise leave the base at a stale value forever.
+	if vk != nil {
+		gs.SeedVirtualKeyLifetimeSpend(vk.ID, vk.LifetimeSpend)
+	}
+
 	if value == "" {
 		if vk != nil {
 			gs.logger.Warn("skipping virtual key %s with unresolvable value (env/vault ref could not be resolved)", vk.ID)

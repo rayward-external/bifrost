@@ -232,6 +232,23 @@ type TableVirtualKey struct {
 
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
+	// LifetimeSpend is the key's cumulative spend in dollars. MONOTONIC: it is
+	// never reset by any window rollover, which is the entire reason it exists
+	// separately from the budgets below — those carry a CurrentUsage the sweep
+	// zeroes every cycle, so none of them can answer "how much has this key ever
+	// cost".
+	//
+	// Published to callers as `x-usage-spend`, whose documented contract is a
+	// figure that only ever goes up. That contract is why this is a persisted
+	// column rather than an in-memory counter or a read of the log-store
+	// aggregate: a process restart would reset the former, and the latter lags
+	// its matview refresh, so both can tick BACKWARDS. A number that decreases
+	// under a name promising it cannot is worse than no number at all.
+	//
+	// Written through the same delta-folded dump path as budget usage, so a
+	// cluster of nodes each contributing spend converges rather than clobbering.
+	LifetimeSpend float64 `gorm:"default:0;not null" json:"lifetime_spend"`
+
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	Customer  *TableCustomer  `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`

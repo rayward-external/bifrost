@@ -1374,9 +1374,10 @@ func (p *GovernancePlugin) recordUsageSnapshot(ctx *schemas.BifrostContext, virt
 	}
 	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	budgetIDs, _ := p.store.CollectApplicableGovernanceIDs(ctx, virtualKeyValue, userID, provider, model)
-	if len(budgetIDs) == 0 {
-		return
-	}
+	// NOT an early return on an empty budget list. A key with no budget
+	// configured still has a lifetime spend, and returning here would drop
+	// x-usage-spend for exactly those keys — which is what the first version of
+	// this change did while its own comment claimed otherwise.
 
 	now := time.Now()
 	windows := make([]UsageBudgetWindow, 0, len(budgetIDs))
@@ -1404,11 +1405,15 @@ func (p *GovernancePlugin) recordUsageSnapshot(ctx *schemas.BifrostContext, virt
 			Spent: spent,
 		})
 	}
-	if len(windows) == 0 {
-		return
+	// Lifetime spend rides alongside the windows. Emitted even when the key has
+	// no budget configured at all — "you have spent $X, with no cap" is a
+	// complete answer, whereas dropping the header would read as "no information".
+	snapshot := &UsageSnapshot{Budgets: windows}
+	if spend, ok := p.store.VirtualKeyLifetimeSpend(virtualKey.ID); ok {
+		snapshot.Spend = &spend
 	}
 
-	ctx.SetValue(ContextKeyUsageSnapshot, &UsageSnapshot{Budgets: windows})
+	ctx.SetValue(ContextKeyUsageSnapshot, snapshot)
 }
 
 // PreLLMHook intercepts requests before they are processed (governance decision point)

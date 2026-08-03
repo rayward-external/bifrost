@@ -67,6 +67,14 @@ type vkSpendDumpRow struct {
 // has no comparison guard, so "only goes up" is exactly the guarantee that every
 // delta reaching it is positive and finite.
 func (gs *LocalGovernanceStore) BumpVirtualKeyLifetimeSpend(ctx context.Context, vkID string, cost float64) {
+	// No configStore means memory-only mode: nothing here ever reaches a
+	// persisted row, so accruing it anyway would publish a total that goes
+	// back to zero on every restart — the exact failure mode this file's own
+	// header explains a pure in-memory counter cannot avoid. Refuse to
+	// accumulate rather than publish a value with a broken contract.
+	if gs.configStore == nil {
+		return
+	}
 	// `!(cost > 0)` rather than `cost <= 0` so NaN is excluded too: every
 	// comparison with NaN is false, so `NaN <= 0` would let it straight through.
 	if vkID == "" || !(cost > 0) || cost > 1e308 {
@@ -92,7 +100,14 @@ func (gs *LocalGovernanceStore) BumpVirtualKeyLifetimeSpend(ctx context.Context,
 // Both halves are read under the SAME lock. The base is mutated by the dump
 // goroutine, so reading it unsynchronised while a dump runs is a data race on
 // every active key, and can hand a caller a torn value.
+//
+// `ok=false` in memory-only mode (configStore == nil): omitting the header
+// entirely is preferable to publishing a figure that resets to zero on every
+// restart, which is what a purely in-memory total would do.
 func (gs *LocalGovernanceStore) VirtualKeyLifetimeSpend(vkID string) (float64, bool) {
+	if gs.configStore == nil {
+		return 0, false
+	}
 	if vkID == "" {
 		return 0, false
 	}
@@ -143,10 +158,19 @@ func (gs *LocalGovernanceStore) SeedVirtualKeyLifetimeSpend(vkID string, persist
 // A batch that fails to commit simply keeps its rows in pending; there is
 // nothing to fold back, and the next tick retries them alongside whatever
 // else has accrued since.
+//
+// The whole call is serialized by lifetimeSpendDumpMu. The periodic worker
+// and the shutdown flush both call this, and shutdown does not wait for the
+// worker to stop first — without a lock spanning the full snapshot-write-
+// settle sequence, both can snapshot and commit the SAME pending delta,
+// persisting it twice for spend that was only ever spent once.
 func (gs *LocalGovernanceStore) DumpVirtualKeyLifetimeSpend(ctx context.Context) error {
 	if gs.configStore == nil {
 		return nil
 	}
+
+	gs.lifetimeSpendDumpMu.Lock()
+	defer gs.lifetimeSpendDumpMu.Unlock()
 
 	gs.LifetimeSpendMu.RLock()
 	if len(gs.PendingVKLifetimeSpend) == 0 {
@@ -188,13 +212,33 @@ func (gs *LocalGovernanceStore) DumpVirtualKeyLifetimeSpend(ctx context.Context)
 			}
 			continue
 		}
-		// Base first, pending second: the base must already reflect the commit
-		// before the matching pending entry disappears, or the sum momentarily
-		// omits the delta from both sides.
-		gs.refreshLifetimeSpendBase(ctx, batch)
+		// The write above already committed — the delta IS durably persisted —
+		// so settling pending happens regardless of what follows. What can
+		// still fail is only OUR read-back of the authoritative row; when it
+		// does, fall back to advancing the base with the delta we already
+		// know committed, rather than leaving the base stale while pending is
+		// cleared out from under it (that combination is precisely how a
+		// published total quietly drops and stays dropped).
+		if !gs.refreshLifetimeSpendBase(ctx, batch) {
+			gs.advanceBaseByOwnDelta(batch)
+		}
 		gs.settleCommittedDelta(batch)
 	}
 	return firstErr
+}
+
+// advanceBaseByOwnDelta is the fallback for when refreshLifetimeSpendBase's
+// read fails after a successful write: we cannot see every other node's
+// contribution, but we know for certain our own delta committed, so adding it
+// locally is strictly better than leaving the base stale. A later successful
+// refresh can only raise the base further (it takes the max), never lower it,
+// so this never overstates and self-corrects once the read starts working.
+func (gs *LocalGovernanceStore) advanceBaseByOwnDelta(batch []vkSpendDumpRow) {
+	gs.LifetimeSpendMu.Lock()
+	defer gs.LifetimeSpendMu.Unlock()
+	for _, row := range batch {
+		gs.vkLifetimeSpendBase[row.ID] += row.Delta
+	}
 }
 
 // settleCommittedDelta removes exactly the committed delta from pending, not
@@ -214,16 +258,17 @@ func (gs *LocalGovernanceStore) settleCommittedDelta(batch []vkSpendDumpRow) {
 }
 
 // refreshLifetimeSpendBase re-reads the authoritative totals for a committed
-// batch and installs them as this node's base.
+// batch and installs them as this node's base. Returns false if the read
+// failed — the caller must not treat the batch as fully settled on false, or
+// a delta that is safely persisted in the row can still vanish from the base
+// this node publishes. See advanceBaseByOwnDelta for the fallback that keeps
+// that from happening.
 //
 // Read back rather than added locally, because the row now includes every OTHER
 // node's contributions too. Adding our own delta to a stale base would publish a
-// figure that is correct only on a single-node deployment.
-//
-// Best-effort: a failed read leaves the base where it was, which understates
-// until the next dump. Understating is the safe direction, and the spend is
-// already persisted — nothing is lost.
-func (gs *LocalGovernanceStore) refreshLifetimeSpendBase(ctx context.Context, batch []vkSpendDumpRow) {
+// figure that is correct only on a single-node deployment — this is the path
+// taken whenever the read succeeds.
+func (gs *LocalGovernanceStore) refreshLifetimeSpendBase(ctx context.Context, batch []vkSpendDumpRow) bool {
 	ids := make([]string, 0, len(batch))
 	for _, row := range batch {
 		ids = append(ids, row.ID)
@@ -242,7 +287,7 @@ func (gs *LocalGovernanceStore) refreshLifetimeSpendBase(ctx context.Context, ba
 			Find(&fresh).Error
 	}); err != nil {
 		gs.logger.Debug("could not refresh lifetime spend base: %v", err)
-		return
+		return false
 	}
 
 	gs.LifetimeSpendMu.Lock()
@@ -254,6 +299,7 @@ func (gs *LocalGovernanceStore) refreshLifetimeSpendBase(ctx context.Context, ba
 			gs.vkLifetimeSpendBase[row.ID] = row.LifetimeSpend
 		}
 	}
+	return true
 }
 
 // writeVKSpendBatch adds each node-local delta to the stored total.

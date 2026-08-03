@@ -15,15 +15,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// storeWithVK builds a store holding one virtual key at a known starting total.
+// storeWithVK builds a store holding one virtual key at a known starting
+// total, backed by a real (temp-file) SQLite configStore rather than a bare
+// struct literal — BumpVirtualKeyLifetimeSpend and VirtualKeyLifetimeSpend
+// both gate on configStore != nil now, so a nil configStore here would
+// silently no-op every test in this file instead of exercising them.
 func storeWithVK(t *testing.T, vkID string, starting float64) *LocalGovernanceStore {
 	t.Helper()
-	gs := &LocalGovernanceStore{
-		PendingVKLifetimeSpend: make(map[string]float64),
-		vkLifetimeSpendBase:    make(map[string]float64),
+	ctx := context.Background()
+	logger := NewMockLogger()
+	configStore, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/vk.db"},
+	}, logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, configStore.Close(ctx)) })
+
+	vk := &configstoreTables.TableVirtualKey{
+		ID:            vkID,
+		Name:          vkID,
+		Value:         *schemas.NewSecretVar(vkID + "-value"),
+		IsActive:      schemas.Ptr(true),
+		LifetimeSpend: starting,
 	}
-	gs.virtualKeysByID.Store(vkID, &configstoreTables.TableVirtualKey{ID: vkID, LifetimeSpend: starting})
-	gs.SeedVirtualKeyLifetimeSpend(vkID, starting)
+	require.NoError(t, configStore.CreateVirtualKey(ctx, vk))
+
+	gs, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil)
+	require.NoError(t, err)
 	return gs
 }
 
@@ -88,6 +107,30 @@ func TestAnUnknownKeyIsNotInvented(t *testing.T) {
 	gs.BumpVirtualKeyLifetimeSpend(context.Background(), "nope", 1)
 	if len(gs.PendingVKLifetimeSpend) != 0 {
 		t.Errorf("accumulated pending spend against an unknown key: %v", gs.PendingVKLifetimeSpend)
+	}
+}
+
+// Memory-only mode (no configStore) must not accumulate or publish lifetime
+// spend at all. Nothing here is ever written to a row, so any value produced
+// would reset to zero on the next restart — exactly the failure mode this
+// file's own header explains a pure in-memory counter cannot avoid. Omitting
+// the header is the only option that keeps the "only ever goes up" contract.
+func TestMemoryOnlyModeNeverAccumulatesOrPublishesSpend(t *testing.T) {
+	gs := &LocalGovernanceStore{
+		PendingVKLifetimeSpend: make(map[string]float64),
+		vkLifetimeSpendBase:    make(map[string]float64),
+	}
+	gs.virtualKeysByID.Store("vk1", &configstoreTables.TableVirtualKey{ID: "vk1", LifetimeSpend: 10})
+
+	gs.BumpVirtualKeyLifetimeSpend(context.Background(), "vk1", 5)
+	if len(gs.PendingVKLifetimeSpend) != 0 {
+		t.Errorf("accumulated pending spend with no configStore to ever persist it: %v",
+			gs.PendingVKLifetimeSpend)
+	}
+
+	if _, ok := gs.VirtualKeyLifetimeSpend("vk1"); ok {
+		t.Error("published a lifetime-spend figure with no configStore — it can " +
+			"only ever reset to zero on restart, breaking the monotonic contract")
 	}
 }
 
@@ -160,7 +203,8 @@ func TestConcurrentBumpsAreNotLost(t *testing.T) {
 // A dump with nothing pending must not touch the database at all.
 func TestAnEmptyDumpIsANoOp(t *testing.T) {
 	gs := storeWithVK(t, "vk1", 10)
-	// configStore is nil here; if the function tried to write it would panic.
+	// Nothing was bumped, so PendingVKLifetimeSpend is empty and the dump must
+	// return before ever touching the store.
 	if err := gs.DumpVirtualKeyLifetimeSpend(context.Background()); err != nil {
 		t.Errorf("empty dump returned %v", err)
 	}
@@ -267,6 +311,72 @@ func TestALaterBatchIsNotAbandonedWhenAnEarlierOneFails(t *testing.T) {
 	if !contains(dump, "firstErr") {
 		t.Error("a batch failure is no longer surfaced to the caller at all")
 	}
+}
+
+// A write that commits is durably persisted regardless of what happens next,
+// so settling pending must not depend on the follow-up read-back succeeding.
+// The composition that gets this wrong is subtle: check the base, refresh, or
+// settle in the wrong order and either the delta vanishes from the sum for a
+// while (base stale + pending cleared) or it gets written twice next tick
+// (pending kept + write retried on an already-committed delta). Scoped to the
+// write's own success branch, not the whole file, which also carries prose
+// describing this exact failure mode.
+func TestARefreshFailureFallsBackRatherThanLosingTheDelta(t *testing.T) {
+	src := readGovernanceFile(t, "lifetimespend.go")
+	dump := src[strings.Index(src, "func (gs *LocalGovernanceStore) DumpVirtualKeyLifetimeSpend"):]
+	dump = dump[:strings.Index(dump, "\nfunc ")]
+
+	if !contains(dump, "if !gs.refreshLifetimeSpendBase(ctx, batch)") {
+		t.Fatal("refreshLifetimeSpendBase's success is no longer checked; a failed " +
+			"read-back can't be told apart from a successful one anymore")
+	}
+	if !contains(dump, "gs.advanceBaseByOwnDelta(batch)") {
+		t.Error("a failed refresh has no fallback; the base stays stale while " +
+			"settleCommittedDelta below still clears the matching pending entry — " +
+			"the published total drops by the delta and stays dropped")
+	}
+	if n := strings.Count(dump, "gs.settleCommittedDelta(batch)"); n != 1 {
+		t.Errorf("settleCommittedDelta is called %d times, want exactly 1 — it must "+
+			"run after both the refresh-success and the fallback paths, not be "+
+			"duplicated or skipped on either", n)
+	}
+}
+
+// Direct test of the fallback's arithmetic: it must add the delta we already
+// know committed, not merely leave the base untouched.
+func TestAdvanceBaseByOwnDeltaAddsTheCommittedDelta(t *testing.T) {
+	gs := storeWithVK(t, "vk1", 10)
+	gs.advanceBaseByOwnDelta([]vkSpendDumpRow{{ID: "vk1", Delta: 4}})
+
+	got, ok := gs.VirtualKeyLifetimeSpend("vk1")
+	require.True(t, ok)
+	assert.Equal(t, 14.0, got,
+		"the fallback must add the already-committed delta directly to the base")
+}
+
+// The periodic worker and the shutdown flush both call DumpVirtualKeyLifetimeSpend,
+// and shutdown does not wait for the worker to stop first. Without the whole
+// call serialized, concurrent dumps can each snapshot the SAME pending delta
+// and each commit their own atomic increment for it — persisting spend that
+// was only ever spent once, multiple times over.
+func TestConcurrentDumpsDoNotDoubleCommitTheSameDelta(t *testing.T) {
+	gs := storeWithVK(t, "vk1", 0)
+	gs.BumpVirtualKeyLifetimeSpend(context.Background(), "vk1", 5)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = gs.DumpVirtualKeyLifetimeSpend(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	got, ok := gs.VirtualKeyLifetimeSpend("vk1")
+	require.True(t, ok)
+	assert.Equal(t, 5.0, got,
+		"ten concurrent dumps committed a single $5 delta as %v — it must land exactly once", got)
 }
 
 func readGovernanceFile(t *testing.T, name string) string {

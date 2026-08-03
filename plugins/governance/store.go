@@ -56,6 +56,12 @@ type LocalGovernanceStore struct {
 	// lock as the pending map — the dump writes it while request paths read
 	// it, which on the VK object was a data race on every active key.
 	vkLifetimeSpendBase map[string]float64
+	// Serializes DumpVirtualKeyLifetimeSpend end to end. The periodic worker
+	// and the shutdown flush both call it, and shutdown does not wait for the
+	// worker to stop first — without this, both can snapshot the SAME pending
+	// delta and each commit their own atomic increment for it, double-counting
+	// spend that was only ever spent once.
+	lifetimeSpendDumpMu sync.Mutex
 
 	// CEL caching layer for routing rules
 	compiledRoutingPrograms sync.Map // string -> cel.Program (key: ruleID -> compiled CEL program)

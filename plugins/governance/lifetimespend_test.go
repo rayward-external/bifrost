@@ -14,8 +14,12 @@ import (
 // storeWithVK builds a store holding one virtual key at a known starting total.
 func storeWithVK(t *testing.T, vkID string, starting float64) *LocalGovernanceStore {
 	t.Helper()
-	gs := &LocalGovernanceStore{PendingVKLifetimeSpend: make(map[string]float64)}
+	gs := &LocalGovernanceStore{
+		PendingVKLifetimeSpend: make(map[string]float64),
+		vkLifetimeSpendBase:    make(map[string]float64),
+	}
 	gs.virtualKeysByID.Store(vkID, &configstoreTables.TableVirtualKey{ID: vkID, LifetimeSpend: starting})
+	gs.SeedVirtualKeyLifetimeSpend(vkID, starting)
 	return gs
 }
 
@@ -90,11 +94,10 @@ func TestAFailedDumpDoesNotLoseTheSpend(t *testing.T) {
 	gs.BumpVirtualKeyLifetimeSpend(context.Background(), "vk1", 3)
 
 	gs.LifetimeSpendMu.Lock()
-	drained := gs.PendingVKLifetimeSpend
 	gs.PendingVKLifetimeSpend = make(map[string]float64)
 	gs.LifetimeSpendMu.Unlock()
 
-	gs.foldBackLifetimeSpend(drained)
+	gs.foldBackLifetimeSpend([]vkSpendDumpRow{{ID: "vk1", Delta: 3}})
 
 	if got := gs.PendingVKLifetimeSpend["vk1"]; got != 3 {
 		t.Errorf("pending spend after fold-back = %v, want 3", got)
@@ -129,14 +132,100 @@ func TestAnEmptyDumpIsANoOp(t *testing.T) {
 	}
 }
 
-// The guard that makes the whole design safe under a cluster. Asserted on the
-// source because exercising it needs a real DB with two racing writers.
-func TestTheWriteCarriesAMonotonicGuard(t *testing.T) {
+// The first version of this file wrote an absolute total under
+// `WHERE lifetime_spend < ?`, reasoning that a stale node could then never lower
+// a higher value. It cannot — but two healthy nodes computing absolute totals
+// from the same base produce 5 and 7, and the guard keeps 7. The cluster loses 5.
+//
+// A comparison guard turns concurrent contributions into a MAXIMUM, and a maximum
+// is not a sum. The write must be an atomic increment.
+func TestTheWriteIsAnAtomicIncrementAndNotAGuardedTotal(t *testing.T) {
+	// SCOPED to the write function. Checking the whole file matched the header
+	// comment that documents the failed design and reported a defect that was
+	// not there — the same vacuous-guard trap this codebase has hit before.
 	src := readGovernanceFile(t, "lifetimespend.go")
-	if !contains(src, `Where("id = ? AND lifetime_spend < ?"`) {
-		t.Error("the monotonic guard is gone from writeVKSpendBatch; a node carrying a " +
-			"stale lower total can now overwrite a higher persisted one, and x-usage-spend " +
-			"goes DOWN — the one thing it is documented never to do")
+	i := strings.Index(src, "func (gs *LocalGovernanceStore) writeVKSpendBatch")
+	if i < 0 {
+		t.Fatal("writeVKSpendBatch is gone; this guard needs rewriting")
+	}
+	fn := src[i:]
+	if j := strings.Index(fn, "\nfunc "); j > 0 {
+		fn = fn[:j]
+	}
+	src = fn
+
+	if !contains(src, `gorm.Expr("lifetime_spend + ?", row.Delta)`) {
+		t.Error("the write is no longer an atomic increment; concurrent nodes will " +
+			"overwrite each other instead of summing")
+	}
+	if contains(src, "lifetime_spend < ?") {
+		t.Error("a comparison guard is back on the write. It reads as a safety " +
+			"measure and is the opposite: it keeps the LARGEST node-local total " +
+			"instead of the sum, so a multi-node cluster silently undercounts spend")
+	}
+	// A total must never be computed here and handed to SQL.
+	if contains(src, "vk.LifetimeSpend + ") {
+		t.Error("an absolute total is being computed for the write again; only the " +
+			"node-local DELTA may be sent")
+	}
+}
+
+// The base is mutated by the dump goroutine and read by request paths. Both must
+// sit under the same lock, or every active key races during a dump. Run under
+// -race, where an unsynchronised base fails reliably.
+func TestBaseAndPendingAreReadUnderOneLock(t *testing.T) {
+	gs := storeWithVK(t, "vk1", 5)
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); gs.BumpVirtualKeyLifetimeSpend(context.Background(), "vk1", 0.1) }()
+		wg.Add(1)
+		go func() { defer wg.Done(); gs.SeedVirtualKeyLifetimeSpend("vk1", 6) }()
+		wg.Add(1)
+		go func() { defer wg.Done(); _, _ = gs.VirtualKeyLifetimeSpend("vk1") }()
+	}
+	wg.Wait()
+}
+
+// Seeding must never walk the published figure backwards: a config reload can
+// deliver a row read before this node's increment landed.
+func TestSeedingNeverLowersTheBase(t *testing.T) {
+	gs := storeWithVK(t, "vk1", 100)
+	gs.SeedVirtualKeyLifetimeSpend("vk1", 40)
+	got, _ := gs.VirtualKeyLifetimeSpend("vk1")
+	if got != 100 {
+		t.Errorf("a stale reload lowered the total to %v; want it held at 100", got)
+	}
+	gs.SeedVirtualKeyLifetimeSpend("vk1", 150)
+	if got, _ := gs.VirtualKeyLifetimeSpend("vk1"); got != 150 {
+		t.Errorf("a higher persisted total was ignored: %v", got)
+	}
+}
+
+// The base must only advance from a confirmed write. Advancing it optimistically
+// and folding the delta back on failure double-counts — the base has already
+// absorbed the delta, so the retry adds it twice.
+func TestTheBaseIsNotAdvancedOptimistically(t *testing.T) {
+	src := readGovernanceFile(t, "lifetimespend.go")
+	dump := src[strings.Index(src, "func (gs *LocalGovernanceStore) DumpVirtualKeyLifetimeSpend"):]
+	dump = dump[:strings.Index(dump, "\nfunc ")]
+	if contains(dump, "vkLifetimeSpendBase[") {
+		t.Error("the dump writes the base directly; it must only be advanced by " +
+			"refreshLifetimeSpendBase after a committed write")
+	}
+	if !contains(dump, "gs.refreshLifetimeSpendBase(ctx, batch)") {
+		t.Error("the base is never refreshed from the row after a write, so the " +
+			"published figure omits every other node's contributions")
+	}
+}
+
+// A later batch failing must not requeue deltas an earlier batch already
+// committed.
+func TestFoldBackIsPerBatchNotPerDrain(t *testing.T) {
+	src := readGovernanceFile(t, "lifetimespend.go")
+	if !contains(src, "gs.foldBackLifetimeSpend(batch)") {
+		t.Error("fold-back is no longer scoped to the failing batch; a late failure " +
+			"would requeue already-persisted spend and double-count it")
 	}
 }
 

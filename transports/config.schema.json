@@ -919,6 +919,11 @@
                 "type": "string",
                 "description": "Associated rate limit ID"
               },
+              "lifetime_spend": {
+                "type": "number",
+                "description": "Cumulative spend for this key in dollars. Monotonic: never reset by a budget window rollover.",
+                "default": 0
+              },
               "provider_configs": {
                 "type": "array",
                 "description": "Provider configurations for this virtual key (empty means no providers allowed, deny-by-default)",
@@ -6549,6 +6554,11 @@
           "type": "boolean",
           "description": "Snap budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year) for this profile",
           "default": false
+        },
+        "lifetime_spend": {
+          "type": "number",
+          "description": "Cumulative spend for this key in dollars. Monotonic: never reset by a budget window rollover.",
+          "default": 0
         },
         "provider_configs": {
           "type": "array",

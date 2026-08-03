@@ -1374,9 +1374,10 @@ func (p *GovernancePlugin) recordUsageSnapshot(ctx *schemas.BifrostContext, virt
 	}
 	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	budgetIDs, _ := p.store.CollectApplicableGovernanceIDs(ctx, virtualKeyValue, userID, provider, model)
-	if len(budgetIDs) == 0 {
-		return
-	}
+	// NOT an early return on an empty budget list. A key with no budget
+	// configured still has a lifetime spend, and returning here would drop
+	// x-usage-spend for exactly those keys — which is what the first version of
+	// this change did while its own comment claimed otherwise.
 
 	now := time.Now()
 	windows := make([]UsageBudgetWindow, 0, len(budgetIDs))

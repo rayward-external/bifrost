@@ -217,7 +217,24 @@ func rewriteModelIn(owner *ast.Node, requestedModel string) bool {
 //
 // Reached with NO CREDENTIAL AT ALL — every unauthenticated request returned it,
 // so this was the first thing a new integration saw.
-var internalAuthDisclosureTokens = []string{"x-bf-vk", "virtual key", "virtual_key"}
+// EXACT auth-failure identities, deliberately NOT the bare phrase "virtual key".
+//
+// Review caught the first draft matching that phrase anywhere, which swept in
+// FIVE routine governance denials that also say it — model_blocked,
+// provider_blocked, model-level rate-limit, budget-exceeded, and MCP-tool-denied
+// ("Model 'x' is not allowed for this virtual key"). Rewriting those to
+// "authentication required" tells a caller who hit a BUDGET CAP to go fix their
+// credentials: worse remediation than the disclosure this file removes, and it
+// destroys the one detail they needed.
+//
+// Only these two failures name x-bf-vk (verified: main.go:1005/1007 are the sole
+// message sites carrying it; the MCP ones are on routes the external LB 403s),
+// so matching the exact identities closes the whole externally reachable
+// surface without touching anything else.
+var internalAuthMessagePrefixes = []string{
+	"virtual key is required",
+	"virtual key not found",
+}
 
 // internalAuthErrorTypes are error `type` values that are internal vocabulary
 // rather than part of any dialect. Replaced with a standard name.
@@ -238,8 +255,8 @@ const (
 // is case-insensitive. Covers the type names too: the OpenAI dialect carries the
 // internal name in the root `type`, where no prose token appears.
 var internalAuthDisclosureProbes = func() [][]byte {
-	probes := make([][]byte, 0, len(internalAuthDisclosureTokens)+len(internalAuthErrorTypes))
-	for _, token := range internalAuthDisclosureTokens {
+	probes := make([][]byte, 0, len(internalAuthMessagePrefixes)+len(internalAuthErrorTypes))
+	for _, token := range internalAuthMessagePrefixes {
 		probes = append(probes, bytes.ToLower([]byte(token)))
 	}
 	for errType := range internalAuthErrorTypes {
@@ -263,12 +280,16 @@ func bodyCarriesAuthDisclosure(body []byte) bool {
 	return false
 }
 
-// messageNamesInternals reports whether an error message mentions internal
-// vocabulary. Case-insensitive.
-func messageNamesInternals(message string) bool {
-	lower := strings.ToLower(message)
-	for _, token := range internalAuthDisclosureTokens {
-		if strings.Contains(lower, token) {
+// messageIsInternalAuthFailure reports whether an error message IS one of the
+// two auth failures, by prefix rather than by mentioning internal vocabulary.
+//
+// Prefix, not substring: "Model 'x' is not allowed for this virtual key" must
+// NOT match. It is a routine 403 whose text is the caller's only clue about
+// what to change, and it is not an auth failure at all.
+func messageIsInternalAuthFailure(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	for _, prefix := range internalAuthMessagePrefixes {
+		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
 	}
@@ -307,7 +328,7 @@ func neutralizeAuthErrorIn(owner *ast.Node) bool {
 	}
 
 	if msgNode := errNode.Get(errorMessageKey); msgNode != nil && msgNode.Valid() {
-		if existing, err := msgNode.StrictString(); err == nil && messageNamesInternals(existing) {
+		if existing, err := msgNode.StrictString(); err == nil && messageIsInternalAuthFailure(existing) {
 			if _, setErr := errNode.Set(errorMessageKey, ast.NewString(neutralAuthErrorMessage)); setErr == nil {
 				changed = true
 			}
@@ -567,10 +588,13 @@ func ApplyBodyPolicy(body []byte, requestedModel string) (out []byte, ok bool) {
 		// through untouched: they are not ours, they cannot carry a top-level
 		// `model` a client would read, and replacing them would destroy error
 		// detail that leaks nothing.
-		// carriesAuthDisclosure joins carriesStrippedKey here rather than relying
-		// on looksLikeJSON: a truncated auth error can carry the gateway name in
-		// the bytes that did arrive while no longer opening with `{`.
-		if carriesStrippedKey || carriesAuthDisclosure || looksLikeJSON(body) {
+		// carriesAuthDisclosure is deliberately NOT a fail-closed trigger. An auth
+		// error is always Bifrost-marshaled JSON, so a truncated one still opens
+		// with `{` and looksLikeJSON already catches it. Adding the token here
+		// bought nothing and cost real damage: a downloaded FILE containing the
+		// phrase would fail sonic.Get and be replaced wholesale with an
+		// internal-error JSON, corrupting a successful response. Caught in review.
+		if carriesStrippedKey || looksLikeJSON(body) {
 			return nil, false
 		}
 		return body, true

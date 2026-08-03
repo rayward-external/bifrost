@@ -150,3 +150,49 @@ func TestNeutralizedBodyKeepsTheErrorEnvelopeShape(t *testing.T) {
 		t.Errorf("the error envelope lost its shape, so a standard client cannot read it\nbody: %s", got)
 	}
 }
+
+// ── regressions caught in review, before this ever shipped ──────────────────
+
+// FIVE routine governance denials also contain the phrase "virtual key":
+// model_blocked, provider_blocked, model-level rate-limit, budget-exceeded and
+// MCP-tool-denied. The first draft matched that phrase anywhere and rewrote all
+// of them to "authentication required: provide a valid API key" — telling a
+// caller who hit a BUDGET CAP to go fix their credentials, and destroying the
+// one detail they needed. Worse remediation than the disclosure being removed.
+func TestRoutineGovernanceDenialsAreNotMistakenForAuthFailures(t *testing.T) {
+	for name, body := range map[string]string{
+		"model_blocked":    `{"type":"model_blocked","status_code":403,"error":{"message":"Model 'gpt-4o' is not allowed for this virtual key"}}`,
+		"provider_blocked": `{"type":"provider_blocked","status_code":403,"error":{"message":"Provider 'openai' is not allowed for this virtual key"}}`,
+		"budget_exceeded":  `{"type":"budget_exceeded","status_code":429,"error":{"message":"Model-level budget exceeded (virtual key scope): daily cap reached"}}`,
+		"rate_limited":     `{"type":"rate_limited","status_code":429,"error":{"message":"Model-level rate limit check failed (virtual key scope): 60 rpm"}}`,
+		"mcp_tool_denied":  `{"type":"mcp_tool_blocked","status_code":403,"error":{"message":"MCP tool 'shell' is not allowed for virtual key 'acme'"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, ok := StripExtraFields([]byte(body))
+			if !ok {
+				t.Fatalf("policy reported failure on a routine denial: %s", body)
+			}
+			if string(got) != body {
+				t.Errorf("a routine %s denial was rewritten as an auth failure.\n"+
+					"the caller now gets the wrong remediation and loses the reason.\n"+
+					" want: %s\n got:  %s", name, body, got)
+			}
+		})
+	}
+}
+
+// A downloaded FILE is not a Bifrost-marshaled response. The first draft made
+// `carriesAuthDisclosure` a fail-closed trigger, so any non-JSON body whose
+// bytes matched was replaced wholesale with an internal-error JSON — corrupting
+// a SUCCESSFUL file download. Caught in review.
+func TestANonJSONFileMentioningTheVocabularySurvives(t *testing.T) {
+	file := []byte("Onboarding notes\n\nStep 3: request a virtual key from the platform team.\n" +
+		"Send it as x-bf-vk on internal calls.\n")
+	got, ok := StripExtraFields(file)
+	if !ok {
+		t.Fatal("a plain-text file was failed closed and replaced with an error JSON")
+	}
+	if string(got) != string(file) {
+		t.Errorf("a plain-text file download was corrupted.\n want: %q\n got:  %q", file, got)
+	}
+}

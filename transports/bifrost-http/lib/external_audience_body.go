@@ -197,6 +197,126 @@ func rewriteModelIn(owner *ast.Node, requestedModel string) bool {
 	return true
 }
 
+// internalAuthDisclosureTokens must never reach an external caller inside an
+// error message. Unlike strippedEnvelopeKeys these live in a VALUE, which is
+// precisely why the key-name policy above cannot see them:
+//
+//	{"type":"virtual_key_required","status_code":401,
+//	 "error":{"message":"virtual key is required. Provide a virtual key via the x-bf-vk header."}}
+//
+//   - `x-bf-vk`     NAMES THE GATEWAY SOFTWARE (bf = Bifrost) — the same
+//     disclosure class as is_bifrost_error above, just carried
+//     in a value instead of a key. The header itself CANNOT be
+//     renamed; it is the real auth header. Only the DISCLOSURE
+//     is removed, and only for external callers.
+//   - `virtual key` our governance primitive's internal name, in prose.
+//
+// It is also WRONG advice externally: outside callers authenticate with
+// Authorization / x-api-key and must never send x-bf-vk, so the original text
+// points them at a header they cannot use.
+//
+// Reached with NO CREDENTIAL AT ALL — every unauthenticated request returned it,
+// so this was the first thing a new integration saw.
+var internalAuthDisclosureTokens = []string{"x-bf-vk", "virtual key", "virtual_key"}
+
+// internalAuthErrorTypes are error `type` values that are internal vocabulary
+// rather than part of any dialect. Replaced with a standard name.
+var internalAuthErrorTypes = map[string]struct{}{
+	"virtual_key_required":  {},
+	"virtual_key_not_found": {},
+}
+
+const (
+	neutralAuthErrorType    = "authentication_error"
+	neutralAuthErrorMessage = "authentication required: provide a valid API key."
+	errorEnvelopeKey        = "error"
+	errorMessageKey         = "message"
+	errorTypeKey            = "type"
+)
+
+// internalAuthDisclosureProbes are the raw-bytes tests, lowercased so the scan
+// is case-insensitive. Covers the type names too: the OpenAI dialect carries the
+// internal name in the root `type`, where no prose token appears.
+var internalAuthDisclosureProbes = func() [][]byte {
+	probes := make([][]byte, 0, len(internalAuthDisclosureTokens)+len(internalAuthErrorTypes))
+	for _, token := range internalAuthDisclosureTokens {
+		probes = append(probes, bytes.ToLower([]byte(token)))
+	}
+	for errType := range internalAuthErrorTypes {
+		probes = append(probes, bytes.ToLower([]byte(errType)))
+	}
+	return probes
+}()
+
+// bodyCarriesAuthDisclosure reports whether the raw bytes carry any internal
+// auth vocabulary. Its OWN trigger, because an auth-error body has neither a
+// stripped key nor a `model` field — so without this the document was returned
+// at the fast path, unparsed and unscrubbed, which is how a 401 naming the
+// gateway software shipped to every unauthenticated external caller.
+func bodyCarriesAuthDisclosure(body []byte) bool {
+	lower := bytes.ToLower(body)
+	for _, probe := range internalAuthDisclosureProbes {
+		if bytes.Contains(lower, probe) {
+			return true
+		}
+	}
+	return false
+}
+
+// messageNamesInternals reports whether an error message mentions internal
+// vocabulary. Case-insensitive.
+func messageNamesInternals(message string) bool {
+	lower := strings.ToLower(message)
+	for _, token := range internalAuthDisclosureTokens {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
+}
+
+// neutralizeAuthErrorIn rewrites internal auth vocabulary inside one envelope,
+// reporting whether it changed anything.
+//
+// Scoped to the `error` OBJECT, never a recursive walk: a successful completion
+// has no root `error`, and a model that writes "virtual key" in prose lands in
+// choices[].message.content, which this never touches. That scoping is what
+// makes a value-level rewrite safe here where a blanket one would corrupt
+// answers.
+//
+// BOTH dialects need handling, and they need it DIFFERENTLY. The OpenAI shape
+// puts the internal name in the root `type`; the Anthropic shape flattens that
+// to a generic `api_error`, so there the message is the ONLY signal. Keying on
+// the type alone would have left every /v1/messages 401 leaking.
+func neutralizeAuthErrorIn(owner *ast.Node) bool {
+	errNode := owner.Get(errorEnvelopeKey)
+	if errNode == nil || !errNode.Valid() || errNode.Type() != ast.V_OBJECT {
+		return false
+	}
+
+	changed := false
+
+	if typeNode := owner.Get(errorTypeKey); typeNode != nil && typeNode.Valid() {
+		if existing, err := typeNode.StrictString(); err == nil {
+			if _, internal := internalAuthErrorTypes[strings.ToLower(existing)]; internal {
+				if _, setErr := owner.Set(errorTypeKey, ast.NewString(neutralAuthErrorType)); setErr == nil {
+					changed = true
+				}
+			}
+		}
+	}
+
+	if msgNode := errNode.Get(errorMessageKey); msgNode != nil && msgNode.Valid() {
+		if existing, err := msgNode.StrictString(); err == nil && messageNamesInternals(existing) {
+			if _, setErr := errNode.Set(errorMessageKey, ast.NewString(neutralAuthErrorMessage)); setErr == nil {
+				changed = true
+			}
+		}
+	}
+
+	return changed
+}
+
 // bodyCarriesStrippedKey reports whether any stripped key appears in the raw
 // bytes. Used for the fast path and for the fail-closed decision.
 func bodyCarriesStrippedKey(body []byte) bool {
@@ -423,7 +543,12 @@ func StripExtraFields(body []byte) (out []byte, ok bool) {
 func ApplyBodyPolicy(body []byte, requestedModel string) (out []byte, ok bool) {
 	carriesStrippedKey := bodyCarriesStrippedKey(body)
 	mayCarryModel := requestedModel != "" && bytes.Contains(body, modelKeyProbe)
-	if !carriesStrippedKey && !mayCarryModel {
+	// Its OWN trigger, not folded into the two above. An auth-error body carries
+	// no stripped key and no `model`, so both existing conditions were false and
+	// the document returned at the fast path unparsed — which is how a 401 naming
+	// the gateway software shipped to every unauthenticated external caller.
+	carriesAuthDisclosure := bodyCarriesAuthDisclosure(body)
+	if !carriesStrippedKey && !mayCarryModel && !carriesAuthDisclosure {
 		// Overwhelmingly the common path for SSE: most chunks are small and the
 		// scan is cheaper than a parse. Also the correct answer for every body
 		// that never had a stripped key and never named a model.
@@ -442,7 +567,10 @@ func ApplyBodyPolicy(body []byte, requestedModel string) (out []byte, ok bool) {
 		// through untouched: they are not ours, they cannot carry a top-level
 		// `model` a client would read, and replacing them would destroy error
 		// detail that leaks nothing.
-		if carriesStrippedKey || looksLikeJSON(body) {
+		// carriesAuthDisclosure joins carriesStrippedKey here rather than relying
+		// on looksLikeJSON: a truncated auth error can carry the gateway name in
+		// the bytes that did arrive while no longer opening with `{`.
+		if carriesStrippedKey || carriesAuthDisclosure || looksLikeJSON(body) {
 			return nil, false
 		}
 		return body, true
@@ -480,6 +608,10 @@ func ApplyBodyPolicy(body []byte, requestedModel string) (out []byte, ok bool) {
 		}
 
 		if mayCarryModel && rewriteModelIn(owner, requestedModel) {
+			changedAny = true
+		}
+
+		if carriesAuthDisclosure && neutralizeAuthErrorIn(owner) {
 			changedAny = true
 		}
 	}

@@ -536,3 +536,54 @@ func TestAudienceHeaderNameIsNeutral(t *testing.T) {
 	}
 	var _ schemas.BifrostHTTPMiddleware = ExternalAudienceHeaderMiddleware()
 }
+
+// prodAuthErrorBody is the ACTUAL 401 measured on router2.trueward.ai
+// 2026-08-04, from a request with NO credential at all. `x-bf-vk` names the
+// gateway software (bf = Bifrost) — the same disclosure class as
+// is_bifrost_error, carried in a VALUE instead of a key, which is why the
+// key-name body policy could not see it.
+const prodAuthErrorBody = `{"type":"virtual_key_required","status_code":401,"error":{"message":"virtual key is required. Provide a virtual key via the x-bf-vk header."}}`
+
+// The EXTERNAL half: the disclosure must be gone by the time it leaves.
+func TestExternalAudienceNeutralizesTheAuthErrorBody(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set(AudienceRequestHeader, ExternalAudience)
+
+	handler := ExternalAudienceHeaderMiddleware()(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusUnauthorized)
+		ctx.SetBodyString(prodAuthErrorBody)
+	})
+	handler(ctx)
+
+	body := strings.ToLower(string(ctx.Response.Body()))
+	for _, marker := range []string{"x-bf-vk", "virtual key", "virtual_key_required"} {
+		if strings.Contains(body, marker) {
+			t.Errorf("external 401 still discloses %q\nbody: %s", marker, ctx.Response.Body())
+		}
+	}
+	// The status must survive untouched — it is the caller's primary signal.
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Errorf("status became %d, want 401", ctx.Response.StatusCode())
+	}
+}
+
+// The INTERNAL half, and the reason the fix lives in the audience-scoped layer
+// rather than in the message at source: an operator debugging a 401 on the
+// internal hostname must still be told which header to send. Without this, an
+// over-broad fix that neutralized the message globally would look identical to
+// the correct one from the external side.
+func TestInternalAudienceKeepsTheAuthErrorHint(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	// No x-gateway-audience header at all => internal.
+
+	handler := ExternalAudienceHeaderMiddleware()(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusUnauthorized)
+		ctx.SetBodyString(prodAuthErrorBody)
+	})
+	handler(ctx)
+
+	if string(ctx.Response.Body()) != prodAuthErrorBody {
+		t.Errorf("an INTERNAL 401 was scrubbed; the diagnostic hint is supposed to survive here\n want: %s\n got:  %s",
+			prodAuthErrorBody, ctx.Response.Body())
+	}
+}

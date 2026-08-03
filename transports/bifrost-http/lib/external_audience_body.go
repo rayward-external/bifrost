@@ -234,6 +234,15 @@ func rewriteModelIn(owner *ast.Node, requestedModel string) bool {
 var internalAuthMessagePrefixes = []string{
 	"virtual key is required",
 	"virtual key not found",
+	// The ENTERPRISE variant of the missing-credential failure
+	// (main.go:1007, behind config.IsEnterprise): "authentication is required.
+	// Provide a virtual key (x-bf-vk), API key, or user token." It shares
+	// neither prefix above, so it slipped the first two drafts entirely — the
+	// OpenAI shape kept the leaking message after only its type was rewritten,
+	// and the Anthropic shape never even reached the parser. Latent rather than
+	// live today, but a leak sitting behind a config flag is the kind that
+	// surfaces the day someone flips it.
+	"authentication is required",
 }
 
 // internalAuthErrorTypes are error `type` values that are internal vocabulary

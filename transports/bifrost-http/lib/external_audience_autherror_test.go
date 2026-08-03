@@ -196,3 +196,36 @@ func TestANonJSONFileMentioningTheVocabularySurvives(t *testing.T) {
 		t.Errorf("a plain-text file download was corrupted.\n want: %q\n got:  %q", file, got)
 	}
 }
+
+// The ENTERPRISE missing-credential message (governance main.go:1007, behind
+// config.IsEnterprise). It shares no prefix with the two standard auth failures,
+// so it slipped both earlier drafts: the OpenAI shape kept the leaking message
+// after only its type was rewritten, and the Anthropic shape never reached the
+// parser at all. Latent rather than live today — but a leak behind a config flag
+// surfaces the day someone flips it.
+func TestTheEnterpriseAuthMessageIsAlsoNeutralized(t *testing.T) {
+	const enterpriseMsg = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
+	for name, body := range map[string]string{
+		"openai":    `{"type":"virtual_key_required","status_code":401,"error":{"message":"` + enterpriseMsg + `"}}`,
+		"anthropic": `{"type":"error","error":{"type":"api_error","message":"` + enterpriseMsg + `"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, ok := StripExtraFields([]byte(body))
+			if !ok {
+				t.Fatalf("policy reported failure: %s", body)
+			}
+			assertNoAuthLeak(t, string(got))
+		})
+	}
+}
+
+// The neutral replacement must not re-trigger its own detection on a second
+// pass. "authentication required: …" deliberately omits the "is" that the
+// enterprise prefix matches; if that ever converges, a neutralized body would
+// keep being reparsed for no reason.
+func TestTheNeutralMessageDoesNotMatchItsOwnDetector(t *testing.T) {
+	if messageIsInternalAuthFailure(neutralAuthErrorMessage) {
+		t.Errorf("the neutral replacement %q matches the auth detector, so every "+
+			"already-scrubbed body re-enters the parse path", neutralAuthErrorMessage)
+	}
+}

@@ -464,6 +464,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_batch_ownership_client_config_columns"}, run: migrationAddBatchOwnershipClientConfigColumns},
 	{IDs: []string{"add_managed_batch_owner_keyset_index"}, run: migrationAddManagedBatchOwnerKeysetIndex},
 	{IDs: []string{"add_managed_file_owner_keyset_index"}, run: migrationAddManagedFileOwnerKeysetIndex},
+	{IDs: []string{"add_virtual_key_lifetime_spend_column"}, run: migrationAddVirtualKeyLifetimeSpendColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -11294,6 +11295,53 @@ func migrationAddPricingOverrideUserIDColumn(ctx context.Context, db *gorm.DB, l
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running pricing override user_id column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyLifetimeSpendColumn adds the lifetime_spend column to
+// virtual_keys.
+//
+// The column backs `x-usage-spend`, documented to a caller as a figure that only
+// ever goes up. Budgets cannot answer it: their CurrentUsage is windowed and the
+// sweep zeroes it every cycle.
+//
+// BACKFILL IS DELIBERATELY ZERO, not a sum over historical logs. Two reasons.
+// The log store is retention-bounded, so any "total" computed from it would be
+// the spend since the oldest surviving row while claiming to be a lifetime — a
+// wrong number wearing a right label. And a backfill on a large logs table is an
+// unbounded scan inside a migration lock. Starting at zero understates, which is
+// visible and self-correcting as usage accrues, rather than asserting a total
+// that was never true.
+func migrationAddVirtualKeyLifetimeSpendColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_lifetime_spend_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableVirtualKey{}, "lifetime_spend") {
+				if err := mg.AddColumn(&tables.TableVirtualKey{}, "LifetimeSpend"); err != nil {
+					return fmt.Errorf("add lifetime_spend column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableVirtualKey{}, "lifetime_spend") {
+				if err := mg.DropColumn(&tables.TableVirtualKey{}, "LifetimeSpend"); err != nil {
+					return fmt.Errorf("drop lifetime_spend column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running virtual key lifetime spend migration: %s", err.Error())
 	}
 	return nil
 }

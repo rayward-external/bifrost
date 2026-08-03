@@ -141,12 +141,12 @@ func UsageSnapshotFromContext(ctx *schemas.BifrostContext) *UsageSnapshot {
 // budget configured still gets whatever else it has, and a snapshot with
 // nothing to say yields an empty map rather than headers carrying placeholders.
 //
-// Spend is currently never present on this gateway — nothing here records a
-// LIFETIME total. Budgets track a windowed CurrentUsage that the sweep resets
-// every cycle, and the documented meaning of the spend header is a figure that
-// only ever goes up. Publishing a resetting number under that name would be
-// worse than publishing none, so the field stays wired and stays nil until a
-// real cumulative figure exists to put in it.
+// Spend IS present now. It was nil for as long as nothing here recorded a
+// lifetime total — budgets track a windowed CurrentUsage the sweep resets, and
+// publishing a resetting number under a name documented to only ever go up
+// would have been worse than publishing none. It is now backed by a persisted,
+// monotonic per-key column; see lifetimespend.go for why nothing cheaper
+// satisfies that contract.
 func (s *UsageSnapshot) Headers(includeCost bool) map[string]string {
 	out := make(map[string]string, 6)
 	if s == nil {

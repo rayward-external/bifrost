@@ -3,28 +3,36 @@ package lib
 import (
 	"strings"
 	"testing"
+
+	"github.com/bytedance/sonic/ast"
 )
 
-// The four bodies below are ACTUAL responses measured on router2.trueward.ai on
-// 2026-08-04, verbatim. Real payloads rather than hand-written stubs for the
-// reason the sibling fixtures give: a synthetic body would be written from the
-// same understanding as the fix, so it could not catch a misunderstanding of
-// the shape. Both dialects AND both auth-failure classes are represented,
-// because they differ in where the disclosure sits.
+// The OpenAI-dialect bodies below are ACTUAL responses measured on
+// router2.trueward.ai on 2026-08-04, verbatim. The Anthropic-dialect bodies are
+// the shape #497 produces post-fix (core/providers/anthropic/errors.go now
+// passes BifrostError.Type through as nested `error.type` instead of collapsing
+// it to generic "api_error" — see errors_test.go for that unit coverage) rather
+// than a second live measurement, since as of this fix the Anthropic dialect no
+// longer independently discloses anything: it derives from the same
+// BifrostError.Type governance already sets. Both dialects AND both
+// auth-failure classes are represented, because pre-#497 they differed in
+// where the disclosure sat.
 
 // Missing / unparseable key. Reachable with NO CREDENTIAL AT ALL.
 const prodAuthRequiredOpenAI = `{"type":"virtual_key_required","status_code":401,"error":{"message":"virtual key is required. Provide a virtual key via the x-bf-vk header."}}`
 
-// Same failure, Anthropic dialect. Note the root `type` is a generic "error"
-// and the internal name is NOT in it — the message is the only signal here, so
-// a fix keyed on the type alone would leave this one leaking.
-const prodAuthRequiredAnthropic = `{"type":"error","error":{"type":"api_error","message":"virtual key is required. Provide a virtual key via the x-bf-vk header."}}`
+// Same failure, Anthropic dialect. Pre-#497 the nested `error.type` was the
+// generic "api_error" and the message was the only signal; #497 makes the
+// Anthropic serializer fall back to BifrostError.Type (same value governance
+// set) whenever the upstream-fidelity `Error.Type` field is absent, so this
+// now carries the same internal identity the OpenAI dialect always did.
+const prodAuthRequiredAnthropic = `{"type":"error","error":{"type":"virtual_key_required","message":"virtual key is required. Provide a virtual key via the x-bf-vk header."}}`
 
 // Well-formed but REVOKED key — a routine event whenever we rotate a customer's
 // credential, not an edge case.
 const prodAuthNotFoundOpenAI = `{"type":"virtual_key_not_found","status_code":401,"error":{"message":"virtual key not found. The provided virtual key does not exist or has been revoked."}}`
 
-const prodAuthNotFoundAnthropic = `{"type":"error","error":{"type":"api_error","message":"virtual key not found. The provided virtual key does not exist or has been revoked."}}`
+const prodAuthNotFoundAnthropic = `{"type":"error","error":{"type":"virtual_key_not_found","message":"virtual key not found. The provided virtual key does not exist or has been revoked."}}`
 
 // authLeakMarkers are asserted individually so a failure names WHICH disclosure
 // escaped rather than just "bodies differ".
@@ -185,9 +193,14 @@ func TestRoutineGovernanceDenialsAreNotMistakenForAuthFailures(t *testing.T) {
 // `carriesAuthDisclosure` a fail-closed trigger, so any non-JSON body whose
 // bytes matched was replaced wholesale with an internal-error JSON — corrupting
 // a SUCCESSFUL file download. Caught in review.
+//
+// The fixture deliberately mentions "virtual_key_required" (the literal type
+// string, post-#497 the only thing the raw-bytes probe looks for) so this still
+// exercises the trigger-fires-but-is-not-fail-closed path rather than skipping
+// the probe entirely via the fast path.
 func TestANonJSONFileMentioningTheVocabularySurvives(t *testing.T) {
-	file := []byte("Onboarding notes\n\nStep 3: request a virtual key from the platform team.\n" +
-		"Send it as x-bf-vk on internal calls.\n")
+	file := []byte("Onboarding notes\n\nStep 3: our gateway raises virtual_key_required " +
+		"when a caller sends no credential; provide one via x-bf-vk on internal calls.\n")
 	got, ok := StripExtraFields(file)
 	if !ok {
 		t.Fatal("a plain-text file was failed closed and replaced with an error JSON")
@@ -198,16 +211,17 @@ func TestANonJSONFileMentioningTheVocabularySurvives(t *testing.T) {
 }
 
 // The ENTERPRISE missing-credential message (governance main.go:1007, behind
-// config.IsEnterprise). It shares no prefix with the two standard auth failures,
-// so it slipped both earlier drafts: the OpenAI shape kept the leaking message
-// after only its type was rewritten, and the Anthropic shape never reached the
-// parser at all. Latent rather than live today — but a leak behind a config flag
-// surfaces the day someone flips it.
+// config.IsEnterprise) shares no prose prefix with the two standard auth
+// failures — a message-matching predicate had to special-case it. Governance
+// sets the SAME top-level Type ("virtual_key_required") for both the standard
+// and enterprise message, only the message text differs by config flag, so a
+// type-only predicate covers this variant for free: nothing to special-case,
+// nothing that can be missed by a future message rewording behind the flag.
 func TestTheEnterpriseAuthMessageIsAlsoNeutralized(t *testing.T) {
 	const enterpriseMsg = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
 	for name, body := range map[string]string{
 		"openai":    `{"type":"virtual_key_required","status_code":401,"error":{"message":"` + enterpriseMsg + `"}}`,
-		"anthropic": `{"type":"error","error":{"type":"api_error","message":"` + enterpriseMsg + `"}}`,
+		"anthropic": `{"type":"error","error":{"type":"virtual_key_required","message":"` + enterpriseMsg + `"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, ok := StripExtraFields([]byte(body))
@@ -219,14 +233,13 @@ func TestTheEnterpriseAuthMessageIsAlsoNeutralized(t *testing.T) {
 	}
 }
 
-// The neutral replacement must not re-trigger its own detection on a second
-// pass. "authentication required: …" deliberately omits the "is" that the
-// enterprise prefix matches; if that ever converges, a neutralized body would
-// keep being reparsed for no reason.
-func TestTheNeutralMessageDoesNotMatchItsOwnDetector(t *testing.T) {
-	if messageIsInternalAuthFailure(neutralAuthErrorMessage) {
-		t.Errorf("the neutral replacement %q matches the auth detector, so every "+
-			"already-scrubbed body re-enters the parse path", neutralAuthErrorMessage)
+// The neutral replacement type must not re-trigger its own detection on a
+// second pass — otherwise an already-scrubbed body would keep being flagged
+// and reprocessed for no reason.
+func TestTheNeutralTypeDoesNotMatchItsOwnDetector(t *testing.T) {
+	if _, internal := internalAuthErrorTypes[strings.ToLower(neutralAuthErrorType)]; internal {
+		t.Errorf("the neutral replacement type %q matches the internal-auth-type set, so every "+
+			"already-scrubbed body would be re-flagged and reprocessed", neutralAuthErrorType)
 	}
 }
 
@@ -253,15 +266,20 @@ func TestAnUpstreamProvidersOwnAuthErrorIsNotOverwritten(t *testing.T) {
 	}
 }
 
-// The discriminator that makes the above safe: our own header name. No upstream
-// emits x-bf-vk, so its presence proves authorship in a way no English phrase
-// can — which is why the enterprise message is matched by TOKEN, not prefix.
-func TestOurOwnHeaderNameIsWhatIdentifiesOurMessages(t *testing.T) {
-	if !messageIsInternalAuthFailure("authentication is required. Provide a virtual key (x-bf-vk), API key, or user token.") {
-		t.Error("the enterprise message is no longer recognised, so it leaks again")
+// The discriminator that makes the above safe: our own TYPE vocabulary, never
+// English prose. No upstream provider mints "virtual_key_required" or
+// "virtual_key_not_found" as an error type, so their presence is unambiguous
+// proof of authorship in a way no shared-English phrase (e.g. "authentication
+// is required...") ever was — that phrase overlap is exactly what caused the
+// round-1 and round-3 false positives before #497.
+func TestTypeIsWhatIdentifiesOurErrors(t *testing.T) {
+	ours := ast.NewString("virtual_key_required")
+	if !typeNodeIsInternalAuthError(&ours) {
+		t.Error("our own internal type is no longer recognised, so it leaks again")
 	}
-	if messageIsInternalAuthFailure("Authentication is required to access this resource") {
-		t.Error("a generic upstream phrase is being claimed as ours; that overwrites " +
+	upstream := ast.NewString("authentication_error")
+	if typeNodeIsInternalAuthError(&upstream) {
+		t.Error("a generic upstream type is being claimed as ours; that overwrites " +
 			"provider detail — the round-1 and round-3 defect, twice over")
 	}
 }

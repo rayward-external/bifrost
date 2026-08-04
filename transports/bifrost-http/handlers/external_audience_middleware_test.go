@@ -587,3 +587,50 @@ func TestInternalAudienceKeepsTheAuthErrorHint(t *testing.T) {
 			prodAuthErrorBody, ctx.Response.Body())
 	}
 }
+
+// prodAuthErrorBodyAnthropic is the /v1/messages counterpart of
+// prodAuthErrorBody, in the shape #497 produces: core/providers/anthropic/errors.go
+// now passes BifrostError.Type through as the nested `error.type` instead of
+// collapsing it to generic "api_error", so this dialect carries the same
+// internal identity the OpenAI shape above always did. This layer (the actual
+// audience gate, per ExternalAudienceHeaderMiddleware) never had an Anthropic-
+// shape case before #497 — added here so a regression on this dialect fails at
+// the layer where the gate itself lives, not only in the lib package.
+const prodAuthErrorBodyAnthropic = `{"type":"error","error":{"type":"virtual_key_required","message":"virtual key is required. Provide a virtual key via the x-bf-vk header."}}`
+
+func TestExternalAudienceNeutralizesTheAnthropicAuthErrorBody(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set(AudienceRequestHeader, ExternalAudience)
+
+	handler := ExternalAudienceHeaderMiddleware()(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusUnauthorized)
+		ctx.SetBodyString(prodAuthErrorBodyAnthropic)
+	})
+	handler(ctx)
+
+	body := strings.ToLower(string(ctx.Response.Body()))
+	for _, marker := range []string{"x-bf-vk", "virtual key", "virtual_key_required"} {
+		if strings.Contains(body, marker) {
+			t.Errorf("external Anthropic-dialect 401 still discloses %q\nbody: %s", marker, ctx.Response.Body())
+		}
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Errorf("status became %d, want 401", ctx.Response.StatusCode())
+	}
+}
+
+func TestInternalAudienceKeepsTheAnthropicAuthErrorHint(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	// No x-gateway-audience header at all => internal.
+
+	handler := ExternalAudienceHeaderMiddleware()(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusUnauthorized)
+		ctx.SetBodyString(prodAuthErrorBodyAnthropic)
+	})
+	handler(ctx)
+
+	if string(ctx.Response.Body()) != prodAuthErrorBodyAnthropic {
+		t.Errorf("an INTERNAL Anthropic-dialect 401 was scrubbed; the diagnostic hint is supposed to survive here\n want: %s\n got:  %s",
+			prodAuthErrorBodyAnthropic, ctx.Response.Body())
+	}
+}

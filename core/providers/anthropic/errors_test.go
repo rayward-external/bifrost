@@ -67,6 +67,51 @@ func TestToAnthropicChatCompletionError(t *testing.T) {
 			},
 			expectedType: "api_error",
 		},
+		{
+			name: "top-level Type is used when Error.Type is absent",
+			input: &schemas.BifrostError{
+				Type: strPtr("virtual_key_required"),
+				Error: &schemas.ErrorField{
+					Message: "virtual key is required. Provide a virtual key via the x-bf-vk header.",
+				},
+			},
+			expectedType: "virtual_key_required",
+		},
+		{
+			name: "Error.Type wins over top-level Type so upstream fidelity survives",
+			input: &schemas.BifrostError{
+				Type: strPtr("gemini_api_error"),
+				Error: &schemas.ErrorField{
+					Type:    strPtr("overloaded_error"),
+					Message: "the model is overloaded",
+				},
+			},
+			expectedType: "overloaded_error",
+		},
+		{
+			name: "empty-string Error.Type still falls through to top-level Type",
+			input: &schemas.BifrostError{
+				Type: strPtr("virtual_key_not_found"),
+				Error: &schemas.ErrorField{
+					Type:    strPtr(""),
+					Message: "virtual key not found.",
+				},
+			},
+			expectedType: "virtual_key_not_found",
+		},
+		{
+			name: "top-level Type used when Error field is nil",
+			input: &schemas.BifrostError{
+				Type:  strPtr("model_blocked"),
+				Error: nil,
+			},
+			expectedType: "model_blocked",
+		},
+		{
+			name:         "both Type sources unset defaults to api_error",
+			input:        &schemas.BifrostError{},
+			expectedType: "api_error",
+		},
 	}
 
 	for _, tt := range tests {

@@ -14,14 +14,23 @@ func ToAnthropicChatCompletionError(bifrostErr *schemas.BifrostError) *Anthropic
 		return nil
 	}
 
-	// Safely extract type and message from nested error
+	// Safely extract type and message from nested error. Error.Type (set when Bifrost
+	// parsed a real upstream provider error, e.g. ParseAnthropicError/ParseOpenAIError)
+	// takes priority so upstream fidelity is never shadowed by Bifrost's own vocabulary;
+	// the top-level Type (set by Bifrost itself, e.g. governance's "virtual_key_required")
+	// is the fallback so internal errors still carry a distinguishable type on this dialect
+	// instead of collapsing to the generic "api_error" default.
 	errorType := "api_error"
 	message := ""
 	if bifrostErr.Error != nil {
 		if bifrostErr.Error.Type != nil && *bifrostErr.Error.Type != "" {
 			errorType = *bifrostErr.Error.Type
+		} else if bifrostErr.Type != nil && *bifrostErr.Type != "" {
+			errorType = *bifrostErr.Type
 		}
 		message = bifrostErr.Error.Message
+	} else if bifrostErr.Type != nil && *bifrostErr.Type != "" {
+		errorType = *bifrostErr.Type
 	}
 
 	// Handle nested error fields with nil checks

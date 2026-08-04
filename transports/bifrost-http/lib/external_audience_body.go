@@ -201,15 +201,15 @@ func rewriteModelIn(owner *ast.Node, requestedModel string) bool {
 // error message. Unlike strippedEnvelopeKeys these live in a VALUE, which is
 // precisely why the key-name policy above cannot see them:
 //
-//	{"type":"virtual_key_required","status_code":401,
-//	 "error":{"message":"virtual key is required. Provide a virtual key via the x-bf-vk header."}}
+//		{"type":"virtual_key_required","status_code":401,
+//		 "error":{"message":"virtual key is required. Provide a virtual key via the x-bf-vk header."}}
 //
-//   - `x-bf-vk`     NAMES THE GATEWAY SOFTWARE (bf = Bifrost) — the same
-//     disclosure class as is_bifrost_error above, just carried
-//     in a value instead of a key. The header itself CANNOT be
-//     renamed; it is the real auth header. Only the DISCLOSURE
-//     is removed, and only for external callers.
-//   - `virtual key` our governance primitive's internal name, in prose.
+//	  - `x-bf-vk`     NAMES THE GATEWAY SOFTWARE (bf = Bifrost) — the same
+//	    disclosure class as is_bifrost_error above, just carried
+//	    in a value instead of a key. The header itself CANNOT be
+//	    renamed; it is the real auth header. Only the DISCLOSURE
+//	    is removed, and only for external callers.
+//	  - `virtual key` our governance primitive's internal name, in prose.
 //
 // It is also WRONG advice externally: outside callers authenticate with
 // Authorization / x-api-key and must never send x-bf-vk, so the original text
@@ -227,36 +227,22 @@ func rewriteModelIn(owner *ast.Node, requestedModel string) bool {
 // credentials: worse remediation than the disclosure this file removes, and it
 // destroys the one detail they needed.
 //
-// Only these two failures name x-bf-vk (verified: main.go:1005/1007 are the sole
-// message sites carrying it; the MCP ones are on routes the external LB 403s),
-// so matching the exact identities closes the whole externally reachable
-// surface without touching anything else.
-// internalAuthOwnToken is the unambiguous marker that a message is OURS.
-// x-bf-vk is our own header name; no upstream provider emits it, so its
-// presence in an error message is proof of authorship in a way no English
-// phrase can be.
-const internalAuthOwnToken = "x-bf-vk"
-
-// internalAuthMessagePrefixes cover the one internal auth message that does NOT
-// name the header ("virtual key not found…"). Deliberately specific.
+// This used to be message-prose matching (a `x-bf-vk` token check plus two
+// prefix strings), which took three review rounds to get right and still had a
+// false-positive/false-negative oscillation: broad enough to catch the
+// enterprise variant meant catching upstream's own "Authentication is
+// required..." too (core/providers/openai/errors.go preserves that verbatim).
+// #497 fixed the root cause instead: core/providers/anthropic/errors.go now
+// passes BifrostError.Type through to the wire (nested `error.type`) instead of
+// collapsing every internal error to generic "api_error", so the Anthropic
+// dialect carries the same machine-readable identity the OpenAI dialect always
+// did. Keying on that type is the whole check now — no message text, ever,
+// which means a caller-visible upstream message can never be mistaken for ours.
 //
-// The enterprise variant ("authentication is required. Provide a virtual key
-// (x-bf-vk)…") is matched by internalAuthOwnToken instead. Adding
-// "authentication is required" as a PREFIX here — the round-2 fix — reintroduced
-// exactly the false-positive class round 1 had just removed: an upstream
-// "Authentication is required to access this resource" is preserved verbatim by
-// core/providers/openai/errors.go and would have been overwritten with our
-// generic text, destroying the caller's actionable detail. Two rounds in a row
-// the over-broad match was the defect, so the rule is now: match our own TOKEN,
-// or an exact distinctive prefix — never a phrase English shares with upstreams.
-var internalAuthMessagePrefixes = []string{
-	"virtual key is required",
-	"virtual key not found",
-}
-
-
 // internalAuthErrorTypes are error `type` values that are internal vocabulary
-// rather than part of any dialect. Replaced with a standard name.
+// rather than part of any dialect. Replaced with a standard name wherever
+// found — at the OpenAI shape's root `type`, or the Anthropic shape's nested
+// `error.type` (both now checked by neutralizeAuthErrorIn).
 var internalAuthErrorTypes = map[string]struct{}{
 	"virtual_key_required":  {},
 	"virtual_key_not_found": {},
@@ -271,14 +257,11 @@ const (
 )
 
 // internalAuthDisclosureProbes are the raw-bytes tests, lowercased so the scan
-// is case-insensitive. Covers the type names too: the OpenAI dialect carries the
-// internal name in the root `type`, where no prose token appears.
+// is case-insensitive. Type-only: since #497, both dialects carry the internal
+// name as a `type` value — root `type` on the OpenAI shape, nested `error.type`
+// on the Anthropic shape — so a single set of literal type strings covers both.
 var internalAuthDisclosureProbes = func() [][]byte {
-	probes := make([][]byte, 0, len(internalAuthMessagePrefixes)+len(internalAuthErrorTypes)+1)
-	probes = append(probes, bytes.ToLower([]byte(internalAuthOwnToken)))
-	for _, token := range internalAuthMessagePrefixes {
-		probes = append(probes, bytes.ToLower([]byte(token)))
-	}
+	probes := make([][]byte, 0, len(internalAuthErrorTypes))
 	for errType := range internalAuthErrorTypes {
 		probes = append(probes, bytes.ToLower([]byte(errType)))
 	}
@@ -300,24 +283,19 @@ func bodyCarriesAuthDisclosure(body []byte) bool {
 	return false
 }
 
-// messageIsInternalAuthFailure reports whether an error message IS one of the
-// two auth failures, by prefix rather than by mentioning internal vocabulary.
-//
-// Prefix, not substring: "Model 'x' is not allowed for this virtual key" must
-// NOT match. It is a routine 403 whose text is the caller's only clue about
-// what to change, and it is not an auth failure at all.
-func messageIsInternalAuthFailure(message string) bool {
-	lower := strings.ToLower(strings.TrimSpace(message))
-	// Our own header name anywhere in the message is proof of authorship.
-	if strings.Contains(lower, internalAuthOwnToken) {
-		return true
+// typeNodeIsInternalAuthError reports whether a `type` node's value is one of
+// internalAuthErrorTypes. Shared by both the root (OpenAI) and nested
+// (Anthropic) checks in neutralizeAuthErrorIn.
+func typeNodeIsInternalAuthError(node *ast.Node) bool {
+	if node == nil || !node.Valid() {
+		return false
 	}
-	for _, prefix := range internalAuthMessagePrefixes {
-		if strings.HasPrefix(lower, prefix) {
-			return true
-		}
+	existing, err := node.StrictString()
+	if err != nil {
+		return false
 	}
-	return false
+	_, internal := internalAuthErrorTypes[strings.ToLower(existing)]
+	return internal
 }
 
 // neutralizeAuthErrorIn rewrites internal auth vocabulary inside one envelope,
@@ -329,10 +307,16 @@ func messageIsInternalAuthFailure(message string) bool {
 // makes a value-level rewrite safe here where a blanket one would corrupt
 // answers.
 //
-// BOTH dialects need handling, and they need it DIFFERENTLY. The OpenAI shape
-// puts the internal name in the root `type`; the Anthropic shape flattens that
-// to a generic `api_error`, so there the message is the ONLY signal. Keying on
-// the type alone would have left every /v1/messages 401 leaking.
+// Type-only, on purpose (#497). This used to also pattern-match the message
+// string, because the Anthropic dialect collapsed every internal error type to
+// generic "api_error" — message text was the only signal left. Three review
+// rounds of that oscillated between too broad (catching routine governance
+// denials, then an upstream's own "Authentication is required...") and too
+// narrow (missing the enterprise variant). core/providers/anthropic/errors.go
+// now passes BifrostError.Type through as the nested `error.type` instead of
+// discarding it, so both dialects carry the same machine-readable identity and
+// this can key on type alone — which can never collide with caller-visible
+// prose, upstream or ours.
 func neutralizeAuthErrorIn(owner *ast.Node) bool {
 	errNode := owner.Get(errorEnvelopeKey)
 	if errNode == nil || !errNode.Valid() || errNode.Type() != ast.V_OBJECT {
@@ -341,18 +325,23 @@ func neutralizeAuthErrorIn(owner *ast.Node) bool {
 
 	changed := false
 
-	if typeNode := owner.Get(errorTypeKey); typeNode != nil && typeNode.Valid() {
-		if existing, err := typeNode.StrictString(); err == nil {
-			if _, internal := internalAuthErrorTypes[strings.ToLower(existing)]; internal {
-				if _, setErr := owner.Set(errorTypeKey, ast.NewString(neutralAuthErrorType)); setErr == nil {
-					changed = true
-				}
-			}
+	// Root `type` — the OpenAI shape's internal identity.
+	if typeNodeIsInternalAuthError(owner.Get(errorTypeKey)) {
+		if _, setErr := owner.Set(errorTypeKey, ast.NewString(neutralAuthErrorType)); setErr == nil {
+			changed = true
 		}
 	}
 
-	if msgNode := errNode.Get(errorMessageKey); msgNode != nil && msgNode.Valid() {
-		if existing, err := msgNode.StrictString(); err == nil && messageIsInternalAuthFailure(existing) {
+	// Nested `error.type` — the Anthropic shape's internal identity. The root
+	// `type` there is always the literal "error" and must never be touched.
+	if typeNodeIsInternalAuthError(errNode.Get(errorTypeKey)) {
+		if _, setErr := errNode.Set(errorTypeKey, ast.NewString(neutralAuthErrorType)); setErr == nil {
+			changed = true
+		}
+	}
+
+	if changed {
+		if msgNode := errNode.Get(errorMessageKey); msgNode != nil && msgNode.Valid() {
 			if _, setErr := errNode.Set(errorMessageKey, ast.NewString(neutralAuthErrorMessage)); setErr == nil {
 				changed = true
 			}

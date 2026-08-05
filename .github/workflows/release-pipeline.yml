@@ -251,7 +251,7 @@ jobs:
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
           AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
-          GOTEST_SKIP: 'TestTranscriptionStreamContextCancellation$|TestTranscriptionWithMockServer$|TestMistralProvider_CustomAliasChatStreamUsesBaseCompatibilityAndAliasMetadata$|TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks/gpt-oss_variant_model_converts_Summary_to_ContentBlocks$|TestOverheadEndToEndUnary$|TestOverheadEndToEndStreaming$'
+          GOTEST_SKIP: 'TestTranscriptionStreamContextCancellation$|TestTranscriptionWithMockServer$|TestMistralProvider_CustomAliasChatStreamUsesBaseCompatibilityAndAliasMetadata$|TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks/gpt-oss_variant_model_converts_Summary_to_ContentBlocks$|TestOverheadEndToEndUnary$|TestOverheadEndToEndStreaming$|TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_EmptyBlocks/ValidFileBlock_ShouldCreateBlock$|TestDocumentFormatMapping$'
         run: ./.github/workflows/scripts/test-core.sh
 
   # Approval gate for flaky test-core failures

@@ -124,3 +124,9 @@ exclude_lines = [
 
 [tool.uv]
 exclude-newer = "2026-07-10T00:00:00Z"
+
+[tool.uv.exclude-newer-package]
+# Security fix: allow patched releases past the reproducibility cutoff above.
+# aiohttp 3.14.3 fixes CVE-2026-59881/CVE-2026-69243/CVE-2026-69244; cryptography 50.0.0 fixes CVE-2026-69247.
+aiohttp = "2026-08-01T00:00:00Z"
+cryptography = "2026-08-01T00:00:00Z"

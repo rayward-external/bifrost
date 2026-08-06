@@ -915,6 +915,11 @@
                 "minimum": 1,
                 "description": "Associated access profile ID for direct access profile assignment (mutually exclusive with team_id and customer_id)"
               },
+              "is_access_profile_managed": {
+                "type": "boolean",
+                "description": "Read-only, server-computed flag: true when the virtual key is governed by an access profile. Never persisted and ignored if set in config.json.",
+                "readOnly": true
+              },
               "rate_limit_id": {
                 "type": "string",
                 "description": "Associated rate limit ID"
@@ -5770,6 +5775,7 @@
           "default": "roles"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -5826,6 +5832,7 @@
           "default": "roles"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -5876,6 +5883,7 @@
           "default": "roles"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"}
@@ -5934,6 +5942,7 @@
           "items": { "type": "string" }
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -5983,6 +5992,7 @@
           "default": "groups"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -6041,6 +6051,7 @@
           "default": "groups"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -6125,6 +6136,7 @@
           "description": "JWT claim field for team IDs"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -7425,7 +7437,7 @@
     },
     "scim_attribute_role_mappings": {
       "type": "array",
-      "description": "Ordered list of attribute -> role mappings (first match wins).",
+      "description": "List of attribute -> role mappings. When a user resolves to more than one role (from these mappings, the native roles claim, or group/attribute channels), roleResolutionStrategy decides which single role is assigned: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates this mappings list top to bottom and the first matching rule wins.",
       "items": {
         "type": "object",
         "properties": {
@@ -7445,6 +7457,12 @@
         "required": ["attribute", "value", "role"],
         "additionalProperties": false
       }
+    },
+    "scim_role_resolution_strategy": {
+      "type": "string",
+      "enum": ["highestPermissionCount", "order"],
+      "default": "highestPermissionCount",
+      "description": "How a single role is chosen when a user resolves to more than one role: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates the attribute-role mappings top to bottom and the first matching rule wins."
     },
     "scim_attribute_team_mappings": {
       "type": "array",

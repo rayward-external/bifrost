@@ -6099,7 +6099,6 @@ func executeRequestWithRetries[T any](
 		}
 
 		if attempts > 0 {
-			retryLimit := effectiveRetryLimitForError(ctx, config, requestType, bifrostError, keyProvider != nil)
 			// Log retry attempt
 			var retryMsg string
 			if bifrostError != nil && bifrostError.Error != nil {

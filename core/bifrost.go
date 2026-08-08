@@ -6472,7 +6472,10 @@ func executeRequestWithRetries[T any](
 		}
 
 		retryLimit := effectiveRetryLimitForError(ctx, config, requestType, bifrostError, keyProvider != nil)
-		if attempts >= retryLimit {
+		// Widest of the fork's own extension (responses-affinity recovery) and upstream's
+		// encrypted-reasoning fail-soft grant — otherwise a just-incremented extraAttempts
+		// (above) is silently discarded whenever retryLimit == config.NetworkConfig.MaxRetries.
+		if attempts >= max(retryLimit, config.NetworkConfig.MaxRetries+extraAttempts) {
 			break
 		}
 

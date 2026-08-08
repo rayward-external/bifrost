@@ -1481,125 +1481,133 @@ func TestOpenAIChatRequest_StripsWebSearchOptionsFilters(t *testing.T) {
 	require.NotNil(t, req.ChatParameters.WebSearchOptions.Filters)
 }
 
-// TestToOpenAIChatRequest_ReasoningEffortForwardedForOpenAIAzure pins the
-// endpoint-scoped reasoning_effort policy (rayward-internal #310).
-//
-// On the OpenAI/Azure chat path the caller's effort is forwarded verbatim so the
-// provider can reject an unsupported level with a 400 that names the values it
-// accepts. Remapping here previously made the same request answer 200-as-xhigh
-// on gpt-5.5 but 400 on gpt-5.6, with no way for the caller to tell which.
-func TestToOpenAIChatRequest_ReasoningEffortForwardedForOpenAIAzure(t *testing.T) {
+// TestToOpenAIChatRequest_PreservesDeepSeekToolCallReasoningContent covers the outbound
+// half of issue #5887. DeepSeek requires reasoning_content to be replayed on assistant
+// tool_call turns (400 without it) while rejecting it on ordinary assistant turns, so the
+// strip must be selective rather than unconditional.
+func TestToOpenAIChatRequest_PreservesDeepSeekToolCallReasoningContent(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
 	defer cancel()
 
-	userContent := "hi"
-	mkReq := func(provider schemas.ModelProvider, model, effort string) *schemas.BifrostChatRequest {
-		return &schemas.BifrostChatRequest{
-			Provider: provider,
-			Model:    model,
-			Input: []schemas.ChatMessage{{
-				Role:    schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{ContentStr: &userContent},
-			}},
-			Params: &schemas.ChatParameters{
-				Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(effort)},
+	toolCallReasoning := "the user wants the time, call the tool"
+	plainReasoning := "no tool needed here"
+	plainAnswer := "It is 12:00 UTC."
+	toolCallID := "call_1"
+	toolName := "get_current_time"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4-flash",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &toolCallReasoning,
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:       &toolCallID,
+						Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`},
+					}},
+				},
 			},
-		}
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: &plainAnswer},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &plainReasoning,
+				},
+			},
+		},
 	}
 
-	// OpenAI/Azure: forwarded untouched, whatever the level.
-	for _, tt := range []struct {
-		name     string
-		provider schemas.ModelProvider
-		model    string
-		effort   string
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	require.NotNil(t, result)
+	require.Len(t, result.Messages, 2)
+
+	require.NotNil(t, result.Messages[0].OpenAIChatAssistantMessage)
+	require.NotNil(t, result.Messages[0].OpenAIChatAssistantMessage.Reasoning,
+		"reasoning_content must be preserved on a DeepSeek assistant tool_call turn")
+	require.Equal(t, toolCallReasoning, *result.Messages[0].OpenAIChatAssistantMessage.Reasoning)
+
+	require.NotNil(t, result.Messages[1].OpenAIChatAssistantMessage)
+	require.Nil(t, result.Messages[1].OpenAIChatAssistantMessage.Reasoning,
+		"reasoning_content must still be stripped from a DeepSeek assistant turn without tool calls")
+}
+
+// TestConvertOpenAIMessagesToBifrostMessages_NormalizesReasoningSpellings covers the inbound
+// half of issue #5887: callers replay assistant reasoning as reasoning_content, reasoning,
+// or reasoning_details, and all three must reach the Bifrost schema so provider logic that
+// gates on replayed reasoning behaves the same either way.
+func TestConvertOpenAIMessagesToBifrostMessages_NormalizesReasoningSpellings(t *testing.T) {
+	reasoning := "step by step"
+
+	tests := []struct {
+		name    string
+		payload string
 	}{
-		{"gpt-5.5 max is not silently downgraded to xhigh", schemas.OpenAI, "gpt-5.5", "max"},
-		{"gpt-5.6 max is unchanged", schemas.OpenAI, "gpt-5.6", "max"},
-		{"gpt-5.1 xhigh is not silently downgraded to high", schemas.OpenAI, "gpt-5.1", "xhigh"},
-		{"gpt-5 minimal is not silently rewritten to low", schemas.OpenAI, "gpt-5", "minimal"},
-		{"azure gpt-5.5 max is not silently downgraded", schemas.Azure, "gpt-5.5", "max"},
-		{"standard effort still passes through", schemas.OpenAI, "gpt-5.1", "medium"},
-	} {
+		{name: "reasoning_content", payload: `{"role":"assistant","reasoning_content":"step by step"}`},
+		{name: "reasoning", payload: `{"role":"assistant","reasoning":"step by step"}`},
+		{name: "reasoning_details", payload: `{"role":"assistant","reasoning_details":[{"index":0,"type":"reasoning.text","text":"step by step"}]}`},
+	}
+
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out := ToOpenAIChatRequest(ctx, mkReq(tt.provider, tt.model, tt.effort))
-			require.NotNil(t, out)
-			require.NotNil(t, out.ChatParameters.Reasoning)
-			require.NotNil(t, out.ChatParameters.Reasoning.Effort)
-			require.Equal(t, tt.effort, *out.ChatParameters.Reasoning.Effort,
-				"OpenAI/Azure chat must forward reasoning_effort verbatim")
+			var msg OpenAIMessage
+			require.NoError(t, sonic.Unmarshal([]byte(tt.payload), &msg))
+
+			converted := ConvertOpenAIMessagesToBifrostMessages([]OpenAIMessage{msg})
+			require.Len(t, converted, 1)
+			require.NotNil(t, converted[0].ChatAssistantMessage)
+			require.NotNil(t, converted[0].ChatAssistantMessage.Reasoning,
+				"replayed reasoning must reach the Bifrost schema regardless of spelling")
+			require.Equal(t, reasoning, *converted[0].ChatAssistantMessage.Reasoning)
 		})
 	}
+}
 
-	// Fireworks now FORWARDS too, for the same reason OpenAI/Azure do: it polices
-	// its own vocabulary and answers an unsupported level with a 400 naming what it
-	// accepts. Measured 2026-07-28 against Fireworks directly with a provider key,
-	// accounts/fireworks/models/kimi-k3: reasoning_effort="minimal" -> HTTP 400,
-	// every other level -> 200. With the remap, the SAME request through Bifrost
-	// returned 200 because minimal had been rewritten to "low" — the gateway was
-	// MORE permissive than the provider and served a level the caller never asked
-	// for, undetectably client-side. Do not restore the remap for Fireworks.
-	for _, tt := range []struct {
-		name   string
-		model  string
-		effort string
-	}{
-		{"fireworks minimal is not silently rewritten to low", "accounts/fireworks/models/kimi-k3", "minimal"},
-		{"fireworks max is not silently downgraded", "accounts/fireworks/models/kimi-k3", "max"},
-		{"fireworks xhigh is not silently downgraded", "accounts/fireworks/models/kimi-k3", "xhigh"},
-		{"fireworks standard effort still passes through", "accounts/fireworks/models/deepseek-v3p2", "medium"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			out := ToOpenAIChatRequest(ctx, mkReq(schemas.Fireworks, tt.model, tt.effort))
-			require.NotNil(t, out)
-			require.NotNil(t, out.ChatParameters.Reasoning)
-			require.NotNil(t, out.ChatParameters.Reasoning.Effort)
-			require.Equal(t, tt.effort, *out.ChatParameters.Reasoning.Effort,
-				"Fireworks must forward reasoning_effort verbatim and let the provider police its own vocabulary")
+// TestToOpenAIChatRequest_DoesNotEmitInboundReasoningAliases pins the inbound-only contract
+// on OpenAIChatAssistantMessage: the "reasoning" and "reasoning_details" aliases exist to
+// parse requests and must never appear on the outbound wire for any provider.
+func TestToOpenAIChatRequest_DoesNotEmitInboundReasoningAliases(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	reasoning := "step by step"
+	answer := "It is 12:00 UTC."
+
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.DeepSeek, schemas.XAI} {
+		t.Run(string(provider), func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    "some-model",
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{ContentStr: &answer},
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						Reasoning: &reasoning,
+						ReasoningDetails: []schemas.ChatReasoningDetails{{
+							Index: 0,
+							Type:  schemas.BifrostReasoningDetailsTypeText,
+							Text:  &reasoning,
+						}},
+					},
+				}},
+			}
+
+			wireBody, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
+			require.NoError(t, err)
+
+			var jsonMap map[string]any
+			require.NoError(t, sonic.Unmarshal(wireBody, &jsonMap))
+			messages, ok := jsonMap["messages"].([]any)
+			require.True(t, ok)
+			require.Len(t, messages, 1)
+			assistantMessage, ok := messages[0].(map[string]any)
+			require.True(t, ok)
+
+			require.NotContains(t, assistantMessage, "reasoning",
+				"the inbound-only reasoning alias must never be marshalled outbound")
+			require.NotContains(t, assistantMessage, "reasoning_details",
+				"the inbound-only reasoning_details alias must never be marshalled outbound")
 		})
 	}
-
-	// The compatibility remap still applies to the OTHER OpenAI-compatible
-	// providers that borrow this request shape without implementing the whole
-	// vocabulary — this change is deliberately Fireworks-scoped.
-	t.Run("other compatible providers keep the minimal->low remap", func(t *testing.T) {
-		out := ToOpenAIChatRequest(ctx, mkReq(schemas.Cerebras, "llama-3.3-70b", "minimal"))
-		require.NotNil(t, out)
-		require.NotNil(t, out.ChatParameters.Reasoning)
-		require.NotNil(t, out.ChatParameters.Reasoning.Effort)
-		require.Equal(t, "low", *out.ChatParameters.Reasoning.Effort,
-			"non-Fireworks compatible providers keep the compatibility remap")
-	})
-
-	// The max_tokens -> effort estimation path is independent of the policy and
-	// must still run for OpenAI/Azure.
-	t.Run("openai still estimates effort from max_tokens", func(t *testing.T) {
-		req := mkReq(schemas.OpenAI, "gpt-5.1", "")
-		req.Params.Reasoning = &schemas.ChatReasoning{MaxTokens: schemas.Ptr(20000)}
-		out := ToOpenAIChatRequest(ctx, req)
-		require.NotNil(t, out)
-		require.NotNil(t, out.ChatParameters.Reasoning)
-		require.NotNil(t, out.ChatParameters.Reasoning.Effort)
-		require.NotEmpty(t, *out.ChatParameters.Reasoning.Effort)
-		require.Nil(t, out.ChatParameters.Reasoning.MaxTokens, "max_tokens must be cleared")
-	})
-
-	// The forward path shares the caller's *ChatReasoning pointer (ChatParameters
-	// is a shallow copy of *bifrostReq.Params), so the defensive copy in
-	// resolveReasoningEffort is load-bearing: without it, clearing max_tokens on
-	// the converted request would clear it on the caller's original too. Guard it.
-	t.Run("forward path does not mutate the caller's request", func(t *testing.T) {
-		req := mkReq(schemas.OpenAI, "gpt-5.6", "max")
-		req.Params.Reasoning.MaxTokens = schemas.Ptr(1024)
-
-		out := ToOpenAIChatRequest(ctx, req)
-		require.NotNil(t, out)
-		require.Nil(t, out.ChatParameters.Reasoning.MaxTokens, "converted request clears max_tokens")
-
-		// Caller's original ChatReasoning must be untouched.
-		require.NotNil(t, req.Params.Reasoning.Effort)
-		require.Equal(t, "max", *req.Params.Reasoning.Effort, "caller's effort must not be mutated")
-		require.NotNil(t, req.Params.Reasoning.MaxTokens, "caller's max_tokens must not be cleared")
-		require.Equal(t, 1024, *req.Params.Reasoning.MaxTokens, "caller's max_tokens must not be mutated")
-	})
 }

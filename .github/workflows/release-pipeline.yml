@@ -432,6 +432,7 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Run CLI harness
+        continue-on-error: true # fork quarantine: new job added by the 2026-08-08 sync; drives the real Claude Code / Codex CLIs against live Anthropic/OpenAI through Bifrost, but fork CI has no real provider secrets (same gap documented on test-api-integrations) so every cell 400s/401s at the provider; STEP-level so this stays a required-status-check pass with a warning annotation instead of blocking merges; see fork-patches.txt
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -823,7 +824,6 @@ jobs:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
     runs-on: ubuntu-latest
-    continue-on-error: true # fork quarantine: v1.5.22 added VK list-models test (#3187 flow) that calls provider list_models API; fork API key lacks that scope → 4/501 assertions fail; see fork-patches.txt
     permissions:
       contents: read
     steps:
@@ -922,6 +922,7 @@ jobs:
           fi
 
       - name: Run API integrations test
+        continue-on-error: true # fork quarantine: v1.5.22 added VK list-models test (#3187 flow) that calls provider list_models API; fork API key lacks that scope → 4/501 assertions fail; STEP-level (not job-level, same fix class as test-cost-accuracy) so this stays a required-status-check pass with a warning annotation instead of blocking merges; see fork-patches.txt
         env:
           CI: "1"
           # Fork CI has no provider secrets. The management suite never makes

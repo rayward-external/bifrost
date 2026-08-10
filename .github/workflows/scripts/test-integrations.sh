@@ -52,9 +52,12 @@ echo ""
 echo "🔨 Building bifrost-http from source..."
 cd "$REPO_ROOT"
 
-# Build the UI first, then the binary
-make build-ui
-make build
+# Build the UI first, then the binary. LOCAL=1 keeps GOWORK enabled (see
+# setup-go-workspace.sh above) so the build resolves fork-local module
+# additions (e.g. plugins/governance) instead of their last-published
+# upstream versions pinned in go.mod.
+make build-ui LOCAL=1
+make build LOCAL=1
 
 if [ ! -f "$REPO_ROOT/tmp/bifrost-http" ]; then
   echo "❌ Error: bifrost-http binary not found at $REPO_ROOT/tmp/bifrost-http"

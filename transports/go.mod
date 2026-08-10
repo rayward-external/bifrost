@@ -2,6 +2,21 @@ module github.com/maximhq/bifrost/transports
 
 go 1.26.5
 
+replace (
+	github.com/maximhq/bifrost/core => ../core
+	github.com/maximhq/bifrost/framework => ../framework
+	github.com/maximhq/bifrost/plugins/compat => ../plugins/compat
+	github.com/maximhq/bifrost/plugins/governance => ../plugins/governance
+	github.com/maximhq/bifrost/plugins/logging => ../plugins/logging
+	github.com/maximhq/bifrost/plugins/maxim => ../plugins/maxim
+	github.com/maximhq/bifrost/plugins/mocker => ../plugins/mocker
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver => ../plugins/modelcatalogresolver
+	github.com/maximhq/bifrost/plugins/otel => ../plugins/otel
+	github.com/maximhq/bifrost/plugins/prompts => ../plugins/prompts
+	github.com/maximhq/bifrost/plugins/semanticcache => ../plugins/semanticcache
+	github.com/maximhq/bifrost/plugins/telemetry => ../plugins/telemetry
+)
+
 require (
 	github.com/andybalholm/brotli v1.2.2
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10

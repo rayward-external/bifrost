@@ -465,6 +465,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_managed_batch_owner_keyset_index"}, run: migrationAddManagedBatchOwnerKeysetIndex},
 	{IDs: []string{"add_managed_file_owner_keyset_index"}, run: migrationAddManagedFileOwnerKeysetIndex},
 	{IDs: []string{"add_virtual_key_lifetime_spend_column"}, run: migrationAddVirtualKeyLifetimeSpendColumn},
+	{IDs: []string{"add_budget_reset_config_column"}, run: migrationAddBudgetResetConfigColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -11014,6 +11015,46 @@ func migrationAddWebhookConfigClientColumn(ctx context.Context, db *gorm.DB, log
 	return nil
 }
 
+// migrationAddBudgetResetConfigColumn adds the reset_config_json column to
+// governance_budgets.
+//
+// Additive and nullable with no backfill: an existing budget has no quarter
+// definition, and a NULL column reads back as a nil ResetConfig, which every
+// window call site treats as January. Pre-existing budgets therefore keep their
+// current cadence exactly.
+func migrationAddBudgetResetConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_reset_config_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableBudget{}, "reset_config_json") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "ResetConfigJSON"); err != nil {
+					return fmt.Errorf("add reset_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: rollbackBudgetResetConfigColumn,
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running budget reset config column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// rollbackBudgetResetConfigColumn refuses to undo
+// migrationAddBudgetResetConfigColumn. reset_config_json is the only home for a
+// budget's quarter definition, and QuarterStartMonth reads a nil ResetConfig as
+// January, so dropping the column would not merely lose data: it would silently
+// re-window every fiscal-year budget onto the calendar year.
+func rollbackBudgetResetConfigColumn(*gorm.DB) error {
+	return fmt.Errorf("add_budget_reset_config_column is non-rollbackable: dropping reset_config_json would permanently delete every budget's fiscal-quarter definition and silently revert those budgets to the January default; the column is additive and older binaries safely ignore it")
+}
+
 // migrationAddManagedBatchesTable creates the governance_managed_batches table:
 // the batch-ownership ledger the governance plugin uses to scope batch list
 // output and gate per-id batch lifecycle verbs to the owning tenant. Additive
@@ -11192,6 +11233,7 @@ func migrationAddManagedFileOwnerKeysetIndex(ctx context.Context, db *gorm.DB, l
 	}
 	return nil
 }
+
 
 // migrationAddWebhookJobsTable creates the webhook_jobs work-queue table.
 func migrationAddWebhookJobsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {

@@ -236,6 +236,18 @@ updates:
     open-pull-requests-limit: 0
 
   - package-ecosystem: npm
+    directory: /tests/e2e/api/newman-reporter-cache-parity
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /tests/e2e/api/newman-reporter-token-parity
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
     directory: /tests/e2e/api
     schedule:
       interval: daily
@@ -356,5 +368,10 @@ updates:
 
   - package-ecosystem: gomod
     directory: /scripts/bifrost-migration-cli
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /scripts/realtime-test
     schedule:
       interval: weekly

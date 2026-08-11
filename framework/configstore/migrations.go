@@ -459,12 +459,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_budget_override_anchor_columns"}, run: migrationAddBudgetOverrideAnchorColumns},
 	{IDs: []string{"add_live_models_sync_interval_column"}, run: migrationAddLiveModelsSyncIntervalColumn},
 	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
-	{IDs: []string{"add_managed_batches_table"}, run: migrationAddManagedBatchesTable},
-	{IDs: []string{"add_managed_files_table"}, run: migrationAddManagedFilesTable},
-	{IDs: []string{"add_batch_ownership_client_config_columns"}, run: migrationAddBatchOwnershipClientConfigColumns},
-	{IDs: []string{"add_managed_batch_owner_keyset_index"}, run: migrationAddManagedBatchOwnerKeysetIndex},
-	{IDs: []string{"add_managed_file_owner_keyset_index"}, run: migrationAddManagedFileOwnerKeysetIndex},
-	{IDs: []string{"add_virtual_key_lifetime_spend_column"}, run: migrationAddVirtualKeyLifetimeSpendColumn},
+	{IDs: []string{"add_budget_reset_config_column"}, run: migrationAddBudgetResetConfigColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -11014,13 +11009,15 @@ func migrationAddWebhookConfigClientColumn(ctx context.Context, db *gorm.DB, log
 	return nil
 }
 
-// migrationAddManagedBatchesTable creates the governance_managed_batches table:
-// the batch-ownership ledger the governance plugin uses to scope batch list
-// output and gate per-id batch lifecycle verbs to the owning tenant. Additive
-// and idempotent (HasTable guard); GORM CreateTable builds the (provider,
-// batch_id) unique index and the owner-vk index from the model's tags.
-func migrationAddManagedBatchesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_managed_batches_table"
+// migrationAddBudgetResetConfigColumn adds the reset_config_json column to
+// governance_budgets.
+//
+// Additive and nullable with no backfill: an existing budget has no quarter
+// definition, and a NULL column reads back as a nil ResetConfig, which every
+// window call site treats as January. Pre-existing budgets therefore keep their
+// current cadence exactly.
+func migrationAddBudgetResetConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_reset_config_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -11028,169 +11025,28 @@ func migrationAddManagedBatchesTable(ctx context.Context, db *gorm.DB, logger sc
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
-			if !mg.HasTable(&tables.TableManagedBatch{}) {
-				if err := mg.CreateTable(&tables.TableManagedBatch{}); err != nil {
-					return fmt.Errorf("create governance_managed_batches table: %w", err)
+			if !mg.HasColumn(&tables.TableBudget{}, "reset_config_json") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "ResetConfigJSON"); err != nil {
+					return fmt.Errorf("add reset_config_json column: %w", err)
 				}
 			}
 			return nil
 		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			return tx.Migrator().DropTable(&tables.TableManagedBatch{})
-		},
+		Rollback: rollbackBudgetResetConfigColumn,
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error while running managed batches table migration: %s", err.Error())
+		return fmt.Errorf("error while running budget reset config column migration: %s", err.Error())
 	}
 	return nil
 }
 
-// migrationAddBatchOwnershipClientConfigColumns adds the governance
-// batch-ownership operator knobs to config_client: the unknown-batch-id policy
-// (deny|allow) and the JSON list of batch-admin virtual key IDs. Additive and
-// idempotent (addColumnIfNotExists).
-func migrationAddBatchOwnershipClientConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_batch_ownership_client_config_columns"
-	logger.Info("[configstore] starting migration %s", migrationName)
-	defer logger.Info("[configstore] finished migration %s", migrationName)
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: migrationName,
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "unknown_batch_id_policy"); err != nil {
-				return err
-			}
-			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "batch_admin_virtual_key_ids_json")
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "unknown_batch_id_policy"); err != nil {
-				return err
-			}
-			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "batch_admin_virtual_key_ids_json")
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running %s migration: %w", migrationName, err)
-	}
-	return nil
-}
-
-// migrationAddManagedBatchOwnerKeysetIndex adds the composite keyset index
-// (owner_virtual_key_id, created_at, batch_id) to governance_managed_batches so
-// deep owner-scoped batch list pagination pages a caller's own batches from an
-// index rather than a full table scan. Additive and idempotent: guarded by
-// HasIndex, and CreateIndex reads the struct tag so it is dialect-safe (Postgres
-// + SQLite). A fresh install already has the index from CreateTable (the tag is
-// on TableManagedBatch), so this migration is a no-op there and only backfills
-// databases created before the index existed.
-func migrationAddManagedBatchOwnerKeysetIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_managed_batch_owner_keyset_index"
-	logger.Info("[configstore] starting migration %s", migrationName)
-	defer logger.Info("[configstore] finished migration %s", migrationName)
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: migrationName,
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			batch := &tables.TableManagedBatch{}
-			if mg.HasTable(batch) && !mg.HasIndex(batch, "idx_managed_batch_owner_keyset") {
-				if err := mg.CreateIndex(batch, "idx_managed_batch_owner_keyset"); err != nil {
-					return fmt.Errorf("create idx_managed_batch_owner_keyset: %w", err)
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			batch := &tables.TableManagedBatch{}
-			if mg.HasIndex(batch, "idx_managed_batch_owner_keyset") {
-				return mg.DropIndex(batch, "idx_managed_batch_owner_keyset")
-			}
-			return nil
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error while running managed batch owner keyset index migration: %s", err.Error())
-	}
-	return nil
-}
-
-// migrationAddManagedFilesTable creates the governance_managed_files table: the
-// file-ownership ledger the governance plugin uses to scope file list output and
-// gate per-id file lifecycle verbs (retrieve / delete / content-download) to the
-// owning tenant. The file-lifecycle sibling of migrationAddManagedBatchesTable.
-// Additive and idempotent (HasTable guard); GORM CreateTable builds the
-// (provider, file_id) unique index, the owner-vk index, and the keyset index
-// from the model's tags.
-func migrationAddManagedFilesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_managed_files_table"
-	logger.Info("[configstore] starting migration %s", migrationName)
-	defer logger.Info("[configstore] finished migration %s", migrationName)
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: migrationName,
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if !mg.HasTable(&tables.TableManagedFile{}) {
-				if err := mg.CreateTable(&tables.TableManagedFile{}); err != nil {
-					return fmt.Errorf("create governance_managed_files table: %w", err)
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			return tx.Migrator().DropTable(&tables.TableManagedFile{})
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error while running managed files table migration: %s", err.Error())
-	}
-	return nil
-}
-
-// migrationAddManagedFileOwnerKeysetIndex adds the composite keyset index
-// (owner_virtual_key_id, created_at, file_id) to governance_managed_files so deep
-// owner-scoped file list pagination pages a caller's own files from an index
-// rather than a full table scan. Additive and idempotent: guarded by HasIndex,
-// and CreateIndex reads the struct tag so it is dialect-safe (Postgres + SQLite).
-// A fresh install already has the index from CreateTable (the tag is on
-// TableManagedFile), so this migration is a no-op there and only backfills
-// databases created before the index existed.
-func migrationAddManagedFileOwnerKeysetIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_managed_file_owner_keyset_index"
-	logger.Info("[configstore] starting migration %s", migrationName)
-	defer logger.Info("[configstore] finished migration %s", migrationName)
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: migrationName,
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			file := &tables.TableManagedFile{}
-			if mg.HasTable(file) && !mg.HasIndex(file, "idx_managed_file_owner_keyset") {
-				if err := mg.CreateIndex(file, "idx_managed_file_owner_keyset"); err != nil {
-					return fmt.Errorf("create idx_managed_file_owner_keyset: %w", err)
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			file := &tables.TableManagedFile{}
-			if mg.HasIndex(file, "idx_managed_file_owner_keyset") {
-				return mg.DropIndex(file, "idx_managed_file_owner_keyset")
-			}
-			return nil
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error while running managed file owner keyset index migration: %s", err.Error())
-	}
-	return nil
+// rollbackBudgetResetConfigColumn refuses to undo
+// migrationAddBudgetResetConfigColumn. reset_config_json is the only home for a
+// budget's quarter definition, and QuarterStartMonth reads a nil ResetConfig as
+// January, so dropping the column would not merely lose data: it would silently
+// re-window every fiscal-year budget onto the calendar year.
+func rollbackBudgetResetConfigColumn(*gorm.DB) error {
+	return fmt.Errorf("add_budget_reset_config_column is non-rollbackable: dropping reset_config_json would permanently delete every budget's fiscal-quarter definition and silently revert those budgets to the January default; the column is additive and older binaries safely ignore it")
 }
 
 // migrationAddWebhookJobsTable creates the webhook_jobs work-queue table.

@@ -3513,6 +3513,13 @@
           "type": "string",
           "description": "Associated rate limit ID"
         },
+        "model_budgets": {
+          "type": "array",
+          "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment.",
+          "items": {
+            "$ref": "#/$defs/access_profile_provider_model_budget"
+          }
+        },
         "key_ids": {
           "type": "array",
           "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys. Semantics depend on version: v2 (default) empty = deny all; v1 empty = allow all. Values are the key IDs.",

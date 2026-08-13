@@ -65,10 +65,11 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
-		// Forward reasoning_effort verbatim: OpenAI/Azure own their own vocabulary
-		// and reject an unsupported level with a 400 that names the supported ones.
-		// Remapping here would silently downgrade the caller instead.
-		openaiReq.resolveReasoningEffort(capModel, reasoningEffortForward)
+		openaiReq.normalizeReasoningEffort(capModel)
+		// URL-sourced documents are NOT inlined here. Chat Completions rejects file_url, so they
+		// still have to be resolved before the request goes out - but that is a network fetch that
+		// can fail, and this function has no way to report a failure. Callers invoke
+		// ResolveChatFileURLs after conversion, where the error can propagate; see its doc comment.
 		return openaiReq
 	case schemas.Cerebras, schemas.Wafer:
 		openaiReq.filterOpenAISpecificParameters(capModel)

@@ -1488,13 +1488,17 @@ const anthropicDefaultEffort = "medium"
 // cannot be switched off through effort at all (callers that want thinking off
 // handle effort=="none" before reaching here, via thinking:{type:"disabled"}).
 func MapBifrostEffortToAnthropic(effort string) string {
-	normalized := strings.ToLower(strings.TrimSpace(effort))
-	if _, ok := anthropicEffortLevels[normalized]; ok {
-		return normalized
-	}
-	switch normalized {
-	case "minimal", "none":
+	switch effort {
+	case "minimal":
 		return "low"
+	case "adaptive":
+		// "Don't pass `adaptive` as an `effort` value: `adaptive` is a thinking mode,
+		// not an effort level." An inbound dialect that puts it in reasoning.effort
+		// must not have it forwarded into output_config.effort, where Anthropic would
+		// reject it. "high" is the safe landing: the docs state that setting effort to
+		// "high" behaves exactly like omitting the parameter, so the thinking mode the
+		// caller was reaching for is left to the thinking parameter to express.
+		return "high"
 	}
 	return anthropicDefaultEffort
 }

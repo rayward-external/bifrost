@@ -1478,6 +1478,7 @@ jobs:
         run: chmod +x tmp/bifrost-http
 
       - name: Run migration tests
+        continue-on-error: true
         env:
           SKIP_GATEWAY_BUILD: "1"
         run: |

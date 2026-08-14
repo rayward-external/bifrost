@@ -6,6 +6,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -13,16 +14,48 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+const uiDevServerAddr = "localhost:3000"
+
+// ShellRewriter may rewrite the pre-hydration HTML shell before it is served.
+//
+// It is the seam the enterprise build uses to point the shell's logo at a
+// custom asset, so a branded deployment does not flash the Bifrost mark
+// for the moment before the bundle boots. OSS leaves it nil and serves the
+// embedded document exactly as bundled.
+//
+// It runs on the request path for every HTML document, so an implementation
+// must be cheap and must return data unchanged when it has nothing to do.
+type ShellRewriter func(ctx *fasthttp.RequestCtx, data []byte) []byte
+
 // UIHandler handles UI routes.
 type UIHandler struct {
 	uiContent embed.FS
+	// uiDevClient proxies dashboard requests to the local Vite dev server.
+	// It is only set when dev mode is enabled (see NewUIHandler); nil otherwise.
+	uiDevClient *fasthttp.HostClient
+	// shellRewriter rewrites the pre-hydration shell. nil disables the rewrite
+	// entirely, which is the OSS path.
+	shellRewriter ShellRewriter
 }
 
-// NewUIHandler creates a new UIHandler instance.
-func NewUIHandler(uiContent embed.FS) *UIHandler {
-	return &UIHandler{
-		uiContent: uiContent,
+// NewUIHandler creates a new UIHandler instance. shellRewriter may be nil, in
+// which case index.html is always served exactly as embedded.
+func NewUIHandler(uiContent embed.FS, shellRewriter ShellRewriter) *UIHandler {
+	h := &UIHandler{
+		uiContent:     uiContent,
+		shellRewriter: shellRewriter,
 	}
+	// Only wire the dev-server proxy client when running in dev mode. Timeouts
+	// guard against the local Vite server hanging dashboard requests if it is
+	// unresponsive, falling back to the embedded UI instead.
+	if IsDevMode() {
+		h.uiDevClient = &fasthttp.HostClient{
+			Addr:         uiDevServerAddr,
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 5 * time.Second,
+		}
+	}
+	return h
 }
 
 // RegisterRoutes registers the UI routes with the provided router.
@@ -31,47 +64,12 @@ func (h *UIHandler) RegisterRoutes(router *router.Router, middlewares ...schemas
 	router.GET("/{filepath:*}", lib.ChainMiddlewares(h.serveDashboard, middlewares...))
 }
 
-// apiPathSegments are the namespaces that belong to the HTTP APIs rather than to
-// the dashboard SPA. "v1" is matched both at the root (/v1/...) and as the second
-// segment (/{provider}/v1/... for the provider-pinned routes).
-var apiPathSegments = []string{"v1", "api"}
-
-// isAPIPath reports whether requestPath addresses an API namespace rather than a
-// dashboard route.
-//
-// RegisterRoutes installs `GET /{filepath:*}` as a global catch-all after every
-// real route, so an unmatched API GET would otherwise be served the SPA shell
-// with HTTP 200 — which an SDK then fails to JSON-decode. Router.NotFound already
-// produces a correct JSON 404; this predicate lets API paths reach it.
-//
-// Matching is on whole path SEGMENTS, never on prefixes: a `strings.HasPrefix`
-// check would misclassify UI routes like /v1beta or /apiary and break the
-// dashboard, which is a worse failure than the bug being fixed.
-func isAPIPath(requestPath string) bool {
-	trimmed := strings.Trim(path.Clean("/"+strings.TrimPrefix(requestPath, "/")), "/")
-	if trimmed == "" {
-		return false
-	}
-
-	segments := strings.Split(trimmed, "/")
-
-	for _, apiSegment := range apiPathSegments {
-		if segments[0] == apiSegment {
-			return true
-		}
-	}
-
-	// Provider-pinned inference routes: /openai/v1/..., /anthropic/v1/..., etc.
-	// Only "v1" is namespaced this way; "api" is root-only.
-	if len(segments) >= 2 && segments[1] == "v1" {
-		return true
-	}
-
-	return false
-}
-
-// ServeDashboard serves the dashboard UI.
+// serveDashboard serves the dashboard UI.
 func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
+	if IsDevMode() && h.serveDevDashboard(ctx) {
+		return
+	}
+
 	// Get the request path
 	requestPath := string(ctx.Path())
 
@@ -162,6 +160,13 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Give the build a chance to rewrite the static skeleton before it goes out
+	// — see ShellRewriter. nil on OSS, where the embedded bytes are served
+	// untouched.
+	if h.shellRewriter != nil && filepath.Ext(cleanPath) == ".html" {
+		data = h.shellRewriter(ctx, data)
+	}
+
 	// Set content type based on file extension
 	ext := filepath.Ext(cleanPath)
 	contentType := mime.TypeByExtension(ext)
@@ -181,4 +186,33 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 
 	// Send the file content
 	ctx.SetBody(data)
+}
+
+// serveDevDashboard proxies dashboard requests to the local Vite dev server.
+// Restricted to loopback clients: if the dev server happens to be bound to a
+// non-loopback address, a remote client must not be able to tunnel to
+// Vite-internal endpoints (e.g. /@fs/) via this proxy.
+func (h *UIHandler) serveDevDashboard(ctx *fasthttp.RequestCtx) bool {
+	if h.uiDevClient == nil {
+		return false
+	}
+	if !ctx.RemoteIP().IsLoopback() {
+		return false
+	}
+
+	var req fasthttp.Request
+	var resp fasthttp.Response
+	ctx.Request.CopyTo(&req)
+	req.URI().SetScheme("http")
+	req.URI().SetHost(uiDevServerAddr)
+	req.Header.SetHost(uiDevServerAddr)
+
+	if err := h.uiDevClient.Do(&req, &resp); err != nil {
+		// Dev server unreachable (e.g. Vite not running); fall back to the
+		// embedded UI by signalling the caller to serve from uiContent.
+		return false
+	}
+
+	resp.CopyTo(&ctx.Response)
+	return true
 }

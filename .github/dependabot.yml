@@ -85,6 +85,12 @@ updates:
       interval: daily
     open-pull-requests-limit: 0
 
+  - package-ecosystem: gomod
+    directory: /examples/mcps/remote-test-server
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
   - package-ecosystem: npm
     directory: /examples/mcps/parallel-test-server
     schedule:

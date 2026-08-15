@@ -587,7 +587,7 @@ func mergeChatMessages(dest *[]schemas.ChatMessage, prefix []schemas.ChatMessage
 		return
 	}
 	cur := *dest
-	merged := make([]schemas.ChatMessage, 0, len(prefix)+len(cur))
+	merged := make([]schemas.ChatMessage, 0, len(prefix))
 	merged = append(merged, prefix...)
 	merged = append(merged, cur...)
 	*dest = merged
@@ -604,7 +604,7 @@ func mergeResponsesMessages(dest *[]schemas.ResponsesMessage, template []schemas
 		prefix = append(prefix, template[i].ToResponsesMessages()...)
 	}
 	cur := *dest
-	merged := make([]schemas.ResponsesMessage, 0, len(prefix)+len(cur))
+	merged := make([]schemas.ResponsesMessage, 0, len(prefix))
 	merged = append(merged, prefix...)
 	merged = append(merged, cur...)
 	*dest = merged

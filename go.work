@@ -3,36 +3,48 @@ go 1.26.6
 use (
 	./.github/workflows/scripts/schemasync
 	./cli
+	./cmd/e2eseed
 	./core
 	./examples/mcps/auth-demo-server
 	./examples/mcps/edge-case-server
 	./examples/mcps/error-test-server
 	./examples/mcps/go-test-server
 	./examples/mcps/http-no-ping-server
+	./examples/mcps/mcp-test-client
 	./examples/mcps/oauth-demo-server
 	./examples/mcps/parallel-test-server
+	./examples/mcps/remote-test-server
+	./examples/mcps/token-exchange-demo-server
 	./examples/plugins/hello-world
 	./examples/plugins/hello-world-wasm-go
 	./examples/plugins/http-transport-only
 	./examples/plugins/llm-only
 	./examples/plugins/mcp-only
 	./examples/plugins/multi-interface
+	./examples/webhooks
 	./framework
 	./plugins/compat
 	./plugins/governance
 	./plugins/jsonparser
 	./plugins/logging
 	./plugins/maxim
-	./plugins/modelcatalogresolver
 	./plugins/mocker
+	./plugins/modelcatalogresolver
 	./plugins/otel
 	./plugins/prompts
 	./plugins/semanticcache
 	./plugins/telemetry
+	./scripts/bifrost-migration-cli
+	./scripts/realtime-test
 	./tests/async
+	./tests/cmd/e2eseed
+	./tests/cmd/seed
+	./tests/cmd/seedvks
+	./tests/e2e/api/webhook-receiver
 	./tests/e2e/clis
 	./tests/governance
 	./tests/scripts/1millogs
 	./tests/scripts/migration-checker
+	./tests/semanticcache
 	./transports
 )

@@ -184,6 +184,11 @@ examples/mcps/oauth-demo-server/oauth-demo-server
 examples/mcps/remote-test-server/remote-test-server
 examples/mcps/mcp-test-client/mcp-test-client
 examples/mcps/token-exchange-demo-server/token-exchange-demo-server
+examples/mcps/edge-case-server/edge-case-server
+examples/mcps/error-test-server/error-test-server
+examples/mcps/go-test-server/go-test-server
+examples/mcps/http-no-ping-server/http-no-ping-server
+examples/mcps/parallel-test-server/parallel-test-server
 examples/webhooks/webhooks
 tests/e2e/api/webhook-receiver/webhook-receiver
 
@@ -194,6 +199,9 @@ tests/cmd/seedvks/seedvks
 cmd/e2eseed/e2eseed
 scripts/realtime-test/realtime-test
 .github/workflows/scripts/schemasync/schema-sync
+tests/scripts/1millogs/1millogs
+tests/scripts/migration-checker/migration-checker
+examples/plugins/hello-world-wasm-go/hello-world-wasm
 transports/custom
 /custom
 

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -603,9 +604,5 @@ func mergeResponsesMessages(dest *[]schemas.ResponsesMessage, template []schemas
 	for i := range template {
 		prefix = append(prefix, template[i].ToResponsesMessages()...)
 	}
-	cur := *dest
-	merged := make([]schemas.ResponsesMessage, 0, len(prefix)+len(cur))
-	merged = append(merged, prefix...)
-	merged = append(merged, cur...)
-	*dest = merged
+	*dest = slices.Concat(prefix, *dest)
 }

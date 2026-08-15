@@ -169,6 +169,25 @@ query-filters:
   - exclude:
       id: go/uncontrolled-allocation-size
 
+  # go/allocation-size-overflow (1 high FP): plugins/prompts/main.go:607
+  # (mergeResponsesMessages) allocates `make([]schemas.ResponsesMessage, 0,
+  # len(prefix)+len(cur))` where both operands are lengths of Go slices
+  # already resident in memory (an admin-configured prompt template converted
+  # in-function, and the client's existing request-input slice) — not raw
+  # integers from an unbounded source. Two already-materialized slices can
+  # never sum to anywhere near overflowing a 64-bit int (that would require
+  # exabytes of RAM already allocated to hold them), so the flagged sum cannot
+  # actually overflow in practice. The identical pattern one line above it
+  # (mergeChatMessages, line 590: `len(prefix)+len(cur)`) is not flagged,
+  # confirming this is a size-estimation heuristic quirk, not a real
+  # data-flow finding. Same FP shape as the go/uncontrolled-allocation-size
+  # exclude above. Audited: this is the only site matching this rule
+  # repo-wide. RE-AUDIT on every upstream sync: if a new allocation sums
+  # integers from an actually-unbounded source (not slice lengths), this
+  # rule-level exclude would hide it.
+  - exclude:
+      id: go/allocation-size-overflow
+
   # go/unvalidated-url-redirection (2 medium FP): transports/bifrost-http/handlers/mcpoauth2issuance.go
   # /oauth2/authorize builds two Location redirects (consent-page redirect and the
   # error-redirect closure) from the caller-supplied redirect_uri. Both sinks are

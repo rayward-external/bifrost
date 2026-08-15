@@ -269,9 +269,6 @@ If the credential falls into `needs_update` (typically because `per_user_header_
 
 To repair it, open the client sheet and click **Update headers**: the same sample-values dialog re-runs the upstream verify, re-discovers tools, and flips the credential back to `active`. The scriptable equivalent is a repeat `POST /api/mcp/client/{id}/verify-headers` call, which is accepted while the admin credential sits in `needs_update` (any other repeat returns `409`).
 
-<Frame>
-  <img src="/media/ui-mcp-per-user-headers-admin-repair.png" alt="Per-user headers client sheet showing the needs_reauth badge next to View sessions and the Update headers button" />
-</Frame>
 
 ### Periodic tool sync
 

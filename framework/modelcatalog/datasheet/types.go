@@ -187,6 +187,9 @@ type Options struct {
 	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
 	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
 	InferenceGeoUSMultiplier      *float64 `json:"inference_geo_us_multiplier,omitempty"`
+	// CostPerRequest is a flat fee added once per billed request, on top of
+	// whatever usage-based cost the request otherwise computes to.
+	CostPerRequest *float64 `json:"cost_per_request,omitempty"`
 
 	// Costs - OCR
 	OCRCostPerPage        *float64 `json:"ocr_cost_per_page,omitempty"`
@@ -497,7 +500,11 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 		case "web_search":
 			addParam("web_search_options") // chat-path param
 			addParam("web_search")         // responses-path server tool
-		case "stop_sequences":
+		// Anthropic rows spell it stop_sequences; Bedrock's Nova/Titan rows carry the
+		// Converse camelCase stopSequences. Both mean the neutral "stop" parameter that
+		// compat's dropUnsupportedParams gates on — without the camelCase spelling those
+		// 81 models silently lose stop, and the provider runs to end_turn instead.
+		case "stop_sequences", "stopSequences":
 			addParam("stop")
 		case "promptTools", "image_detail", "stream":
 			// skip — not top-level request parameters
@@ -678,6 +685,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
 		InferenceGeoUSMultiplier:      entry.InferenceGeoUSMultiplier,
+		CostPerRequest:                entry.CostPerRequest,
 
 		OCRCostPerPage:        entry.OCRCostPerPage,
 		AnnotationCostPerPage: entry.AnnotationCostPerPage,
@@ -766,6 +774,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
 		InferenceGeoUSMultiplier:      pricing.InferenceGeoUSMultiplier,
+		CostPerRequest:                pricing.CostPerRequest,
 
 		OCRCostPerPage:        pricing.OCRCostPerPage,
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,

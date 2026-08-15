@@ -80,7 +80,7 @@ func TestIsAPIPath(t *testing.T) {
 // it. This drives the actual handler, so it fails if the predicate is right but
 // the wiring is missing — the exact way a per-stage-only guard goes vacuous.
 func TestServeDashboardReturnsJSON404ForAPIPaths(t *testing.T) {
-	h := NewUIHandler(embed.FS{})
+	h := NewUIHandler(embed.FS{}, nil)
 
 	t.Run("APIPathGetsJSON404NotHTML", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}

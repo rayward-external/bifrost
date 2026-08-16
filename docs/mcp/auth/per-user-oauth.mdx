@@ -227,7 +227,6 @@ If the admin credential permanently dies (refresh rejected, provider-side revoca
 
 To repair it, open the client sheet and click **Repair OAuth**: Bifrost redoes the admin consent flow, verifies the fresh token upstream, re-discovers tools, and installs the token as the new admin credential. If verification fails, the fresh token is revoked and the previous credential and tool set are left untouched, so the repair is safely retryable.
 
-
 The same repair is scriptable via `POST /api/mcp/client/{id}/reauthorize` (`{id}` = MCP client ID). For `per_user_oauth` clients the endpoint is strictly a repair surface: it returns **409** ("does not need repair or does not exist") unless the admin credential actually sits in `needs_reauth`, so it can never churn a healthy credential. The response is the standard `pending_oauth` payload (`authorize_url`, `status_url`, `complete_url`); complete it the same way as the [scriptable verification flow](#setup).
 
 ### Periodic tool sync

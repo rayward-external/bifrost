@@ -11502,39 +11502,6 @@ func migrationAddPricingOverrideUserIDColumn(ctx context.Context, db *gorm.DB, l
 	return nil
 }
 
-func migrationAddVirtualKeyLifetimeSpendColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_virtual_key_lifetime_spend_column"
-	logger.Info("[configstore] starting migration %s", migrationName)
-	defer logger.Info("[configstore] finished migration %s", migrationName)
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: migrationName,
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if !mg.HasColumn(&tables.TableVirtualKey{}, "lifetime_spend") {
-				if err := mg.AddColumn(&tables.TableVirtualKey{}, "LifetimeSpend"); err != nil {
-					return fmt.Errorf("add lifetime_spend column: %w", err)
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableVirtualKey{}, "lifetime_spend") {
-				if err := mg.DropColumn(&tables.TableVirtualKey{}, "LifetimeSpend"); err != nil {
-					return fmt.Errorf("drop lifetime_spend column: %w", err)
-				}
-			}
-			return nil
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error while running virtual key lifetime spend migration: %s", err.Error())
-	}
-	return nil
-}
-
 // migrationMergeOauthTokenTables introduces mcp_oauth_tokens, a new table
 // that from this point on is the single home for every holder of an MCP
 // OAuth credential — the shared client credential (auth_mode='shared') and

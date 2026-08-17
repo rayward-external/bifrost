@@ -26,6 +26,12 @@ updates:
     open-pull-requests-limit: 0
 
   - package-ecosystem: gomod
+    directory: /cmd/e2eseed
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
     directory: /core
     schedule:
       interval: daily
@@ -87,6 +93,12 @@ updates:
 
   - package-ecosystem: gomod
     directory: /examples/mcps/remote-test-server
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/token-exchange-demo-server
     schedule:
       interval: daily
     open-pull-requests-limit: 0

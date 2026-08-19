@@ -91,7 +91,7 @@ func TestHybridScopedDBDelegatesToInnerRDBStore(t *testing.T) {
 }
 
 func TestHybrid_CreateAndFindByID(t *testing.T) {
-	hybrid, _, objStore := newTestHybrid(t)
+	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -117,7 +117,10 @@ func TestHybrid_CreateAndFindByID(t *testing.T) {
 	err := hybrid.CreateIfNotExists(ctx, entry)
 	require.NoError(t, err)
 
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	// waitForOffload waits for both the object upload AND the has_object=true DB
+	// write, not just objStore.Len(); the upload worker sets has_object after Put(),
+	// so FindByID below can otherwise see HasObject=false and skip hydration.
+	waitForOffload(t, inner, "log-1")
 
 	// Verify object was uploaded.
 	assert.Equal(t, 1, objStore.Len(), "expected 1 object in store")

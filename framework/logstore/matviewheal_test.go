@@ -145,8 +145,10 @@ func TestFilterMatViewShapeErrorFallsBack(t *testing.T) {
 	store, db := setupPerfTestDB(t)
 	ctx := context.Background()
 
-	day := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
-	insertCountTestLog(t, db, day.Add(10*time.Hour), "success") // model gpt-4
+	// Relative to time.Now() rather than a hardcoded date: GetDistinctModels'
+	// raw-table fallback only scans the last defaultFilterDataCutoffDays, so a
+	// fixed calendar date ages out of that rolling window and starts failing.
+	insertCountTestLog(t, db, time.Now().UTC().Add(-1*time.Hour), "success") // model gpt-4
 	refreshTestMatViews(t, db)
 	store.matViewsReady.Store(true)
 	store.resetMatViewHeal()

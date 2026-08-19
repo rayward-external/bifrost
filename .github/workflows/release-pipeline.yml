@@ -677,6 +677,13 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+        # fork quarantine: fork CI has no real provider secrets (all API keys above are
+        # empty), so every provider call in this suite auth-errors on cold boot; see the
+        # test-core-integrations entry in .github/fork-patches.txt. STEP-level (not
+        # job-level) continue-on-error keeps this a required-status-check pass with a
+        # warning annotation. REMOVAL CONDITION: remove when the fork configures real
+        # provider secrets covering every provider this suite exercises.
+        continue-on-error: true
         run: ./.github/workflows/scripts/test-integrations.sh --parallel-files
 
   test-core-unit:

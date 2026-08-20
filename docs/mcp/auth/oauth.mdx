@@ -314,6 +314,10 @@ A shared OAuth client whose credential permanently dies lands in the **`needs_re
 
 From the dashboard, open the client and click **Reauthorize**: Bifrost redoes the OAuth consent flow in a popup against the currently stored credentials, and on completion reconnects the client.
 
+<Frame>
+  <img src="/media/ui-mcp-needs-reauth-reauthorize.png" alt="MCP client sheet showing the red needs_reauth badge and the Reauthorize button" />
+</Frame>
+
 The same flow is scriptable via `POST /api/mcp/client/{id}/reauthorize` (`{id}` = MCP client ID):
 
 ```bash

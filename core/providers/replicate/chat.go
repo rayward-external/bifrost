@@ -185,8 +185,15 @@ func ToReplicateChatRequest(bifrostReq *schemas.BifrostChatRequest) (*ReplicateP
 			// the Responses text-config shape. Without this mapping a chat
 			// request reaches the model with no structured output at all, while
 			// the same request on the Responses path gets one.
+			//
+			// Only a json_schema format belongs here. The converter returns a non-nil
+			// format for every recognized response_format.type, but for "text" and
+			// "json_object" that format carries Type alone -- assigning it sent a
+			// schema-less structured-output config the model can reject.
 			if format := schemas.ResponsesTextConfigFormatFromChatResponseFormat(params.ResponseFormat); format != nil {
-				input.JsonSchema = &schemas.ResponsesTextConfig{Format: format}
+				if format.Type == "json_schema" && format.JSONSchema != nil {
+					input.JsonSchema = &schemas.ResponsesTextConfig{Format: format}
+				}
 			}
 		}
 

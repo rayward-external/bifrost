@@ -613,7 +613,7 @@ jobs:
       # tests/integrations/python/.python-version so CI resolves the interpreter a
       # developer gets locally instead of downloading a second one.
       - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
         with:
           version: "0.11.0"
           python-version: "3.12"
@@ -677,13 +677,6 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
-        # fork quarantine: fork CI has no real provider secrets (all API keys above are
-        # empty), so every provider call in this suite auth-errors on cold boot; see the
-        # test-core-integrations entry in .github/fork-patches.txt. STEP-level (not
-        # job-level) continue-on-error keeps this a required-status-check pass with a
-        # warning annotation. REMOVAL CONDITION: remove when the fork configures real
-        # provider secrets covering every provider this suite exercises.
-        continue-on-error: true
         run: ./.github/workflows/scripts/test-integrations.sh --parallel-files
 
   test-core-unit:

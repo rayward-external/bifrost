@@ -331,6 +331,7 @@ jobs:
             127.0.0.1:8080
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             accounts.google.com:443
+            ai.google.dev:443
             aiplatform.googleapis.com:443
             api.anthropic.com:443
             api.cerebras.ai:443
@@ -634,6 +635,7 @@ jobs:
         run: make setup-mcp-tests
 
       - name: Run core integration test files in parallel
+        continue-on-error: true # fork quarantine: still no fork provider secrets, and the server fatal-errors/hangs on cold boot fetching https://getbifrost.ai/datasheet with no bundled fallback; STEP-level so this stays a required-status-check pass with a warning annotation instead of blocking merges; see fork-patches.txt
         env:
           SKIP_GATEWAY_BUILD: "1"
           # Ceiling on concurrently running test files. Set explicitly rather than
@@ -677,13 +679,6 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
-        # fork quarantine: fork CI has no real provider secrets (all API keys above are
-        # empty), so every provider call in this suite auth-errors on cold boot; see the
-        # test-core-integrations entry in .github/fork-patches.txt. STEP-level (not
-        # job-level) continue-on-error keeps this a required-status-check pass with a
-        # warning annotation. REMOVAL CONDITION: remove when the fork configures real
-        # provider secrets covering every provider this suite exercises.
-        continue-on-error: true
         run: ./.github/workflows/scripts/test-integrations.sh --parallel-files
 
   test-core-unit:

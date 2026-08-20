@@ -414,7 +414,14 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 		for i := range bifrostResp.Output {
 			msg := &bifrostResp.Output[i]
 			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeWebSearchCall {
-				lastWebSearchCall = msg
+				// Grounding's sources are merged onto the FIRST search call on the forward
+				// path, so with two or more rounds the last item carries none and rebuilding
+				// groundingMetadata from it drops groundingChunks entirely. Prefer the item
+				// that actually holds sources; fall back to the last when none does, which
+				// is the single-round case where first and last are the same message.
+				if lastWebSearchCall == nil || !webSearchCallHasSources(lastWebSearchCall) {
+					lastWebSearchCall = msg
+				}
 				consumedIndices[i] = true
 			}
 			// Collect annotations (typically in message after web search)
@@ -627,16 +634,20 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 		}
 
 		// Preserved server-side tool parts lead the FIRST candidate, not the terminal
-		// group. They are replayed ahead of the generated content precisely to reproduce
-		// Gemini's own ordering, so once a role change has already flushed a candidate,
-		// prepending them to the trailing group would file them behind content they are
-		// supposed to precede.
+		// group. They reproduce Gemini's own ordering, so once a role change has already
+		// flushed a candidate, merging them into the trailing group would file them behind
+		// content they are supposed to precede.
+		//
+		// The merge replays Gemini's whole parts array in Gemini's own order rather than
+		// prepending the tool parts alone: prepending put them ahead of text the model had
+		// emitted first, inverting the interleaving and with it the thought_signature
+		// positional context Gemini validates on replay.
 		if len(preservedToolParts) > 0 {
 			if len(candidates) > 0 && candidates[0].Content != nil {
-				candidates[0].Content.Parts = append(
-					append([]*Part{}, preservedToolParts...), candidates[0].Content.Parts...)
+				candidates[0].Content.Parts = mergePreservedGeminiParts(
+					preservedToolParts, candidates[0].Content.Parts)
 			} else {
-				currentParts = append(append([]*Part{}, preservedToolParts...), currentParts...)
+				currentParts = mergePreservedGeminiParts(preservedToolParts, currentParts)
 			}
 		}
 
@@ -658,18 +669,24 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 		// So the terminal candidate's metadata moves onto the candidate that has the
 		// content instead, rather than being appended or discarded.
 		if len(dropEmptyGeminiParts(currentParts)) == 0 && len(candidates) > 0 {
-			last := candidates[len(candidates)-1]
-			if last.FinishReason == "" {
-				last.FinishReason = terminal.FinishReason
+			// candidates[0], not the last one. Gemini emits a single candidate per
+			// response; more than one here is an artifact of Bifrost grouping output
+			// items by role, and every Gemini-shaped client reads candidates[0]. With
+			// one flushed candidate the two are the same object, so this only changes
+			// the alternating-role case -- where merging onto the last candidate filed
+			// the finish reason where nothing reads it.
+			target := candidates[0]
+			if target.FinishReason == "" {
+				target.FinishReason = terminal.FinishReason
 			}
-			if last.GroundingMetadata == nil {
-				last.GroundingMetadata = terminal.GroundingMetadata
+			if target.GroundingMetadata == nil {
+				target.GroundingMetadata = terminal.GroundingMetadata
 			}
-			if last.SafetyRatings == nil {
-				last.SafetyRatings = terminal.SafetyRatings
+			if target.SafetyRatings == nil {
+				target.SafetyRatings = terminal.SafetyRatings
 			}
-			if last.AvgLogprobs == 0 {
-				last.AvgLogprobs = terminal.AvgLogprobs
+			if target.AvgLogprobs == 0 {
+				target.AvgLogprobs = terminal.AvgLogprobs
 			}
 		} else {
 			candidates = append(candidates, terminal)
@@ -2919,14 +2936,32 @@ func convertGeminiToolConfigToToolChoice(toolConfig *ToolConfig) *schemas.Respon
 	}
 }
 
-// serverSideToolParts returns the candidate's toolCall/toolResponse parts verbatim.
+// serverSideToolParts returns the candidate's whole parts array verbatim when it contains
+// server-side tool parts, and nil otherwise.
+//
+// Capturing the full array rather than only the toolCall/toolResponse parts is what makes
+// the order restorable. Gemini interleaves text, tool and thought parts freely, and
+// thought_signature carries positional context that is invalidated by reordering -- but the
+// reverse path rebuilds its parts from Bifrost's Responses items, which are a different
+// shape and count, so a tool part's original index has nothing to be restored into. Keeping
+// the original array means the native GenAI path can replay it exactly as Gemini sent it.
 func serverSideToolParts(candidate *Candidate) []*Part {
 	if candidate == nil || candidate.Content == nil {
 		return nil
 	}
-	var parts []*Part
+	hasToolPart := false
 	for _, part := range candidate.Content.Parts {
 		if part != nil && (part.ToolCall != nil || part.ToolResponse != nil) {
+			hasToolPart = true
+			break
+		}
+	}
+	if !hasToolPart {
+		return nil
+	}
+	parts := make([]*Part, 0, len(candidate.Content.Parts))
+	for _, part := range candidate.Content.Parts {
+		if part != nil {
 			parts = append(parts, part)
 		}
 	}
@@ -2954,11 +2989,88 @@ func extractServerSideToolParts(v any) []*Part {
 	return parts
 }
 
+// geminiCallIDWithoutSignature strips the thought-signature suffix Bifrost encodes into a
+// call ID ("name_ts_base64sig"), so the same call compares equal whether it came off the
+// preserved Gemini part or was rebuilt from a Bifrost item.
+func geminiCallIDWithoutSignature(callID string) string {
+	if idx := strings.Index(callID, thoughtSignatureSeparator); idx != -1 {
+		return callID[:idx]
+	}
+	return callID
+}
+
+// geminiPartIdentity returns a comparison key for a Gemini part, used to tell whether a
+// rebuilt part is a lossy re-derivation of one already present in the preserved array.
+// Parts that carry no identifying content return "" and are always treated as distinct.
+func geminiPartIdentity(part *Part) string {
+	if part == nil {
+		return ""
+	}
+	switch {
+	case part.ToolCall != nil:
+		return "tc:" + geminiCallIDWithoutSignature(part.ToolCall.ID) + ":" + part.ToolCall.ToolType
+	case part.ToolResponse != nil:
+		return "tr:" + geminiCallIDWithoutSignature(part.ToolResponse.ID) + ":" + part.ToolResponse.ToolType
+	case part.FunctionCall != nil:
+		return "fc:" + geminiCallIDWithoutSignature(part.FunctionCall.ID) + ":" + part.FunctionCall.Name
+	case part.Text != "":
+		if part.Thought {
+			return "th:" + part.Text
+		}
+		return "tx:" + part.Text
+	case len(part.ThoughtSignature) > 0:
+		return "ts:" + base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+	}
+	return ""
+}
+
+// mergePreservedGeminiParts replays Gemini's original parts in their original order, then
+// appends any rebuilt part the original does not already account for.
+//
+// The preserved array wins on ordering because it is what Gemini actually sent -- the
+// rebuilt parts are derived from Bifrost's Responses items, which lose the interleaving.
+// Rebuilt parts with no counterpart in the original are still appended rather than dropped,
+// so anything added downstream (a plugin rewriting content, an item Bifrost models that
+// Gemini did not send as its own part) survives instead of being silently discarded.
+func mergePreservedGeminiParts(preserved, rebuilt []*Part) []*Part {
+	seen := make(map[string]bool, len(preserved))
+	for _, part := range preserved {
+		if id := geminiPartIdentity(part); id != "" {
+			seen[id] = true
+		}
+	}
+
+	merged := make([]*Part, 0, len(preserved)+len(rebuilt))
+	merged = append(merged, preserved...)
+	for _, part := range rebuilt {
+		id := geminiPartIdentity(part)
+		if id != "" && seen[id] {
+			continue
+		}
+		if id != "" {
+			seen[id] = true
+		}
+		merged = append(merged, part)
+	}
+	return merged
+}
+
+// webSearchCallHasSources reports whether a web_search_call item carries the grounding
+// sources that rebuilding Gemini's groundingChunks depends on.
+func webSearchCallHasSources(msg *schemas.ResponsesMessage) bool {
+	if msg == nil || msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Action == nil {
+		return false
+	}
+	action := msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+	return action != nil && len(action.Sources) > 0
+}
+
 // firstSearchCallIndex returns the lowest message index among the server-side search calls,
-// i.e. the item grounding metadata should be merged onto.
-func firstSearchCallIndex(byID map[string]int) (int, bool) {
+// i.e. the item grounding metadata should be merged onto. Takes the indices directly rather
+// than a keyed map so ID-less rounds, which never enter that map, are still considered.
+func firstSearchCallIndex(indices []int) (int, bool) {
 	first, found := 0, false
-	for _, idx := range byID {
+	for _, idx := range indices {
 		if !found || idx < first {
 			first, found = idx, true
 		}
@@ -3087,6 +3199,13 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 
 		// Index from server-side tool-call ID to the web_search_call item it opened.
 		searchCallIndexByID := map[string]int{}
+		// ToolCall.ID and ToolResponse.ID are both omitempty, so Gemini can leave them out.
+		// Those rounds cannot pair by ID -- they pair by position instead: this FIFO holds
+		// the message indices of ID-less calls still waiting for their response.
+		var anonymousSearchCalls []int
+		// Every web_search_call item's index in emission order, keyed or not, so grounding
+		// metadata can find the first one regardless of whether IDs were present.
+		var searchCallIndices []int
 
 		for _, part := range candidate.Content.Parts {
 			// Handle different types of parts
@@ -3347,9 +3466,20 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 					// but Bifrost has no neutral item type for it.
 					break
 				}
-				searchCallIndexByID[part.ToolCall.ID] = len(messages)
+				// An ID-less round still needs a distinct item ID -- keying the map on ""
+				// would collapse every such round onto one entry, leaving all but the last
+				// stuck in_progress and every emitted item carrying an empty ID. Mirrors
+				// the streaming path's generateItemID("ws", outputIndex) fallback.
+				itemID := part.ToolCall.ID
+				if itemID == "" {
+					itemID = fmt.Sprintf("ws_%d", len(messages))
+					anonymousSearchCalls = append(anonymousSearchCalls, len(messages))
+				} else {
+					searchCallIndexByID[itemID] = len(messages)
+				}
+				searchCallIndices = append(searchCallIndices, len(messages))
 				messages = append(messages, schemas.ResponsesMessage{
-					ID:     schemas.Ptr(part.ToolCall.ID),
+					ID:     schemas.Ptr(itemID),
 					Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
 					Status: schemas.Ptr("in_progress"),
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
@@ -3364,8 +3494,18 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				if msg, ok := reasoningFromThoughtSignature(part); ok {
 					messages = append(messages, msg)
 				}
-				if idx, ok := searchCallIndexByID[part.ToolResponse.ID]; ok && idx < len(messages) {
-					messages[idx].Status = schemas.Ptr("completed")
+				if part.ToolResponse.ID != "" {
+					if idx, ok := searchCallIndexByID[part.ToolResponse.ID]; ok && idx < len(messages) {
+						messages[idx].Status = schemas.Ptr("completed")
+					}
+				} else if len(anonymousSearchCalls) > 0 {
+					// No ID to match on: Gemini emits each round's response after its call,
+					// so the oldest still-open ID-less call is the one this completes.
+					idx := anonymousSearchCalls[0]
+					anonymousSearchCalls = anonymousSearchCalls[1:]
+					if idx < len(messages) {
+						messages[idx].Status = schemas.Ptr("completed")
+					}
 				}
 
 			case part.ThoughtSignature != nil:
@@ -3419,7 +3559,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			// item is authoritative — it carries the real call ID. Merge grounding's richer
 			// data (sources, and any queries the call did not spell out) onto it rather than
 			// emitting a second web_search_call for the same search.
-			if idx, ok := firstSearchCallIndex(searchCallIndexByID); ok && idx < len(messages) {
+			if idx, ok := firstSearchCallIndex(searchCallIndices); ok && idx < len(messages) {
 				if existing := messages[idx].ResponsesToolMessage; existing != nil && existing.Action != nil {
 					if action := existing.Action.ResponsesWebSearchToolCallAction; action != nil {
 						if len(sources) > 0 {
@@ -3661,7 +3801,9 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			// User provided effort only (no max_tokens)
 			if supportsLevel {
 				// Gemini 3.0+ - use thinkingLevel (more native)
-				config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(*params.Reasoning.Effort, capModel))
+				if level := effortToThinkingLevel(*params.Reasoning.Effort, capModel); level != "" {
+					config.ThinkingConfig.ThinkingLevel = schemas.Ptr(level)
+				}
 			} else {
 				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(capModel, DefaultCompletionMaxTokens)
 				if config.MaxOutputTokens > 0 {
@@ -4680,6 +4822,7 @@ func emitWebSearchFromGroundingMetadata(
 			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 			SequenceNumber: sequenceNumber + len(responses),
 			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
 			Item: &schemas.ResponsesMessage{
 				ID:     &itemID,
 				Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),

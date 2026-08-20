@@ -64,6 +64,46 @@ func (h *UIHandler) RegisterRoutes(router *router.Router, middlewares ...schemas
 	router.GET("/{filepath:*}", lib.ChainMiddlewares(h.serveDashboard, middlewares...))
 }
 
+// apiPathSegments are the path segments (checked positionally, see isAPIPath)
+// that identify a request as addressing an API namespace rather than the
+// dashboard SPA. "v1" is matched both at the root (/v1/...) and as the second
+// segment (/{provider}/v1/... for the provider-pinned routes).
+var apiPathSegments = []string{"v1", "api"}
+
+// isAPIPath reports whether requestPath addresses an API namespace rather than a
+// dashboard route.
+//
+// RegisterRoutes installs `GET /{filepath:*}` as a global catch-all after every
+// real route, so an unmatched API GET would otherwise be served the SPA shell
+// with HTTP 200 — which an SDK then fails to JSON-decode. Router.NotFound already
+// produces a correct JSON 404; this predicate lets API paths reach it.
+//
+// Matching is on whole path SEGMENTS, never on prefixes: a `strings.HasPrefix`
+// check would misclassify UI routes like /v1beta or /apiary and break the
+// dashboard, which is a worse failure than the bug being fixed.
+func isAPIPath(requestPath string) bool {
+	trimmed := strings.Trim(path.Clean("/"+strings.TrimPrefix(requestPath, "/")), "/")
+	if trimmed == "" {
+		return false
+	}
+
+	segments := strings.Split(trimmed, "/")
+
+	for _, apiSegment := range apiPathSegments {
+		if segments[0] == apiSegment {
+			return true
+		}
+	}
+
+	// Provider-pinned inference routes: /openai/v1/..., /anthropic/v1/..., etc.
+	// Only "v1" is namespaced this way; "api" is root-only.
+	if len(segments) >= 2 && segments[1] == "v1" {
+		return true
+	}
+
+	return false
+}
+
 // serveDashboard serves the dashboard UI.
 func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 	if IsDevMode() && h.serveDevDashboard(ctx) {

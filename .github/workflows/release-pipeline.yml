@@ -331,6 +331,7 @@ jobs:
             127.0.0.1:8080
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             accounts.google.com:443
+            ai.google.dev:443
             aiplatform.googleapis.com:443
             api.anthropic.com:443
             api.cerebras.ai:443

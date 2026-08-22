@@ -248,6 +248,12 @@ updates:
     open-pull-requests-limit: 0
 
   - package-ecosystem: npm
+    directory: /.github/workflows/tools
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
     directory: /tests/e2e/api/newman-reporter-dbverify
     schedule:
       interval: daily

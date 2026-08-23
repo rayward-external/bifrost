@@ -83,7 +83,7 @@ func TestConvertInferenceConfig_AdaptiveOnlyClaudeDropsSamplingParams(t *testing
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := convertInferenceConfig(bedrockSamplingParams(), tc.model)
+			cfg := convertInferenceConfig(bedrockSamplingParams(), schemas.ResolveModelCaps(schemas.Bedrock, tc.model))
 			if cfg == nil {
 				t.Fatalf("convertInferenceConfig(%q) returned nil", tc.model)
 			}
@@ -150,7 +150,7 @@ func TestConvertChatParameters_AdaptiveOnlyClaudeDropsSamplingParams(t *testing.
 				Params: bedrockSamplingParams(),
 			}
 			bedrockReq := &BedrockConverseRequest{}
-			if err := convertChatParameters(ctx, bifrostReq, bedrockReq); err != nil {
+			if err := convertChatParameters(ctx, bifrostReq, bedrockReq, schemas.ResolveModelCaps(schemas.Bedrock, tc.model)); err != nil {
 				t.Fatalf("convertChatParameters(%q): %v", tc.model, err)
 			}
 			if bedrockReq.InferenceConfig == nil {

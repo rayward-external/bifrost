@@ -238,7 +238,12 @@ func TestClaudeCapabilityMatrix(t *testing.T) {
 			model:      "claude-opus-4-6",
 			opus47Plus: false, sonnet5Plus: false, fableFamily: false,
 			adaptiveOnly: false, supportsAdaptive: true, supportsEffort: true,
-			supportsNativeEff: true, supportsFastMode: true, midConvSystem: false,
+			// SupportsNativeEffort (the caps-gated ladder helper) is reached only
+			// as the fallback AFTER SupportsAdaptiveThinking; Opus 4.6 supports
+			// adaptive, so it takes that branch and this fallback correctly never
+			// fires for it — unlike Opus 4.5, which has no adaptive thinking at
+			// all and depends on this fallback to get the effort parameter.
+			supportsNativeEff: false, supportsFastMode: true, midConvSystem: false,
 			dynamicWebSearch: true, computerUseGen: newGen, textEditorGen: newGen,
 		},
 		{

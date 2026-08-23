@@ -126,7 +126,15 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		// Fireworks supports predicted outputs; save before the filter strips them.
 		prediction := openaiReq.ChatParameters.Prediction
-		openaiReq.filterOpenAISpecificParameters(caps)
+		// FORWARD the caller's reasoning_effort: Fireworks polices its own vocabulary
+		// and answers an unsupported level with a 400 naming what it accepts.
+		// Remapping here made the gateway MORE permissive than the provider —
+		// measured 2026-07-28, kimi-k3 with reasoning_effort="minimal": Fireworks
+		// direct returns 400, but through Bifrost it returned 200 because minimal was
+		// silently rewritten to "low". The caller then believes minimal ran when it
+		// never reached the provider, which is undetectable client-side. Everything
+		// else in the filter still applies.
+		openaiReq.filterOpenAISpecificParametersWithEffortPolicy(caps, reasoningEffortForward)
 		openaiReq.ChatParameters.Prediction = prediction
 		return openaiReq
 	default:
@@ -154,9 +162,17 @@ func serviceTierForModel(caps schemas.ModelCaps, tier *schemas.BifrostServiceTie
 
 // Filter OpenAI Specific Parameters
 func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelCaps) {
+	req.filterOpenAISpecificParametersWithEffortPolicy(caps, reasoningEffortRemap)
+}
+
+// filterOpenAISpecificParametersWithEffortPolicy is filterOpenAISpecificParameters
+// with the reasoning_effort policy made explicit. Split out so a provider that
+// POLICES its own effort vocabulary can keep every other part of the filter while
+// forwarding the caller's level untouched — see the Fireworks case above.
+func (req *OpenAIChatRequest) filterOpenAISpecificParametersWithEffortPolicy(caps schemas.ModelCaps, policy reasoningEffortPolicy) {
 	// Handle reasoning parameter: OpenAI uses effort-based reasoning
 	// Priority: effort (native) > max_tokens (estimated)
-	req.normalizeReasoningEffort(caps)
+	req.resolveReasoningEffort(caps, policy)
 
 	// OpenAI-native passthrough params. Compat providers reject them, so the
 	// fallback strips; a datasheet row can opt an individual model back in.
@@ -183,14 +199,39 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelC
 	}
 }
 
+// reasoningEffortPolicy selects how a caller's reasoning_effort is reconciled
+// with the vocabulary the target endpoint actually accepts.
+type reasoningEffortPolicy int
+
+const (
+	// reasoningEffortRemap rewrites an effort the endpoint cannot serve onto the
+	// nearest level it can, per the model's datasheet-published ladder. This is
+	// the default for every case in ToOpenAIChatRequest.
+	reasoningEffortRemap reasoningEffortPolicy = iota
+
+	// reasoningEffortForward sends the caller's effort through untouched and lets
+	// the provider answer for its own vocabulary — used on Fireworks, which
+	// polices its own reasoning_effort values and 400s on one it doesn't accept;
+	// remapping here silently served a weaker level than the caller asked for
+	// with no way for the caller to detect it. See the Fireworks case above.
+	reasoningEffortForward
+)
+
 func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
+	req.resolveReasoningEffort(caps, reasoningEffortRemap)
+}
+
+func (req *OpenAIChatRequest) resolveReasoningEffort(caps schemas.ModelCaps, policy reasoningEffortPolicy) {
 	if req.ChatParameters.Reasoning != nil {
 		reasoningCopy := *req.ChatParameters.Reasoning
 		req.ChatParameters.Reasoning = &reasoningCopy
 		if req.ChatParameters.Reasoning.Effort != nil {
 			// Native field is provided, use it (and clear max_tokens)
 			effort := *req.ChatParameters.Reasoning.Effort
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(effort, defaultEffortControl(caps.Model())))
+			if policy == reasoningEffortRemap {
+				effort = caps.NormalizeReasoningEffort(effort, defaultEffortControl(caps.Model()))
+			}
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(effort)
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		} else if req.ChatParameters.Reasoning.MaxTokens != nil {

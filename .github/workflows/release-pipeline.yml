@@ -1141,6 +1141,11 @@ jobs:
           go-version: "1.26.5"
 
       - name: Create vLLM pods on RunPod
+        # fork quarantine (2026-08-23): fork has no RUNPOD_API_KEY/RUNPOD_NETWORK_VOLUME_ID/
+        # RUNPOD_REASONING_NETWORK_VOLUME_ID secrets (new job added by today's sync); the
+        # script's own guard fails fast with "RUNPOD_API_KEY is not set". See
+        # .github/fork-patches.txt for the removal condition.
+        continue-on-error: true
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           RUNPOD_NETWORK_VOLUME_ID: ${{ secrets.RUNPOD_NETWORK_VOLUME_ID }}
@@ -1150,6 +1155,9 @@ jobs:
           ./.github/workflows/scripts/setup-vllm-runpod.sh
 
       - name: Run vLLM provider tests
+        # fork quarantine (2026-08-23): depends on the pod-creation step above, which
+        # never ran without RUNPOD_API_KEY; same quarantine class, see .github/fork-patches.txt.
+        continue-on-error: true
         run: VLLM_ENABLED=1 make test-core PROVIDER=vllm
 
       - name: Delete vLLM pods on RunPod

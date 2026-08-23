@@ -92,3 +92,28 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	loggerPlugin.SetBatchUsageReporter(usageReporter)
 	loggerPlugin.StartBatchAccountingSweeper(&bifrostBatchResultFetcher{client: s.Client}, time.Minute, s.Config.KVStore)
 }
+
+// batchLifecycleClientSetter is satisfied by *governance.GovernancePlugin. Split
+// out so this file can wire it without importing the concrete governance type
+// into every other caller of lib.FindPluginAs.
+type batchLifecycleClientSetter interface {
+	SetBatchLifecycleClient(client governance.BatchLifecycleClient)
+}
+
+// WireBatchLifecycleClient injects the live Bifrost client into the governance
+// plugin's batch/file ownership enforcement, so it can issue the compensating
+// cancel/delete after a failed ownership capture and the per-id retrieve
+// fan-out used to build an owner-scoped list page. Like the batch accounting
+// sweeper, this must be re-run whenever the governance plugin is reloaded — a
+// reload swaps the instance and leaves the old one's client pointer stranded on
+// a torn-down plugin.
+func (s *BifrostHTTPServer) WireBatchLifecycleClient() {
+	if s == nil || s.Client == nil || s.Config == nil {
+		return
+	}
+	governancePlugin, err := lib.FindPluginAs[batchLifecycleClientSetter](s.Config, s.getGovernancePluginName())
+	if err != nil || governancePlugin == nil {
+		return
+	}
+	governancePlugin.SetBatchLifecycleClient(s.Client)
+}

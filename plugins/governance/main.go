@@ -1555,22 +1555,38 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 		return nil
 	}
 
-	stampGovernanceCtxFromVK(ctx, virtualKey)
+	if hasRoutingRules {
+		if _, err := p.applyRoutingRules(ctx, req, virtualKey); err != nil {
+			return err
+		}
+	}
 
-	// A caller-provided include-tools list can only narrow the virtual key's
-	// tool grant, never expand it — prune entries the key does not allow.
-	includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
+	// Publish the VK provider allowlist for the (post routing-rules) model so downstream routing
+	// layers (load balancing, model-catalog resolution) and core enforcement intersect their
+	// candidates with it — a later layer must not select a provider the VK forbids for this model.
+	_, routedModel, _ := req.GetRequestFields()
+	p.publishRoutingAllowlist(ctx, virtualKey, routedModel)
 
-	p.cfgMutex.RLock()
-	autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
-	p.cfgMutex.RUnlock()
-	// An include-clients filter opts the request into tool injection even when
-	// auto-injection is disabled (see ParseAndAddToolsToRequest in core/mcp), so
-	// the key's allowlist must be stamped on every path where injection can run.
-	includeClientsPresent := ctx.Value(schemas.MCPContextKeyIncludeClients) != nil
-	if !includeToolsProvided && (!autoInjectDisabled || includeClientsPresent) {
-		if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
-			ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
+	if virtualKey != nil {
+		if err := p.loadBalanceProvider(ctx, req, virtualKey); err != nil {
+			return err
+		}
+
+		// A caller-provided include-tools list can only narrow the virtual key's
+		// tool grant, never expand it — prune entries the key does not allow.
+		includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
+
+		p.cfgMutex.RLock()
+		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
+		p.cfgMutex.RUnlock()
+		// An include-clients filter opts the request into tool injection even when
+		// auto-injection is disabled (see ParseAndAddToolsToRequest in core/mcp), so
+		// the key's allowlist must be stamped on every path where injection can run.
+		includeClientsPresent := ctx.Value(schemas.MCPContextKeyIncludeClients) != nil
+		if !includeToolsProvided && (!autoInjectDisabled || includeClientsPresent) {
+			if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
+				ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
+			}
 		}
 	}
 

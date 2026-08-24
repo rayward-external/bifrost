@@ -96,10 +96,10 @@ type LocalGovernanceStore struct {
 }
 
 type GovernanceData struct {
-	VirtualKeys  map[string]*configstoreTables.TableVirtualKey  `json:"virtual_keys"`
-	Teams        map[string]*configstoreTables.TableTeam        `json:"teams"`
-	Customers    map[string]*configstoreTables.TableCustomer    `json:"customers"`
-	Users        map[string]*UserGovernance                     `json:"users"` // User-level governance (enterprise-only)
+	VirtualKeys  map[string]*configstoreTables.TableVirtualKey `json:"virtual_keys"`
+	Teams        map[string]*configstoreTables.TableTeam       `json:"teams"`
+	Customers    map[string]*configstoreTables.TableCustomer   `json:"customers"`
+	Users        map[string]*UserGovernance                    `json:"users"` // User-level governance (enterprise-only)
 	Budgets      map[string]*configstoreTables.TableBudget      `json:"budgets"`
 	RateLimits   map[string]*configstoreTables.TableRateLimit   `json:"rate_limits"`
 	RoutingRules map[string]*configstoreTables.TableRoutingRule `json:"routing_rules"`
@@ -145,12 +145,14 @@ type GovernanceStore interface {
 	// use it for every config publish (fresh load or admin edit) so a concurrent
 	// BumpBudgetUsage increment is never clobbered.
 	LoadBudget(ctx context.Context, budgetID string) *configstoreTables.TableBudget
+	BumpBudgetUsage(ctx context.Context, budgetID string, cost float64) error
 	UpsertBudgetConfig(ctx context.Context, budgetID string, config *configstoreTables.TableBudget)
 	DeleteBudget(ctx context.Context, budgetID string)
 	// Rate limit crud. UpsertRateLimitConfig carries in-memory counter state
 	// (token + request CurrentUsage/LastReset) forward across replacements —
 	// same rationale as UpsertBudgetConfig.
 	LoadRateLimit(ctx context.Context, rateLimitID string) *configstoreTables.TableRateLimit
+	BumpRateLimitUsage(ctx context.Context, rateLimitID string, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error
 	UpsertRateLimitConfig(ctx context.Context, rateLimitID string, config *configstoreTables.TableRateLimit)
 	DeleteRateLimit(ctx context.Context, rateLimitID string)
 	// Provider-level governance checks
@@ -4679,6 +4681,101 @@ func (gs *LocalGovernanceStore) GetRoutingProgram(ctx context.Context, rule *con
 	return program, nil
 }
 
+
+// UpdateRoutingRuleInMemory updates a routing rule in the in-memory cache
+func (gs *LocalGovernanceStore) UpdateRoutingRuleInMemory(ctx context.Context, rule *configstoreTables.TableRoutingRule) error {
+	if rule == nil {
+		return fmt.Errorf("routing rule cannot be nil")
+	}
+	// First, remove the rule from ALL scopes (in case it was moved from one scope to another)
+	gs.routingRules.Range(func(key, value interface{}) bool {
+		rules, ok := value.([]*configstoreTables.TableRoutingRule)
+		if !ok {
+			return true
+		}
+
+		// Filter out the rule if it exists in this scope
+		newRules := make([]*configstoreTables.TableRoutingRule, 0, len(rules))
+		for _, r := range rules {
+			if r.ID != rule.ID {
+				newRules = append(newRules, r)
+			}
+		}
+
+		// Update the scope with the filtered rules
+		if len(newRules) != len(rules) {
+			if len(newRules) == 0 {
+				gs.routingRules.Delete(key)
+			} else {
+				gs.routingRules.Store(key, newRules)
+			}
+		}
+		return true
+	})
+	// Build cache key for the new scope
+	var key string
+	if rule.Scope == "global" {
+		key = "global:"
+	} else {
+		scopeID := ""
+		if rule.ScopeID != nil {
+			scopeID = *rule.ScopeID
+		}
+		key = fmt.Sprintf("%s:%s", rule.Scope, scopeID)
+	}
+	// Load existing rules for this scope
+	var rules []*configstoreTables.TableRoutingRule
+	if value, ok := gs.routingRules.Load(key); ok {
+		if existing, ok := value.([]*configstoreTables.TableRoutingRule); ok {
+			rules = existing
+		}
+	}
+	// Add the rule to the new scope
+	rules = append(rules, rule)
+	// Sort by priority ASC (0 is highest priority, higher numbers are lower priority)
+	sort.Slice(rules, func(i, j int) bool {
+		return rules[i].Priority < rules[j].Priority
+	})
+	// Store back in cache
+	gs.routingRules.Store(key, rules)
+	// Invalidate compiled program cache for this rule (expression may have changed)
+	gs.compiledRoutingPrograms.Delete(rule.ID)
+	// Recompile the program immediately to update cache with fresh compilation
+	if _, err := gs.GetRoutingProgram(ctx, rule); err != nil {
+		gs.logger.Warn("Failed to recompile routing program for rule %s: %v", rule.Name, err)
+	}
+	return nil
+}
+
+// DeleteRoutingRuleInMemory removes a routing rule from the in-memory cache
+func (gs *LocalGovernanceStore) DeleteRoutingRuleInMemory(ctx context.Context, id string) error {
+	// Loop over all rules and delete the one with the matching id
+	gs.routingRules.Range(func(key, value interface{}) bool {
+		rules, ok := value.([]*configstoreTables.TableRoutingRule)
+		if !ok {
+			return true
+		}
+		// Find and filter out the rule with matching ID
+		var filteredRules []*configstoreTables.TableRoutingRule
+		for _, r := range rules {
+			if r.ID != id {
+				filteredRules = append(filteredRules, r)
+			}
+		}
+		// Update or delete the key
+		if len(filteredRules) == 0 {
+			gs.routingRules.Delete(key)
+		} else {
+			gs.routingRules.Store(key, filteredRules)
+		}
+		return true
+	})
+	// Invalidate compiled program cache for this rule
+	gs.compiledRoutingPrograms.Delete(id)
+	return nil
+}
+
+
 // GetBudgetAndRateLimitStatus returns the current budget and rate limit status for provider and model combination
 // Accounts for baseline usage from remote nodes when calculating percentages
 func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
@@ -4848,97 +4945,4 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context,
 		}
 	}
 	return result
-}
-
-// UpdateRoutingRuleInMemory updates a routing rule in the in-memory cache
-func (gs *LocalGovernanceStore) UpdateRoutingRuleInMemory(ctx context.Context, rule *configstoreTables.TableRoutingRule) error {
-	if rule == nil {
-		return fmt.Errorf("routing rule cannot be nil")
-	}
-	// First, remove the rule from ALL scopes (in case it was moved from one scope to another)
-	gs.routingRules.Range(func(key, value interface{}) bool {
-		rules, ok := value.([]*configstoreTables.TableRoutingRule)
-		if !ok {
-			return true
-		}
-
-		// Filter out the rule if it exists in this scope
-		newRules := make([]*configstoreTables.TableRoutingRule, 0, len(rules))
-		for _, r := range rules {
-			if r.ID != rule.ID {
-				newRules = append(newRules, r)
-			}
-		}
-
-		// Update the scope with the filtered rules
-		if len(newRules) != len(rules) {
-			if len(newRules) == 0 {
-				gs.routingRules.Delete(key)
-			} else {
-				gs.routingRules.Store(key, newRules)
-			}
-		}
-		return true
-	})
-	// Build cache key for the new scope
-	var key string
-	if rule.Scope == "global" {
-		key = "global:"
-	} else {
-		scopeID := ""
-		if rule.ScopeID != nil {
-			scopeID = *rule.ScopeID
-		}
-		key = fmt.Sprintf("%s:%s", rule.Scope, scopeID)
-	}
-	// Load existing rules for this scope
-	var rules []*configstoreTables.TableRoutingRule
-	if value, ok := gs.routingRules.Load(key); ok {
-		if existing, ok := value.([]*configstoreTables.TableRoutingRule); ok {
-			rules = existing
-		}
-	}
-	// Add the rule to the new scope
-	rules = append(rules, rule)
-	// Sort by priority ASC (0 is highest priority, higher numbers are lower priority)
-	sort.Slice(rules, func(i, j int) bool {
-		return rules[i].Priority < rules[j].Priority
-	})
-	// Store back in cache
-	gs.routingRules.Store(key, rules)
-	// Invalidate compiled program cache for this rule (expression may have changed)
-	gs.compiledRoutingPrograms.Delete(rule.ID)
-	// Recompile the program immediately to update cache with fresh compilation
-	if _, err := gs.GetRoutingProgram(ctx, rule); err != nil {
-		gs.logger.Warn("Failed to recompile routing program for rule %s: %v", rule.Name, err)
-	}
-	return nil
-}
-
-// DeleteRoutingRuleInMemory removes a routing rule from the in-memory cache
-func (gs *LocalGovernanceStore) DeleteRoutingRuleInMemory(ctx context.Context, id string) error {
-	// Loop over all rules and delete the one with the matching id
-	gs.routingRules.Range(func(key, value interface{}) bool {
-		rules, ok := value.([]*configstoreTables.TableRoutingRule)
-		if !ok {
-			return true
-		}
-		// Find and filter out the rule with matching ID
-		var filteredRules []*configstoreTables.TableRoutingRule
-		for _, r := range rules {
-			if r.ID != id {
-				filteredRules = append(filteredRules, r)
-			}
-		}
-		// Update or delete the key
-		if len(filteredRules) == 0 {
-			gs.routingRules.Delete(key)
-		} else {
-			gs.routingRules.Store(key, filteredRules)
-		}
-		return true
-	})
-	// Invalidate compiled program cache for this rule
-	gs.compiledRoutingPrograms.Delete(id)
-	return nil
 }

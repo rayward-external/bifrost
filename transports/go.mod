@@ -13,6 +13,7 @@ replace (
 	github.com/maximhq/bifrost/plugins/modelcatalogresolver => ../plugins/modelcatalogresolver
 	github.com/maximhq/bifrost/plugins/otel => ../plugins/otel
 	github.com/maximhq/bifrost/plugins/prompts => ../plugins/prompts
+	github.com/maximhq/bifrost/plugins/routing => ../plugins/routing
 	github.com/maximhq/bifrost/plugins/semanticcache => ../plugins/semanticcache
 	github.com/maximhq/bifrost/plugins/telemetry => ../plugins/telemetry
 )
@@ -39,6 +40,7 @@ require (
 	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.17
 	github.com/maximhq/bifrost/plugins/otel v1.4.8
 	github.com/maximhq/bifrost/plugins/prompts v1.0.36
+	github.com/maximhq/bifrost/plugins/routing v0.0.0-20260819122003-50dec5a1331f
 	github.com/maximhq/bifrost/plugins/semanticcache v1.5.36
 	github.com/maximhq/bifrost/plugins/telemetry v1.5.36
 	github.com/pion/rtcp v1.2.16

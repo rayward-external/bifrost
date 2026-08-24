@@ -197,3 +197,24 @@ query-filters:
   # All endpoints are either admin-authenticated or public read-only marketplace.
   - exclude:
       id: go/reflected-xss
+
+  # go/allocation-size-overflow (2 high FP, distinct rule from the
+  # go/uncontrolled-allocation-size exclude above — CWE-190 "size computation
+  # for allocation may overflow"): core/providers/runware/runware.go's
+  # handleImageInference/sendTaskArray wrap a marshalled request body in a
+  # Runware task-array envelope via `make([]byte, 0, len(jsonData)+2)`. Go's
+  # int is 64-bit on every platform this repo builds for, so this only
+  # overflows if jsonData is already ~9.2 exabytes long — physically
+  # impossible in process memory, HTTP body size limits notwithstanding.
+  # Audited repo-wide: every make([]byte, ...) sized from a length reachable
+  # from request/response data uses this same additive
+  # len(x)+constant / len(a)+len(b) idiom (mcpserver.go, integrations/utils.go,
+  # gemini.go, bedrock/utils.go, providers/utils/utils.go) or a
+  # length*small-constant idiom (vectorstore/redis.go: len(floats)*4 for a
+  # float32->[]byte cast) — no site multiplies two independently
+  # attacker-influenced dimensions, which is the actual overflow-prone pattern
+  # this query targets. RE-AUDIT on every upstream sync: if a new make() call
+  # multiplies two unbounded user-supplied dimensions, this rule-level exclude
+  # would hide it.
+  - exclude:
+      id: go/allocation-size-overflow

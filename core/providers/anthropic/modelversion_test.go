@@ -238,7 +238,12 @@ func TestClaudeCapabilityMatrix(t *testing.T) {
 			model:      "claude-opus-4-6",
 			opus47Plus: false, sonnet5Plus: false, fableFamily: false,
 			adaptiveOnly: false, supportsAdaptive: true, supportsEffort: true,
-			supportsNativeEff: true, supportsFastMode: true, midConvSystem: false,
+			// SupportsNativeEffort (the caps-gated ladder helper) is reached only
+			// as the fallback AFTER SupportsAdaptiveThinking; Opus 4.6 supports
+			// adaptive, so it takes that branch and this fallback correctly never
+			// fires for it — unlike Opus 4.5, which has no adaptive thinking at
+			// all and depends on this fallback to get the effort parameter.
+			supportsNativeEff: false, supportsFastMode: true, midConvSystem: false,
 			dynamicWebSearch: true, computerUseGen: newGen, textEditorGen: newGen,
 		},
 		{
@@ -345,22 +350,23 @@ func TestClaudeCapabilityMatrix(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
+			caps := schemas.ResolveModelCaps(schemas.Anthropic, tc.model)
 			checkBool(t, "IsOpus47Plus", tc.model, IsOpus47Plus(tc.model), tc.opus47Plus)
 			checkBool(t, "IsSonnet5Plus", tc.model, IsSonnet5Plus(tc.model), tc.sonnet5Plus)
 			checkBool(t, "IsFableFamily", tc.model, IsFableFamily(tc.model), tc.fableFamily)
-			checkBool(t, "IsAdaptiveOnlyThinkingModel", tc.model, IsAdaptiveOnlyThinkingModel(tc.model), tc.adaptiveOnly)
-			checkBool(t, "SupportsAdaptiveThinking", tc.model, SupportsAdaptiveThinking(tc.model), tc.supportsAdaptive)
-			checkBool(t, "SupportsEffortParameter", tc.model, SupportsEffortParameter(tc.model), tc.supportsEffort)
-			checkBool(t, "SupportsNativeEffort", tc.model, SupportsNativeEffort(tc.model), tc.supportsNativeEff)
-			checkBool(t, "SupportsFastMode", tc.model, SupportsFastMode(tc.model), tc.supportsFastMode)
+			checkBool(t, "IsAdaptiveOnlyThinkingModel", tc.model, DefaultAdaptiveOnlyThinking(tc.model), tc.adaptiveOnly)
+			checkBool(t, "SupportsAdaptiveThinking", tc.model, DefaultSupportsAdaptiveThinking(tc.model), tc.supportsAdaptive)
+			checkBool(t, "SupportsEffortParameter", tc.model, DefaultSupportsNativeEffort(tc.model), tc.supportsEffort)
+			checkBool(t, "SupportsNativeEffort", tc.model, SupportsNativeEffort(caps), tc.supportsNativeEff)
+			checkBool(t, "SupportsFastMode", tc.model, DefaultSupportsFastMode(tc.model), tc.supportsFastMode)
 			checkBool(t, "SupportsDynamicWebSearch", tc.model, SupportsDynamicWebSearch(tc.model), tc.dynamicWebSearch)
 			checkBool(t, "SupportsMidConversationSystem", tc.model,
-				SupportsMidConversationSystem(schemas.Anthropic, tc.model), tc.midConvSystem)
+				DefaultSupportsMidConversationSystem(schemas.Anthropic, tc.model), tc.midConvSystem)
 
-			if got := ComputerUseGeneration(tc.model); got != tc.computerUseGen {
+			if got := ComputerUseGeneration(caps); got != tc.computerUseGen {
 				t.Errorf("ComputerUseGeneration(%q) = %q, want %q", tc.model, got, tc.computerUseGen)
 			}
-			if got := TextEditorGeneration(tc.model); got != tc.textEditorGen {
+			if got := TextEditorGeneration(caps); got != tc.textEditorGen {
 				t.Errorf("TextEditorGeneration(%q) = %q, want %q", tc.model, got, tc.textEditorGen)
 			}
 		})
@@ -430,14 +436,14 @@ func TestSupportsFastMode_BoundedWindow(t *testing.T) {
 
 	for _, model := range supported {
 		t.Run("supported/"+model, func(t *testing.T) {
-			if !SupportsFastMode(model) {
+			if !DefaultSupportsFastMode(model) {
 				t.Errorf("SupportsFastMode(%q) = false, want true (Opus 4.6/4.7/4.8 are documented fast-mode models)", model)
 			}
 		})
 	}
 	for _, model := range append(append([]string{}, unsupportedAboveWindow...), unsupportedOther...) {
 		t.Run("unsupported/"+model, func(t *testing.T) {
-			if SupportsFastMode(model) {
+			if DefaultSupportsFastMode(model) {
 				t.Errorf("SupportsFastMode(%q) = true, want false; forwarding speed:\"fast\" to a model outside the documented window is a 400", model)
 			}
 		})

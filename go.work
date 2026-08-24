@@ -32,6 +32,7 @@ use (
 	./plugins/modelcatalogresolver
 	./plugins/otel
 	./plugins/prompts
+	./plugins/routing
 	./plugins/semanticcache
 	./plugins/telemetry
 	./scripts/bifrost-migration-cli

@@ -1,6 +1,10 @@
 package utils
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
 // servedClaudeModels are the Claude models the gateway fronts. Each must resolve
 // to its real ceiling from the static table, because that table is the only
@@ -32,7 +36,7 @@ func TestServedClaudeModelsResolveRealMaxOutputTokens(t *testing.T) {
 	const sentinel = 4096 // AnthropicDefaultMaxTokens
 
 	for model, want := range servedClaudeModels {
-		got := GetMaxOutputTokensOrDefault(model, sentinel)
+		got := GetMaxOutputTokensOrDefault(schemas.Anthropic, model, sentinel)
 		if got == sentinel && want != sentinel {
 			t.Errorf("%s fell through to the %d default: a request omitting max_tokens "+
 				"would be silently truncated at %d instead of %d", model, sentinel, sentinel, want)

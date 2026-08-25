@@ -21,6 +21,7 @@ use (
 	./examples/plugins/llm-only
 	./examples/plugins/mcp-only
 	./examples/plugins/multi-interface
+	./examples/plugins/virtual-key-from-config
 	./examples/webhooks
 	./framework
 	./plugins/compat

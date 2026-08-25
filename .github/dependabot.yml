@@ -170,6 +170,12 @@ updates:
     open-pull-requests-limit: 0
 
   - package-ecosystem: gomod
+    directory: /examples/plugins/virtual-key-from-config
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
     directory: /framework
     schedule:
       interval: daily

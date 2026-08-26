@@ -14,7 +14,6 @@ import (
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 	"github.com/valyala/fasthttp"
@@ -73,14 +72,22 @@ func (h *WSResponsesHandler) Close() {
 
 // RegisterRoutes registers the WebSocket Responses endpoint at the base path
 // and all OpenAI integration paths.
+//
+// FORK PATCH (rayward-internal/llm-gateway-infra#645): those paths are bound to
+// a handler that REFUSES the upgrade instead of h.handleUpgrade. Rationale and
+// removal condition live in wsresponses_disabled.go; the upstream body was:
+//
+//	handler := lib.ChainMiddlewares(h.handleUpgrade, middlewares...)
+//	r.GET("/v1/responses", handler)
+//	for _, path := range integrations.OpenAIWSResponsesPaths("/openai") {
+//		r.GET(path, handler)
+//	}
+//
+// Do not restore that body without also deleting wsresponses_disabled.go and
+// wsresponses_disabled_test.go — TestResponsesWebSocketRoutesAreDisabled fails
+// if this delegation is dropped.
 func (h *WSResponsesHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	handler := lib.ChainMiddlewares(h.handleUpgrade, middlewares...)
-	// Base path (outside integration prefix)
-	r.GET("/v1/responses", handler)
-	// OpenAI integration paths (/openai/v1/responses, /openai/responses, /openai/openai/responses)
-	for _, path := range integrations.OpenAIWSResponsesPaths("/openai") {
-		r.GET(path, handler)
-	}
+	registerDisabledResponsesWSRoutes(r, middlewares...)
 }
 
 // handleUpgrade upgrades the HTTP connection to WebSocket and starts the event loop.

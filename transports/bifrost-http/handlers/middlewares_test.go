@@ -415,8 +415,13 @@ func TestChainMiddlewares_MiddlewareCanModifyContext(t *testing.T) {
 
 func TestIsInferenceWSEndpoint(t *testing.T) {
 	paths := []string{
+		"/v1/responses",
 		"/v1/realtime",
+		"/responses",
 		"/realtime",
+		"/openai/v1/responses",
+		"/openai/responses",
+		"/openai/openai/responses",
 		"/openai/v1/realtime",
 		"/openai/realtime",
 		"/openai/openai/realtime",
@@ -433,17 +438,6 @@ func TestIsInferenceWSEndpoint(t *testing.T) {
 	}
 	if isInferenceWSEndpoint("/openai/chat/completions") {
 		t.Fatal("non-websocket OpenAI path should not be treated as inference websocket")
-	}
-	for _, path := range []string{
-		"/v1/responses",
-		"/responses",
-		"/openai/v1/responses",
-		"/openai/responses",
-		"/openai/openai/responses",
-	} {
-		if isInferenceWSEndpoint(path) {
-			t.Fatalf("expected responses WebSocket path %s to be rejected", path)
-		}
 	}
 }
 

@@ -16,9 +16,10 @@ import (
 // re-enabling a broken transport.
 
 // spaShellBody is what the test's stand-in for the dashboard catch-all returns.
-// Reaching it is the failure this patch exists to prevent: on the live gateway a
-// GET carrying WebSocket upgrade headers that lands on the catch-all answers
-// "101 Switching Protocols" with no Sec-WebSocket-Accept and then closes.
+// Reaching it is the failure this patch exists to prevent: on the live gateway
+// the catch-all's keep-alive 200 is rewritten by the Google front end into a
+// "101 Switching Protocols" with no Sec-WebSocket-Accept, then dropped (see
+// wsresponses_disabled.go).
 const spaShellBody = "SPA-SHELL"
 
 // newResponsesWSTestRouter builds a router with the Responses WebSocket paths

@@ -2043,13 +2043,12 @@ func (s *BifrostHTTPServer) StartOAuth2SweepWorker(ctx context.Context, shouldSw
 func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	// Initialize WebSocket pool and handler before integrations so it can be wired through
 	s.wsPool = bfws.NewPool(s.Config.WebSocketConfig.Pool)
-	wsResponsesHandler := handlers.NewWSResponsesHandler(s.Client, s.Config, s.wsPool)
 	wsRealtimeHandler := handlers.NewWSRealtimeHandler(s.Client, s.Config, s.wsPool)
 	webrtcRealtimeHandler := handlers.NewWebRTCRealtimeHandler(s.Client, s.Config)
 	realtimeClientSecretsHandler := handlers.NewRealtimeClientSecretsHandler(s.Client, s.Config)
 
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
-	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler, wsRealtimeHandler, webrtcRealtimeHandler, realtimeClientSecretsHandler)
+	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, nil, wsRealtimeHandler, webrtcRealtimeHandler, realtimeClientSecretsHandler)
 	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
 	// Serve by-ID virtual key lookups on the /mcp JWT auth path from the
 	// governance in-memory store (avoiding a per-request DB read). Best-effort:

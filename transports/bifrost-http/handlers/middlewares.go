@@ -854,9 +854,7 @@ func isInferenceWSEndpoint(path string) bool {
 	}
 
 	switch path {
-	case "/v1/responses",
-		"/responses",
-		"/v1/realtime",
+	case "/v1/realtime",
 		"/realtime":
 		return true
 	default:

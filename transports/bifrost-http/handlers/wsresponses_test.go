@@ -3,14 +3,17 @@ package handlers
 import (
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/valyala/fasthttp"
@@ -80,6 +83,38 @@ func TestIsWSReadTimeout(t *testing.T) {
 	assert.False(t, isWSReadTimeout(net.UnknownNetworkError("unknown")))
 	assert.False(t, isWSReadTimeout(errors.New("boom")))
 	assert.False(t, isWSReadTimeout(nil))
+}
+
+// TestResponsesWebSocketRoutesAreRegistered is the inverted tripwire for the
+// llm-gateway-infra#645 withdrawal, reversed 2026-08-27 (llm-gateway-infra#650,
+// backporting maximhq/bifrost#5339). It asserts (*WSResponsesHandler).RegisterRoutes
+// wires every Responses WebSocket path to the real upgrader (h.handleUpgrade)
+// instead of the JSON-404 refusal wsresponses_disabled.go used to install —
+// a WS upgrade request must be accepted (101), never answered with the
+// "Responses API WebSocket mode is not supported" rejection body.
+// See TestRealtimeWebSocketRoutesAreDisabled (wsresponses_disabled_test.go) for
+// the sibling test proving Realtime is untouched and still refused.
+func TestResponsesWebSocketRoutesAreRegistered(t *testing.T) {
+	r := router.New()
+	(&WSResponsesHandler{}).RegisterRoutes(r)
+
+	paths := append([]string{"/v1/responses"}, integrations.OpenAIWSResponsesPaths("/openai")...)
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			resp := serveUpgradeGET(r, path)
+
+			body := string(resp.Body())
+			if strings.Contains(body, "Responses API WebSocket mode is not supported") {
+				t.Fatalf("%s: still refused by the withdrawn handler: %q", path, body)
+			}
+			if got := resp.StatusCode(); got != fasthttp.StatusSwitchingProtocols {
+				t.Fatalf("%s: status = %d, want %d (upgrade must be accepted; body: %q)", path, got, fasthttp.StatusSwitchingProtocols, body)
+			}
+			if accept := string(resp.Header.Peek("Sec-WebSocket-Accept")); accept == "" {
+				t.Fatalf("%s: missing Sec-WebSocket-Accept on a 101 response", path)
+			}
+		})
+	}
 }
 
 func TestNewBifrostError(t *testing.T) {

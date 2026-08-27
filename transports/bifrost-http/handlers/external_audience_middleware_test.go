@@ -411,8 +411,10 @@ func TestExternalAudienceSeesPostHocHeaders(t *testing.T) {
 // fasthttp/websocket writes the handshake onto ctx.Response.Header before
 // hijacking (server_fasthttp.go:172-183) — so the deferred rewrite CAN reach a
 // 101 and strip it into an unusable response. Found by an independent review.
-// (/v1/responses was the original example; it no longer upgrades — see
-// wsresponses_disabled.go, rayward-internal/llm-gateway-infra#645.)
+// (/v1/responses was the original example; it briefly stopped upgrading
+// 2026-08-27 during the llm-gateway-infra#645 withdrawal, reversed the same
+// day by llm-gateway-infra#650 — it upgrades again, same as /v1/realtime, and
+// would serve equally well as this test's example.)
 func TestExternalAudienceKeepsTheWebSocketHandshake(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set(AudienceRequestHeader, ExternalAudience)

@@ -14,6 +14,7 @@ import (
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 	"github.com/valyala/fasthttp"
@@ -73,21 +74,24 @@ func (h *WSResponsesHandler) Close() {
 // RegisterRoutes registers the WebSocket Responses endpoint at the base path
 // and all OpenAI integration paths.
 //
-// FORK PATCH (rayward-internal/llm-gateway-infra#645): those paths are bound to
-// a handler that REFUSES the upgrade instead of h.handleUpgrade. Rationale and
-// removal condition live in wsresponses_disabled.go; the upstream body was:
-//
-//	handler := lib.ChainMiddlewares(h.handleUpgrade, middlewares...)
-//	r.GET("/v1/responses", handler)
-//	for _, path := range integrations.OpenAIWSResponsesPaths("/openai") {
-//		r.GET(path, handler)
-//	}
-//
-// Do not restore that body without also deleting wsresponses_disabled.go and
-// wsresponses_disabled_test.go — TestResponsesWebSocketRoutesAreDisabled fails
-// if this delegation is dropped.
+// Re-enabled 2026-08-27 (rayward-internal/llm-gateway-infra#650): the
+// 2026-08-27 withdrawal (#289, llm-gateway-infra#645) refused these routes
+// because every non-Vertex leg bypassed governance routing and dialed the
+// literal "openai" provider straight off the bare model string — the routes
+// were never actually broken, just unrouted. That bug is fixed by backporting
+// maximhq/bifrost#5339 ("fix: apply routing rules to WebSocket Responses
+// requests") into handleResponseCreate below, which now runs
+// RunPreRequestHooks before selecting the upstream, mirroring wsrealtime.go's
+// handleUpgrade. Realtime is a separate withdrawal (#290, llm-gateway-infra#646)
+// and stays refused — see wsresponses_disabled.go.
 func (h *WSResponsesHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	registerDisabledResponsesWSRoutes(r, middlewares...)
+	handler := lib.ChainMiddlewares(h.handleUpgrade, middlewares...)
+	// Base path (outside integration prefix)
+	r.GET("/v1/responses", handler)
+	// OpenAI integration paths (/openai/v1/responses, /openai/responses, /openai/openai/responses)
+	for _, path := range integrations.OpenAIWSResponsesPaths("/openai") {
+		r.GET(path, handler)
+	}
 }
 
 // handleUpgrade upgrades the HTTP connection to WebSocket and starts the event loop.
@@ -120,6 +124,7 @@ type authHeaders struct {
 	googAPIKey    string
 	baggage       string
 	headers       map[string][]string
+	queryParams   map[string]string
 }
 
 // captureAuthHeaders captures the auth headers from the request.
@@ -136,6 +141,12 @@ func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 	for key, value := range ctx.Request.Header.All() {
 		k := strings.ToLower(string(key))
 		ah.headers[k] = append(ah.headers[k], string(value))
+	}
+	if queryArgs := ctx.URI().QueryArgs(); queryArgs.Len() > 0 {
+		ah.queryParams = make(map[string]string, queryArgs.Len())
+		for key, value := range queryArgs.All() {
+			ah.queryParams[strings.ToLower(string(key))] = string(value)
+		}
 	}
 	return ah
 }
@@ -219,6 +230,59 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	}
 	if parentRequestID, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); parentRequestID == "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyParentRequestID, session.ID())
+	}
+
+	// Run PreRequestHook so governance routing rules / load balancing can rewrite
+	// provider/model before we select the upstream. The native WS path below bypasses
+	// handleStreamRequest (where these hooks normally run), so without this the request
+	// would always stick to the provider parsed from the model string (default: openai).
+	// Mirrors the realtime handler (wsrealtime.go handleUpgrade).
+	// Surface upgrade-request headers/query so CEL rules (headers[...] / params[...])
+	// see the same shape they would for normal HTTP requests.
+	if auth != nil {
+		if len(auth.headers) > 0 {
+			flatHeaders := make(map[string]string, len(auth.headers))
+			for k, values := range auth.headers {
+				if len(values) > 0 {
+					flatHeaders[k] = values[0]
+				}
+			}
+			bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, flatHeaders)
+		}
+		if len(auth.queryParams) > 0 {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyRequestQuery, auth.queryParams)
+		}
+	}
+	preReq := &schemas.BifrostRequest{
+		RequestType:      schemas.WebSocketResponsesRequest,
+		ResponsesRequest: bifrostReq,
+	}
+	h.client.RunPreRequestHooks(bifrostCtx, preReq)
+	routedProvider, routedModel, _ := preReq.GetRequestFields()
+	if routedProvider == "" {
+		// Mirror the empty-provider check in core handleRequest: no routing layer could
+		// resolve a provider for this model.
+		cancel()
+		writeWSError(session, 400, "invalid_request_error", "no provider could be resolved for model "+bifrostReq.Model)
+		return
+	}
+	bifrostReq.Provider = routedProvider
+	if routedModel != "" {
+		bifrostReq.Model = routedModel
+	}
+
+	// Recompute the store override if routing changed the provider — DisableStore is a
+	// per-provider setting and must reflect the provider the request will actually hit.
+	if routedProvider != provider {
+		if providerCfg, cfgErr := h.config.GetProviderConfigRaw(routedProvider); cfgErr == nil &&
+			providerCfg.OpenAIConfig != nil && providerCfg.OpenAIConfig.DisableStore {
+			event.Store = schemas.Ptr(false)
+		} else {
+			event.Store = schemas.Ptr(true)
+		}
+		if bifrostReq.Params != nil {
+			bifrostReq.Params.Store = event.Store
+		}
 	}
 
 	// Rewrite the raw event for upstream: strip provider/ prefix from model,

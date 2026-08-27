@@ -9,11 +9,16 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// FORK PATCH TEST (rayward-internal/llm-gateway-infra#645). See
+// FORK PATCH TEST (rayward-internal/llm-gateway-infra#646). See
 // wsresponses_disabled.go. This is the tripwire: an upstream sync that restores
-// the vanilla (*WSResponsesHandler).RegisterRoutes body, or that drops
+// the vanilla (*WSRealtimeHandler).RegisterRoutes body, or that drops
 // wsresponses_disabled.go's registration, turns this red instead of silently
 // re-enabling a broken transport.
+//
+// The Responses half of this file (llm-gateway-infra#645) was reversed
+// 2026-08-27 (llm-gateway-infra#650, backporting maximhq/bifrost#5339) — see
+// TestResponsesWebSocketRoutesAreRegistered in wsresponses_test.go for the
+// inverted assertion that those routes are wired up again.
 
 // spaShellBody is what the test's stand-in for the dashboard catch-all returns.
 // Reaching it is the failure this patch exists to prevent: on the live gateway
@@ -73,52 +78,6 @@ func assertRefused(t *testing.T, path string, resp *fasthttp.Response, wantMessa
 	}
 }
 
-// TestResponsesWebSocketRoutesAreDisabled is the behavioral guard: every path
-// upstream would bind to the upgrader must instead answer a definitive JSON
-// rejection, whether the routes are registered directly or through
-// (*WSResponsesHandler).RegisterRoutes.
-func TestResponsesWebSocketRoutesAreDisabled(t *testing.T) {
-	registrars := map[string]func(*router.Router){
-		"registerDisabledResponsesWSRoutes": func(r *router.Router) {
-			registerDisabledResponsesWSRoutes(r)
-		},
-		// The delegation itself. A sync that restores upstream's RegisterRoutes
-		// body binds h.handleUpgrade here and this case stops returning our 404.
-		"WSResponsesHandler.RegisterRoutes": func(r *router.Router) {
-			(&WSResponsesHandler{}).RegisterRoutes(r)
-		},
-	}
-
-	for name, register := range registrars {
-		t.Run(name, func(t *testing.T) {
-			r := newResponsesWSTestRouter(register)
-			for _, path := range responsesWSDisabledPaths() {
-				assertRefused(t, path, serveUpgradeGET(r, path), "Responses API WebSocket mode is not supported")
-			}
-		})
-	}
-}
-
-// TestResponsesWSDisabledPathsCoverUpstreamRegistration pins the path list to
-// upstream's own source. If a sync adds a Responses WebSocket path to
-// OpenAIWSResponsesPaths, this fails rather than leaving the new path to fall
-// through to the catch-all.
-func TestResponsesWSDisabledPathsCoverUpstreamRegistration(t *testing.T) {
-	covered := make(map[string]bool)
-	for _, path := range responsesWSDisabledPaths() {
-		covered[path] = true
-	}
-
-	if !covered["/v1/responses"] {
-		t.Fatal("/v1/responses is not covered by responsesWSDisabledPaths")
-	}
-	for _, path := range integrations.OpenAIWSResponsesPaths("/openai") {
-		if !covered[path] {
-			t.Fatalf("OpenAI integration path %s is not covered by responsesWSDisabledPaths", path)
-		}
-	}
-}
-
 // TestRealtimeWebSocketRoutesAreDisabled is the realtime tripwire
 // (rayward-internal/llm-gateway-infra#646). No realtime-capable model is served
 // on this deployment, so upstream's handler upgraded and then died: measured
@@ -161,20 +120,6 @@ func TestRealtimeWSDisabledPathsCoverUpstreamRegistration(t *testing.T) {
 	for _, path := range integrations.OpenAIRealtimePaths("/openai") {
 		if !covered[path] {
 			t.Fatalf("OpenAI realtime path %s is not covered by realtimeWSDisabledPaths", path)
-		}
-	}
-}
-
-// TestDisabledWSPathSetsDoNotOverlap keeps the two refusal messages meaningful:
-// a caller hitting a responses path must not be told about realtime models.
-func TestDisabledWSPathSetsDoNotOverlap(t *testing.T) {
-	responses := make(map[string]bool)
-	for _, path := range responsesWSDisabledPaths() {
-		responses[path] = true
-	}
-	for _, path := range realtimeWSDisabledPaths() {
-		if responses[path] {
-			t.Fatalf("%s appears in both the responses and realtime disabled path sets", path)
 		}
 	}
 }

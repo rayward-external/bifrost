@@ -2418,43 +2418,15 @@ func NewConfigurationError(message string) *schemas.BifrostError {
 // minimum" both surfaced as 500, so SDKs retried an unretryable request instead of
 // telling the caller to fix it.
 //
-// Wrap with NewInvalidRequestError; detect with errors.As. The wrapped message is
-// preserved verbatim so existing error text is unchanged.
-type InvalidRequestError struct {
-	Err error
-}
-
-func (e *InvalidRequestError) Error() string {
-	if e == nil || e.Err == nil {
-		return ""
-	}
-	return e.Err.Error()
-}
-
-func (e *InvalidRequestError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.Err
-}
-
-// NewInvalidRequestError builds a caller-input error that maps to HTTP 400.
-func NewInvalidRequestError(format string, args ...any) error {
-	return &InvalidRequestError{Err: fmt.Errorf(format, args...)}
-}
-
-// IsInvalidRequestError reports whether err (or anything it wraps) is an
-// InvalidRequestError.
-func IsInvalidRequestError(err error) bool {
-	var target *InvalidRequestError
-	return errors.As(err, &target)
-}
+// Wrap with InvalidRequestErrorf; detect with IsInvalidRequestError (errors.As
+// under the hood). The wrapped message is preserved verbatim so existing error
+// text is unchanged.
 
 // NewBifrostOperationError creates a standardized error for bifrost operation errors.
 // This helper reduces code duplication across providers that have bifrost operation errors.
 //
-// When the underlying cause is an InvalidRequestError the result is classified as a
-// 400 invalid_request_error, because the caller — not bifrost — has to change
+// When the underlying cause was built by InvalidRequestErrorf the result is classified
+// as a 400 invalid_request_error, because the caller — not bifrost — has to change
 // something for the request to succeed. Everything else keeps the previous behaviour
 // of leaving StatusCode unset, which the transport renders as 500.
 func NewBifrostOperationError(message string, err error) *schemas.BifrostError {
@@ -3881,7 +3853,7 @@ func GetBudgetTokensFromReasoningEffort(
 		// Caller-input failure, not an internal one: the request cannot succeed until
 		// the caller raises max_tokens. Typed so NewBifrostOperationError renders it
 		// as a 400 rather than the default 500 (which made SDKs retry it).
-		return 0, NewInvalidRequestError("max_tokens must be greater than %d for reasoning", minBudgetTokens)
+		return 0, InvalidRequestErrorf("max_tokens must be greater than %d for reasoning", minBudgetTokens)
 	}
 
 	// Defensive defaults

@@ -407,10 +407,12 @@ func TestExternalAudienceSeesPostHocHeaders(t *testing.T) {
 	}
 }
 
-// /v1/responses is a GET route that upgrades (wsresponses.go:79), and
+// /v1/realtime is a GET route that upgrades (wsrealtime.go), and
 // fasthttp/websocket writes the handshake onto ctx.Response.Header before
 // hijacking (server_fasthttp.go:172-183) — so the deferred rewrite CAN reach a
 // 101 and strip it into an unusable response. Found by an independent review.
+// (/v1/responses was the original example; it no longer upgrades — see
+// wsresponses_disabled.go, rayward-internal/llm-gateway-infra#645.)
 func TestExternalAudienceKeepsTheWebSocketHandshake(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set(AudienceRequestHeader, ExternalAudience)

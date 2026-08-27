@@ -107,12 +107,14 @@ func ApplyBifrostErrorResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 // didn't populate `extra` — the zero value for ExtraFields produces no
 // headers.
 func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) {
-	applyBifrostResponseHeaders(ctx, bifrostCtx, extra, true)
-}
-
-// applyBifrostResponseHeaders is the shared body. emitUsage is false only on the
-// error path — see ApplyBifrostErrorResponseHeaders for why.
-func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields, emitUsage bool) {
+	// "transport-response-headers" overhead phase: writing routed-identity and upstream
+	// headers onto the fasthttp response. Runs inside the root http.request span on the
+	// way out, on no phase span, so it would otherwise fold into "core". Nil-safe.
+	if t, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && t != nil {
+		if _, h := t.StartSpanID(ctx, "transport-response-headers", schemas.SpanKindInternal); h != nil {
+			defer t.EndSpan(h, schemas.SpanStatusOk, "")
+		}
+	}
 	for key, value := range extra.ProviderResponseHeaders {
 		ctx.Response.Header.Set(key, value)
 	}

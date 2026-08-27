@@ -127,7 +127,7 @@ bifrost/
 │   └── (architecture|features|providers|mcp|plugins|enterprise|...)
 │
 ├── .claude/skills/                # Claude Code skill definitions (4 skills)
-├── go.work                        # Go workspace — requires Go 1.26.1
+├── go.work                        # Go workspace — requires Go 1.27.0
 ├── Makefile                       # Build, test, dev commands (1300+ lines)
 └── terraform/                     # Infrastructure as Code
 ```
@@ -149,7 +149,7 @@ go.work
 **Rules:**
 - Run `go mod tidy` in the **specific module directory**, not the root
 - Cross-module imports resolve via workspace locally, but need explicit `require` in `go.mod` for releases
-- The workspace requires **Go 1.26.1** (`go.work` directive)
+- The workspace requires **Go 1.27.0** (`go.work` directive)
 
 ---
 

@@ -52,7 +52,7 @@ func serveUpgradeGET(r *router.Router, path string) *fasthttp.Response {
 
 // assertRefused checks that a response is a definitive non-WebSocket rejection
 // and not the SPA shell.
-func assertRefused(t *testing.T, path string, resp *fasthttp.Response) {
+func assertRefused(t *testing.T, path string, resp *fasthttp.Response, wantMessage string) {
 	t.Helper()
 
 	body := string(resp.Body())
@@ -68,8 +68,8 @@ func assertRefused(t *testing.T, path string, resp *fasthttp.Response) {
 	if ct := string(resp.Header.ContentType()); !strings.HasPrefix(ct, "application/json") {
 		t.Fatalf("%s: content-type = %q, want application/json", path, ct)
 	}
-	if !strings.Contains(body, "WebSocket mode is not supported") {
-		t.Fatalf("%s: body = %q, want the disabled-mode message", path, body)
+	if !strings.Contains(body, wantMessage) {
+		t.Fatalf("%s: body = %q, want %q", path, body, wantMessage)
 	}
 }
 
@@ -93,7 +93,7 @@ func TestResponsesWebSocketRoutesAreDisabled(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := newResponsesWSTestRouter(register)
 			for _, path := range responsesWSDisabledPaths() {
-				assertRefused(t, path, serveUpgradeGET(r, path))
+				assertRefused(t, path, serveUpgradeGET(r, path), "Responses API WebSocket mode is not supported")
 			}
 		})
 	}
@@ -119,16 +119,62 @@ func TestResponsesWSDisabledPathsCoverUpstreamRegistration(t *testing.T) {
 	}
 }
 
-// TestResponsesWebSocketDisabledLeavesRealtimeAlone guards the blast radius:
-// #645 is about /v1/responses only, and the Realtime WebSocket surface must
-// keep upgrading.
-func TestResponsesWebSocketDisabledLeavesRealtimeAlone(t *testing.T) {
-	for _, path := range responsesWSDisabledPaths() {
-		if strings.Contains(path, "realtime") {
-			t.Fatalf("responsesWSDisabledPaths must not disable a realtime path, got %s", path)
+// TestRealtimeWebSocketRoutesAreDisabled is the realtime tripwire
+// (rayward-internal/llm-gateway-infra#646). No realtime-capable model is served
+// on this deployment, so upstream's handler upgraded and then died: measured
+// live, 12 of 14 upgrades came back 502 websocket_handshake_failed while the
+// origin logged 101, and the 2 that reached the client as 101 were already dead.
+func TestRealtimeWebSocketRoutesAreDisabled(t *testing.T) {
+	registrars := map[string]func(*router.Router){
+		"registerDisabledRealtimeWSRoutes": func(r *router.Router) {
+			registerDisabledRealtimeWSRoutes(r)
+		},
+		// The delegation itself. A sync that restores upstream's RegisterRoutes
+		// body binds h.handleUpgrade here and this case stops returning our 404.
+		"WSRealtimeHandler.RegisterRoutes": func(r *router.Router) {
+			(&WSRealtimeHandler{}).RegisterRoutes(r)
+		},
+	}
+
+	for name, register := range registrars {
+		t.Run(name, func(t *testing.T) {
+			r := newResponsesWSTestRouter(register)
+			for _, path := range realtimeWSDisabledPaths() {
+				assertRefused(t, path, serveUpgradeGET(r, path), "Realtime API WebSocket mode is not supported")
+			}
+		})
+	}
+}
+
+// TestRealtimeWSDisabledPathsCoverUpstreamRegistration pins the realtime path
+// list to upstream's own source, so a sync that adds a path cannot leave it
+// falling through to the dashboard catch-all.
+func TestRealtimeWSDisabledPathsCoverUpstreamRegistration(t *testing.T) {
+	covered := make(map[string]bool)
+	for _, path := range realtimeWSDisabledPaths() {
+		covered[path] = true
+	}
+
+	if !covered["/v1/realtime"] {
+		t.Fatal("/v1/realtime is not covered by realtimeWSDisabledPaths")
+	}
+	for _, path := range integrations.OpenAIRealtimePaths("/openai") {
+		if !covered[path] {
+			t.Fatalf("OpenAI realtime path %s is not covered by realtimeWSDisabledPaths", path)
 		}
 	}
-	if !isInferenceWSEndpoint("/v1/realtime") {
-		t.Fatal("/v1/realtime must remain an inference WebSocket endpoint")
+}
+
+// TestDisabledWSPathSetsDoNotOverlap keeps the two refusal messages meaningful:
+// a caller hitting a responses path must not be told about realtime models.
+func TestDisabledWSPathSetsDoNotOverlap(t *testing.T) {
+	responses := make(map[string]bool)
+	for _, path := range responsesWSDisabledPaths() {
+		responses[path] = true
+	}
+	for _, path := range realtimeWSDisabledPaths() {
+		if responses[path] {
+			t.Fatalf("%s appears in both the responses and realtime disabled path sets", path)
+		}
 	}
 }

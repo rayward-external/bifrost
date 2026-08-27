@@ -53,6 +53,11 @@ import (
 // It names the supported alternative so a client does not have to guess.
 const responsesWSDisabledMessage = "Responses API WebSocket mode is not supported on this gateway. Use HTTP POST on the same path instead."
 
+// realtimeWSDisabledMessage is returned for every Realtime WebSocket path.
+// There is no HTTP alternative for Realtime, so it says what is actually true:
+// no realtime-capable model is served here (see llm-gateway-infra#646).
+const realtimeWSDisabledMessage = "Realtime API WebSocket mode is not supported on this gateway: no realtime-capable model is served."
+
 // responsesWSDisabledPaths returns every path that (*WSResponsesHandler).RegisterRoutes
 // would otherwise bind to the WebSocket upgrader. Derived from the same source
 // as upstream's registration so the two cannot drift apart.
@@ -60,12 +65,32 @@ func responsesWSDisabledPaths() []string {
 	return append([]string{"/v1/responses"}, integrations.OpenAIWSResponsesPaths("/openai")...)
 }
 
+// realtimeWSDisabledPaths returns every path that (*WSRealtimeHandler).RegisterRoutes
+// would otherwise bind to the WebSocket upgrader. Derived from the same source
+// as upstream's registration so the two cannot drift apart.
+func realtimeWSDisabledPaths() []string {
+	return append([]string{"/v1/realtime"}, integrations.OpenAIRealtimePaths("/openai")...)
+}
+
 // registerDisabledResponsesWSRoutes binds every Responses WebSocket path to a
 // handler that refuses the request outright, so no such request can reach the
 // dashboard catch-all.
 func registerDisabledResponsesWSRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	handler := lib.ChainMiddlewares(handleResponsesWSDisabled, middlewares...)
-	for _, path := range responsesWSDisabledPaths() {
+	registerRefusingWSRoutes(r, responsesWSDisabledPaths(), responsesWSDisabledMessage, middlewares...)
+}
+
+// registerDisabledRealtimeWSRoutes does the same for the Realtime paths.
+func registerDisabledRealtimeWSRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	registerRefusingWSRoutes(r, realtimeWSDisabledPaths(), realtimeWSDisabledMessage, middlewares...)
+}
+
+// registerRefusingWSRoutes binds paths to a handler that refuses the request
+// outright, so no such request can reach the dashboard catch-all.
+func registerRefusingWSRoutes(r *router.Router, paths []string, message string, middlewares ...schemas.BifrostHTTPMiddleware) {
+	handler := lib.ChainMiddlewares(func(ctx *fasthttp.RequestCtx) {
+		refuseWSUpgrade(ctx, message)
+	}, middlewares...)
+	for _, path := range paths {
 		r.GET(path, handler)
 	}
 }
@@ -81,6 +106,15 @@ func registerDisabledResponsesWSRoutes(r *router.Router, middlewares ...schemas.
 // request, never "101". The rewrite described above lives outside this
 // process, so no unit test here can prove it.
 func handleResponsesWSDisabled(ctx *fasthttp.RequestCtx) {
+	refuseWSUpgrade(ctx, responsesWSDisabledMessage)
+}
+
+// refuseWSUpgrade writes the refusal. The explicit "Connection: close" is
+// load-bearing, not cosmetic: measured against the live gateway, a keep-alive
+// non-101 reply to an upgrade request is rewritten by the Google front end into
+// a bogus "101 Switching Protocols" with no Sec-WebSocket-Accept and then
+// dropped, while every reply carrying "Connection: close" passes through intact.
+func refuseWSUpgrade(ctx *fasthttp.RequestCtx, message string) {
 	ctx.Response.Header.SetCanonical([]byte("Connection"), []byte("close"))
-	SendError(ctx, fasthttp.StatusNotFound, responsesWSDisabledMessage)
+	SendError(ctx, fasthttp.StatusNotFound, message)
 }

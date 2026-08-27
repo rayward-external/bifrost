@@ -15,7 +15,6 @@ import (
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 	"github.com/valyala/fasthttp"
@@ -51,12 +50,23 @@ func NewWSRealtimeHandler(client *bifrost.Bifrost, config *lib.Config, pool *bfw
 }
 
 // RegisterRoutes registers the Realtime WebSocket endpoint at the base path and OpenAI integration paths.
+//
+// FORK PATCH (rayward-internal/llm-gateway-infra#646): those paths are bound to
+// a handler that REFUSES the upgrade instead of h.handleUpgrade, because no
+// realtime-capable model is served on this deployment. Rationale and removal
+// condition live in wsresponses_disabled.go; the upstream body was:
+//
+//	handler := lib.ChainMiddlewares(h.handleUpgrade, middlewares...)
+//	r.GET("/v1/realtime", handler)
+//	for _, path := range integrations.OpenAIRealtimePaths("/openai") {
+//		r.GET(path, handler)
+//	}
+//
+// Do not restore that body without also removing the realtime half of
+// wsresponses_disabled{,_test}.go — TestRealtimeWebSocketRoutesAreDisabled
+// fails if this delegation is dropped.
 func (h *WSRealtimeHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	handler := lib.ChainMiddlewares(h.handleUpgrade, middlewares...)
-	r.GET("/v1/realtime", handler)
-	for _, path := range integrations.OpenAIRealtimePaths("/openai") {
-		r.GET(path, handler)
-	}
+	registerDisabledRealtimeWSRoutes(r, middlewares...)
 }
 
 func (h *WSRealtimeHandler) Close() {

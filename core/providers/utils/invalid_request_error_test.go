@@ -19,7 +19,7 @@ import (
 // which SDKs treat as a retryable server fault, so they retry a request that can
 // never succeed instead of telling the caller to raise max_tokens.
 func TestNewBifrostOperationErrorMapsInvalidRequestTo400(t *testing.T) {
-	err := NewInvalidRequestError("max_tokens must be greater than %d for reasoning", 1024)
+	err := InvalidRequestErrorf("max_tokens must be greater than %d for reasoning", 1024)
 
 	bifrostErr := NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
 
@@ -64,7 +64,7 @@ func TestNewBifrostOperationErrorLeavesInternalErrorsAt500(t *testing.T) {
 // Classification must survive wrapping — conversion helpers routinely add context
 // with %w, and an errors.As-based check has to see through that.
 func TestInvalidRequestErrorSurvivesWrapping(t *testing.T) {
-	base := NewInvalidRequestError("max_tokens must be greater than %d for reasoning", 1024)
+	base := InvalidRequestErrorf("max_tokens must be greater than %d for reasoning", 1024)
 	wrapped := fmt.Errorf("converting anthropic chat request: %w", base)
 
 	if !IsInvalidRequestError(wrapped) {

@@ -274,6 +274,75 @@ func TestMergeWebSocketHeaders_ForwardedHeadersOverrideProviderHeadersAndPreserv
 	assert.NotContains(t, merged.Values("Authorization"), "Bearer malicious")
 }
 
+// TestConvertEventToRequest_BareNonOpenAIModelLeavesProviderEmptyForRouting is the
+// regression test for llm-gateway-infra#650 (measured live against production
+// 2026-08-27): the HTTP /v1/responses path parses a bare model (no "provider/"
+// prefix) with an EMPTY default provider — resolveModelAndProvider in
+// inference.go calls schemas.ParseModelString(model, "") specifically so that
+// the model-catalog-resolver and governance/routing PreRequestHook plugins can
+// resolve the provider afterward; both plugins only act while req.Provider is
+// still "". convertEventToRequest used to call
+// schemas.ParseModelString(event.Model, schemas.OpenAI) instead, which pinned
+// every bare model to the openai provider before those plugins ever ran (the
+// WS-only path also runs a PreRequestHook pass of its own in
+// handleResponseCreate — see the RunPreRequestHooks call there — but it starts
+// from whatever convertEventToRequest already put in req.Provider).
+//
+// That divergence is exactly why claude-haiku-4-5, deepseek-v4-flash and
+// gemini-2.5-flash all 400'd with "no keys found that support model:
+// <alias>" over the Responses WebSocket transport while the identical HTTP
+// request succeeded (gpt-5.5 "worked" over WS only because openai happened to
+// be its real provider too): key selection filtered the openai provider's
+// keys against the caller's alias, since Provider was never given the chance
+// to route to the model's real provider.
+//
+// This test fails before the fix (Provider comes back "openai", the alias
+// gets sent toward the wrong provider's key pool) and passes after (Provider
+// comes back "", exactly matching resolveModelAndProvider, and routing is
+// left to RunPreRequestHooks — not to a hardcoded default here).
+func TestConvertEventToRequest_BareNonOpenAIModelLeavesProviderEmptyForRouting(t *testing.T) {
+	h := &WSResponsesHandler{}
+	event := &schemas.WebSocketResponsesEvent{
+		Model: "claude-haiku-4-5", // bare alias, no "provider/" prefix
+		Input: []byte(`"hi"`),
+	}
+
+	req, err := h.convertEventToRequest(event)
+	if err != nil {
+		t.Fatalf("convertEventToRequest returned error: %v", err)
+	}
+
+	if req.Provider != "" {
+		t.Fatalf("provider = %q, want empty so PreRequestHook plugins (model-catalog-resolver, governance routing/load-balancing) can resolve it — see resolveModelAndProvider in inference.go", req.Provider)
+	}
+	if req.Model != "claude-haiku-4-5" {
+		t.Fatalf("model = %q, want the alias unchanged (%q) — only the PreRequestHook pipeline should rewrite it, not this parse", req.Model, "claude-haiku-4-5")
+	}
+}
+
+// TestConvertEventToRequest_ProviderPrefixedModelStillResolvesDirectly guards
+// against a naive "always leave provider empty" fix: an explicit "provider/model"
+// string must still resolve the provider directly from the prefix, exactly like
+// resolveModelAndProvider's ParseModelString call on the HTTP path.
+func TestConvertEventToRequest_ProviderPrefixedModelStillResolvesDirectly(t *testing.T) {
+	h := &WSResponsesHandler{}
+	event := &schemas.WebSocketResponsesEvent{
+		Model: "openai/gpt-5.5",
+		Input: []byte(`"hi"`),
+	}
+
+	req, err := h.convertEventToRequest(event)
+	if err != nil {
+		t.Fatalf("convertEventToRequest returned error: %v", err)
+	}
+	if req.Provider != schemas.OpenAI {
+		t.Fatalf("provider = %q, want %q", req.Provider, schemas.OpenAI)
+	}
+	if req.Model != "gpt-5.5" {
+		t.Fatalf("model = %q, want %q", req.Model, "gpt-5.5")
+	}
+}
+
 func TestHasWebSocketForwardedHeaders(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, time.Time{})
 	assert.False(t, hasWebSocketForwardedHeaders(ctx))

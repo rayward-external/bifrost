@@ -195,8 +195,23 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	// Store override: default to store=true (Codex sends false by default but expects true).
 	// If DisableStore is set in provider config, force store=false.
 	// If client explicitly sets store, respect that value unless DisableStore overrides it.
-	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
-	if provider == "" || modelName == "" {
+	//
+	// Parse with an EMPTY default provider — mirrors resolveModelAndProvider in
+	// inference.go, the HTTP /v1/responses path. A bare model with no "provider/"
+	// prefix must come out of this parse with provider == "" so the
+	// model-catalog-resolver and governance/routing PreRequestHook plugins below
+	// (run via RunPreRequestHooks) get the chance to resolve it — both only fire
+	// when req.Provider is still empty. Defaulting to schemas.OpenAI here (as
+	// before) pinned every bare model to the openai provider before those plugins
+	// ran, so non-OpenAI bare models (claude-*, deepseek-*, gemini-*, ...) always
+	// 400'd with "no keys found that support model: <alias>" against openai's
+	// keys instead of being routed to their real provider — the root cause of the
+	// WS-vs-HTTP key-selection divergence in llm-gateway-infra#650. `provider`
+	// below is only a pre-routing best guess for the DisableStore lookup; it is
+	// recomputed once routing has actually run (see "Recompute the store
+	// override" below).
+	provider, modelName := schemas.ParseModelString(event.Model, "")
+	if modelName == "" {
 		writeWSError(session, 400, "invalid_request_error", "failed to parse model string")
 		return
 	}
@@ -235,7 +250,8 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	// Run PreRequestHook so governance routing rules / load balancing can rewrite
 	// provider/model before we select the upstream. The native WS path below bypasses
 	// handleStreamRequest (where these hooks normally run), so without this the request
-	// would always stick to the provider parsed from the model string (default: openai).
+	// would stick to whatever provider ParseModelString produced above — empty for any
+	// bare (non-prefixed) model, which is exactly what lets the plugins below resolve it.
 	// Mirrors the realtime handler (wsrealtime.go handleUpgrade).
 	// Surface upgrade-request headers/query so CEL rules (headers[...] / params[...])
 	// see the same shape they would for normal HTTP requests.
@@ -626,8 +642,12 @@ func (h *WSResponsesHandler) trackResponseID(session *bfws.Session, data []byte)
 
 // convertEventToRequest converts a WebSocket response.create event to a BifrostResponsesRequest.
 func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketResponsesEvent) (*schemas.BifrostResponsesRequest, error) {
-	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
-	if provider == "" || modelName == "" {
+	// Empty default provider — see the matching comment in handleResponseCreate.
+	// Provider is resolved by the PreRequestHook pipeline (RunPreRequestHooks),
+	// not here; leaving it empty for a bare model name is the expected
+	// pre-routing state, identical to the HTTP path's resolveModelAndProvider.
+	provider, modelName := schemas.ParseModelString(event.Model, "")
+	if modelName == "" {
 		return nil, errModelFormat
 	}
 
@@ -987,7 +1007,7 @@ func completeTrace(ctx *schemas.BifrostContext) {
 }
 
 var (
-	errModelFormat   = errorf("model should be in provider/model format")
+	errModelFormat   = errorf("model is required")
 	errInputRequired = errorf("input is required for responses")
 )
 

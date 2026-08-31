@@ -2,7 +2,7 @@ module github.com/maximhq/bifrost/examples/plugins/mcp-only
 
 go 1.27.0
 
-require github.com/maximhq/bifrost/core v1.5.12
+require github.com/maximhq/bifrost/core v1.5.17
 
 require (
 	github.com/andybalholm/brotli v1.2.2 // indirect

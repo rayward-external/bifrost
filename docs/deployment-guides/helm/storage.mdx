@@ -141,7 +141,7 @@ helm install bifrost bifrost/bifrost -f embedded-postgres-values.yaml
 
 **Using an existing secret (Vault, ESO, Sealed Secrets)**
 
-If you manage secrets externally, set `existingSecret` instead of providing a plaintext password. The chart will not create its own secret - both the postgres pod (`POSTGRES_PASSWORD`) and the Bifrost pod (`BIFROST_POSTGRES_PASSWORD`) mount the password directly from your secret.
+If you manage secrets externally, set `existingSecret` instead of providing a plaintext password. The chart will not create its own secret — both the postgres pod (`POSTGRES_PASSWORD`) and the Bifrost pod (`BIFROST_POSTGRES_PASSWORD`) mount the password directly from your secret.
 
 ```bash
 # Example: create the secret manually (VSO / ESO would do this automatically)

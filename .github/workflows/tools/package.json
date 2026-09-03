@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Pinned CI-only CLI tooling (newman). Not published, not part of the product build. Installed with `npm ci` so package-lock.json's integrity hashes are enforced, which is what OpenSSF Scorecard's Pinned-Dependencies check requires; a bare `npm install -g newman@x` pins the version but verifies nothing.",
-  "overridesRationale": "newman pins vulnerable transitive deps (handlebars, lodash, node-forge, flatted, underscore, qs, jose, uuid). Upstream has not released a newman that picks up the patched versions, so each one is forced to its fixed release here. Every consumer of these packages in the tree was checked for API compatibility, and `newman run` with the cli + htmlextra reporters was exercised against the forced tree. Drop an entry once newman ships a release that resolves at or above it.",
+  "overridesRationale": "newman pins vulnerable transitive deps (handlebars, lodash, node-forge, flatted, underscore, qs, jose, uuid). Upstream has not released a newman that picks up the patched versions, so each one is forced to its fixed release here. Every consumer of these packages in the tree was checked for API compatibility, and `newman run` with the cli + htmlextra reporters was exercised against the forced tree. Drop an entry once newman ships a release that resolves at or above it. @faker-js/faker (GHSA-qxc2-j82w-r537, transitive via postman-collection) is intentionally NOT overridden: postman-collection pins @faker-js/faker to an exact 5.5.3 and has never moved off it through its latest 5.3.1 release, so any override above 5.5.3 breaks module load (dynamic-variables.js references the pre-v6 `faker.address.*`/`faker.name.*` namespaces removed in later majors) before a single request runs. postman-collection only calls faker's fixed, hardcoded generator functions here (e.g. `faker.address.city`) to back Postman's `{{$randomX}}` dynamic variables in test collections we author ourselves; it never routes attacker-controlled input into `faker.helpers.fake()`, which is the vulnerable sink. Re-check when postman-collection ships a release depending on a patched faker.",
   "dependencies": {
     "newman": "6.2.2",
     "newman-reporter-htmlextra": "1.23.1"
@@ -15,7 +15,7 @@
     "node-forge": "1.4.0",
     "flatted": "3.4.4",
     "underscore": "1.13.8",
-    "qs": "6.15.3",
+    "qs": "6.16.0",
     "jose": "4.15.9",
     "uuid": "11.1.1"
   }

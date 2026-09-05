@@ -86,7 +86,14 @@ func acceptsXHighEffort(model string) bool {
 		strings.Contains(modelLower, "gpt-5.3-codex") ||
 		strings.Contains(modelLower, "gpt-5.4") ||
 		strings.Contains(modelLower, "gpt-5.5") ||
-		strings.Contains(modelLower, "gpt-5.6")
+		strings.Contains(modelLower, "gpt-5.6") ||
+		// gpt-6-astra, measured against the provider on 2026-09-05: xhigh
+		// answers 200 and spends measurably more reasoning than high on the
+		// same prompt (256 vs 140 reasoning tokens), while max is refused with
+		// "Supported values are: 'low', 'medium', 'high', and 'xhigh'." Named
+		// per model, not per family, so an unmeasured later gpt-6 revision does
+		// not inherit the claim.
+		strings.Contains(modelLower, "gpt-6-astra")
 }
 
 // acceptsMinimalEffort reports models that natively accept "minimal" effort:

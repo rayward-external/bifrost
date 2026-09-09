@@ -518,8 +518,8 @@ func (p *GovernancePlugin) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostConte
 
 // runPreRequestRouting applies CEL routing rules and load balancing to a synthetic request built
 // from a large-payload model string, since the real request body is not parsed for large-payload
-// mode (see the BifrostContextKeyLargePayloadMetadata branch in PreRequestHook). Returns the
-// resulting "provider/model" (or bare model) string to substitute back into the metadata.
+// mode (see PreRequestHook's own large-payload-metadata branch below). Returns the resulting
+// "provider/model" (or bare model) string to substitute back into the metadata.
 func (p *GovernancePlugin) runPreRequestRouting(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, hasRoutingRules bool, modelIn string, requestType schemas.RequestType) (string, error) {
 	// Parse a provider-prefixed model string the same way the transport does for
 	// body-having requests, so an explicit prefix like "openai/gpt-4o" lands in

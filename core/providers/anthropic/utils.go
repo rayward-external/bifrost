@@ -891,15 +891,19 @@ func IsOpus5Plus(model string) bool {
 	return parseClaudeModel(model).isFamilyAtLeast(claudeFamilyOpus, 5, 0)
 }
 
-// IsSonnet5Plus returns true for Claude Sonnet 5 (and later Sonnet 5.x). Sonnet 5
+// IsSonnet5Plus returns true for Claude Sonnet at version 5 or later. Sonnet 5
 // is a drop-in for Sonnet 4.6 but adopts the Opus 4.7+ request surface: extended
 // thinking (budget_tokens) is removed and temperature/top_p/top_k are rejected
-// with a 400 — adaptive thinking is the only thinking-on mode. Matching "sonnet-5"
-// excludes "sonnet-4-5" and matches Bedrock/Vertex/date-suffixed forms.
+// with a 400 — adaptive thinking is the only thinking-on mode.
+//
+// The comparison is numeric (see parseClaudeModel), not a substring match: a
+// substring match on "sonnet-5" excludes "sonnet-4-5" correctly but also excludes
+// every future Sonnet major (sonnet-6, sonnet-7, ...) — the same version-rot bug
+// class issue #351 exists to prevent for Opus (see IsOpus47Plus).
 //
 // Source: https://platform.claude.com/docs/en/about-claude/models/whats-new-sonnet-5
 func IsSonnet5Plus(model string) bool {
-	return strings.Contains(strings.ToLower(model), "sonnet-5")
+	return parseClaudeModel(model).isFamilyAtLeast(claudeFamilySonnet, 5, 0)
 }
 
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
@@ -981,15 +985,18 @@ func RejectsDisabledThinking(model string, effort *string) bool {
 	return false
 }
 
-// DefaultSupportsFastMode: speed:"fast" is a research preview on Opus 4.6 and
-// Opus 4.7+ (which covers 4.8 and 5); every other model rejects it with a 400.
+// DefaultSupportsFastMode: speed:"fast" is a research preview on the exact Opus
+// versions Anthropic documents (see fastModeOpusVersions) — NOT every Opus 4.7+,
+// which would forward speed:"fast" to a model outside the documented window and
+// get it rejected with a 400. The set is intentionally closed and bounded, unlike
+// the open-ended IsOpus47Plus/IsOpus5Plus version-floor checks used elsewhere.
 func DefaultSupportsFastMode(model string) bool {
-	if IsOpus47Plus(model) {
-		return true
+	v := parseClaudeModel(model)
+	if v.Family != claudeFamilyOpus || !v.HasVersion {
+		return false
 	}
-	m := strings.ToLower(model)
-	return strings.Contains(m, "opus") &&
-		(strings.Contains(m, "4-6") || strings.Contains(m, "4.6"))
+	_, ok := fastModeOpusVersions[[2]int{v.Major, v.Minor}]
+	return ok
 }
 
 // DefaultSupportsAdaptiveThinking: thinking.type "adaptive" is accepted on Opus
@@ -1456,8 +1463,18 @@ const anthropicDefaultEffort = "medium"
 // cannot be switched off through effort at all (callers that want thinking off
 // handle effort=="none" before reaching here, via thinking:{type:"disabled"}).
 func MapBifrostEffortToAnthropic(effort string) string {
-	switch effort {
-	case "minimal":
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	case "xhigh":
+		return "xhigh"
+	case "max":
+		return "max"
+	case "minimal", "none":
 		return "low"
 	case "adaptive":
 		// "Don't pass `adaptive` as an `effort` value: `adaptive` is a thinking mode,

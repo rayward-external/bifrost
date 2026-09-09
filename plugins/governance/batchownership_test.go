@@ -194,7 +194,7 @@ func newBatchPluginWithConfig(t *testing.T, vks []*configstoreTables.TableVirtua
 	}
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: vkVals,
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 	p := &GovernancePlugin{
 		logger:   logger,

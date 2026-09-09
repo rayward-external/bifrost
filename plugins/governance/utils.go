@@ -7,6 +7,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/valyala/fasthttp"
 )
 
@@ -226,4 +227,31 @@ func PresentedAnyCredential(ctx *schemas.BifrostContext) bool {
 		return false
 	}
 	return presentedGrantBearingCredential(ctx) || hasDirectKeyAuth(ctx)
+}
+
+// stampGovernanceCtxFromVK copies team/customer identifiers from the VK onto ctx so
+// downstream plugins (logging, observability) see the governance scope.
+func stampGovernanceCtxFromVK(ctx *schemas.BifrostContext, vk *configstoreTables.TableVirtualKey) {
+	if vk == nil {
+		return
+	}
+	if vk.TeamID != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *vk.TeamID)
+	}
+	if vk.Team != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
+		if vk.Team.CustomerID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.Team.CustomerID)
+			if vk.Team.Customer != nil {
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
+			}
+		}
+	} else {
+		if vk.CustomerID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.CustomerID)
+		}
+		if vk.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
+		}
+	}
 }

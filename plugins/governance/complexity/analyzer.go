@@ -164,12 +164,20 @@ func isContinuationFollowup(signals textSignalCounts, convScore float64) bool {
 }
 
 func (a *ComplexityAnalyzer) classifyTier(score float64) string {
+	// complexReasoningBoundary is a fork-local constant, not a TierBoundaries
+	// field — see DefaultTierBoundaries for why. Guard against a
+	// user-configured MediumComplex meeting or exceeding it, which would
+	// otherwise make the COMPLEX tier unreachable.
+	reasoningBoundary := complexReasoningBoundary
+	if a.tierBoundaries.MediumComplex >= reasoningBoundary {
+		reasoningBoundary = a.tierBoundaries.MediumComplex
+	}
 	switch {
 	case score < a.tierBoundaries.SimpleMedium:
 		return TierSimple
 	case score < a.tierBoundaries.MediumComplex:
 		return TierMedium
-	case score < a.tierBoundaries.ComplexReasoning:
+	case score < reasoningBoundary:
 		return TierComplex
 	default:
 		return TierReasoning

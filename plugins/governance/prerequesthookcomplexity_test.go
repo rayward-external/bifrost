@@ -60,7 +60,7 @@ func TestPreRequestHook_ComplexityAnalyzerFeedsCELVariable(t *testing.T) {
 		},
 	}
 
-	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx := emptyCtx()
 	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
 
 	engines, ok := bfCtx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
@@ -120,7 +120,7 @@ func TestPreRequestHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {
 		},
 	}
 
-	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx := emptyCtx()
 	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
 
 	logs := bfCtx.GetRoutingEngineLogs()

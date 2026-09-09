@@ -55,7 +55,12 @@ if [ "${#packages[@]}" -eq 0 ]; then
   echo "❌ No transport unit-test packages found" >&2
   exit 1
 fi
-go test -short -race -v -timeout 40m -coverprofile=coverage.txt "${packages[@]}"
+# Fork patch: skip upstream-broken tests named via GOTEST_SKIP (see fork-patches.txt)
+if [ -n "${GOTEST_SKIP:-}" ]; then
+  go test -short -race -v -timeout 40m -coverprofile=coverage.txt -skip "$GOTEST_SKIP" "${packages[@]}"
+else
+  go test -short -race -v -timeout 40m -coverprofile=coverage.txt "${packages[@]}"
+fi
 
 # Upload coverage to Codecov
 if [ -n "${CODECOV_TOKEN:-}" ]; then

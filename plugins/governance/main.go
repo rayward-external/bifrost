@@ -16,6 +16,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
@@ -513,6 +514,158 @@ func (p *GovernancePlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 // from a key at all. Nothing is passed, so nothing can be passed wrongly.
 func (p *GovernancePlugin) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
 	return p.store.GetBudgetAndRateLimitStatus(ctx, provider, model, budgetBaselines, tokenBaselines, requestBaselines)
+}
+
+// runPreRequestRouting applies CEL routing rules and load balancing to a synthetic request built
+// from a large-payload model string, since the real request body is not parsed for large-payload
+// mode (see the BifrostContextKeyLargePayloadMetadata branch in PreRequestHook). Returns the
+// resulting "provider/model" (or bare model) string to substitute back into the metadata.
+func (p *GovernancePlugin) runPreRequestRouting(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, hasRoutingRules bool, modelIn string, requestType schemas.RequestType) (string, error) {
+	// Parse a provider-prefixed model string the same way the transport does for
+	// body-having requests, so an explicit prefix like "openai/gpt-4o" lands in
+	// ChatRequest.Provider and load balancing honors the caller's routing intent.
+	providerIn, parsedModel := schemas.ParseModelString(modelIn, "")
+	synthetic := &schemas.BifrostRequest{
+		RequestType: requestType,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: providerIn, Model: parsedModel},
+	}
+
+	if hasRoutingRules {
+		if _, err := p.applyRoutingRules(ctx, synthetic, virtualKey); err != nil {
+			return modelIn, err
+		}
+	}
+
+	if err := p.LoadBalanceProvider(ctx, synthetic); err != nil {
+		return modelIn, err
+	}
+
+	provider, model, _ := synthetic.GetRequestFields()
+	if provider != "" {
+		return string(provider) + "/" + model, nil
+	}
+	return model, nil
+}
+
+// applyRoutingRules evaluates this tenant's CEL routing rules against req and, on a match, mutates
+// req's provider/model/fallbacks/pinned-key per the matched rule's decision.
+func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) (*RoutingDecision, error) {
+	provider, model, _ := req.GetRequestFields()
+	if model == "" {
+		return nil, nil
+	}
+
+	requestType := string(req.RequestType)
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	queryParams, _ := ctx.Value(schemas.BifrostContextKeyRequestQuery).(map[string]string)
+
+	// Set up lazy complexity computation; only runs if a rule references complexity_tier.
+	var computeComplexity func() *complexity.ComplexityResult
+	if analyzer := p.complexityAnalyzer.Load(); analyzer != nil {
+		computeComplexity = func() *complexity.ComplexityResult {
+			input, ok := buildComplexityInput(req)
+			if !ok {
+				if p.logger != nil {
+					p.logger.Debug("[Governance] Complexity analysis skipped: unsupported request type")
+				}
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Complexity analysis skipped: no supported text-bearing input detected")
+				return nil
+			}
+
+			result := analyzer.Analyze(input)
+			if result == nil {
+				if p.logger != nil {
+					p.logger.Debug("[Governance] %s", noComplexitySignalLog)
+				}
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelDebug, noComplexitySignalLog)
+				return nil
+			}
+			if p.logger != nil {
+				p.logger.Debug(
+					"[Governance] Complexity analysis details: tier=%s score=%.2f words=%d",
+					result.Tier,
+					result.Score,
+					result.WordCount,
+				)
+			}
+			ctx.AppendRoutingEngineLog(
+				schemas.RoutingEngineRoutingRule,
+				schemas.LogLevelInfo,
+				fmt.Sprintf("Complexity: tier=%s score=%.2f words=%d", result.Tier, result.Score, result.WordCount),
+			)
+			return result
+		}
+	}
+
+	routingCtx := &RoutingContext{
+		VirtualKey:               virtualKey,
+		UserID:                   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID),
+		Provider:                 provider,
+		Model:                    model,
+		RequestType:              requestType,
+		Headers:                  headers,
+		QueryParams:              queryParams,
+		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, provider, model, nil, nil, nil),
+		computeComplexity:        computeComplexity,
+	}
+
+	p.logger.Debug("[PreRequestHook] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v",
+		provider, model, requestType, virtualKey != nil)
+
+	// Evaluate routing rules
+	decision, err := p.engine.EvaluateRoutingRules(ctx, routingCtx)
+	if err != nil {
+		p.logger.Error("failed to evaluate routing rules: %v", err)
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Routing rule evaluation error: %v", err))
+		return nil, nil
+	}
+	if decision == nil {
+		return nil, nil
+	}
+
+	p.logger.Debug("[Governance] Routing rule matched: %s", decision.MatchedRuleName)
+
+	if decision.Provider != "" {
+		req.SetProvider(schemas.ModelProvider(decision.Provider))
+	}
+	if decision.Model != "" {
+		req.SetModel(decision.Model)
+	}
+
+	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineRoutingRule)
+
+	// Add fallbacks if present; fill in the incoming model for fallbacks that omit it
+	if len(decision.Fallbacks) > 0 {
+		resolvedFallbacks := make([]schemas.Fallback, 0, len(decision.Fallbacks))
+		for _, fb := range decision.Fallbacks {
+			fbProvider, fbModel := schemas.ParseModelString(fb, "")
+			trimmedFbProvider := strings.TrimSpace(string(fbProvider))
+			trimmedFbModel := strings.TrimSpace(fbModel)
+			if trimmedFbProvider == "" {
+				continue
+			}
+			if trimmedFbModel == "" && model != "" {
+				trimmedFbModel = model
+			}
+			resolvedFallbacks = append(resolvedFallbacks, schemas.Fallback{
+				Provider: schemas.ModelProvider(trimmedFbProvider),
+				Model:    trimmedFbModel,
+			})
+		}
+		req.SetFallbacks(resolvedFallbacks)
+	}
+
+	// Pin specific API key by ID if the routing rule specifies one. This uses a dedicated,
+	// non-reserved context key (not BifrostContextKeyAPIKeyID): routing runs inside
+	// PreRequestHook, where core blocks writes to reserved key-selection keys, so a write to
+	// the caller-pin key would be silently dropped. Key selection reads this routing pin first
+	// and resolves it against the configured key pool.
+	if decision.KeyID != "" {
+		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, decision.KeyID)
+	}
+
+	p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, decision.Fallbacks)
+	return decision, nil
 }
 
 // LoadBalanceProvider picks a weighted provider among those the request may reach for req.Model
@@ -1184,46 +1337,16 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 		return err
 	}
 
-	// Whether the credential may be used at all is settled when its permit is built, so this reads
-	// the answer off the permits. Asking the key again would answer a settled question from a second
-	// source. Nothing is refused here: this hook only stamps and prunes, and the funnel refuses.
-	if access == nil || unusablePermit(access) != nil {
-		return nil
-	}
-
-	// A caller-provided include-tools list can only narrow the virtual key's
-	// tool grant, never expand it — prune entries the key does not allow.
-	includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, access)
-
-	p.cfgMutex.RLock()
-	autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
-	p.cfgMutex.RUnlock()
-	// An include-clients filter opts the request into tool injection even when
-	// auto-injection is disabled (see ParseAndAddToolsToRequest in core/mcp), so
-	// the key's allowlist must be stamped on every path where injection can run.
-	includeClientsPresent := ctx.Value(schemas.MCPContextKeyIncludeClients) != nil
-	if !includeToolsProvided && (!autoInjectDisabled || includeClientsPresent) {
-		// An access that lists nothing because it grants nothing stamps an empty list, which
-		// downstream reads as no tool being permitted: that is the answer, and it belongs on ctx.
-		if tools := access.MCPToolIncludeList(); tools != nil {
-			ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
-		}
-	}
-
-	// Publish the VK provider allowlist for the (post routing-rules) model so downstream routing
-	// layers (load balancing, model-catalog resolution) and core enforcement intersect their
-	// candidates with it — a later layer must not select a provider the VK forbids for this model.
-	_, routedModel, _ := req.GetRequestFields()
-	p.publishRoutingAllowlist(ctx, virtualKey, routedModel)
-
-	if virtualKey != nil {
-		if err := p.loadBalanceProvider(ctx, req, virtualKey); err != nil {
-			return err
-		}
-
-		// A caller-provided include-tools list can only narrow the virtual key's
-		// tool grant, never expand it — prune entries the key does not allow.
-		includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
+	// A caller-provided include-tools list can only narrow the virtual key's tool grant, never
+	// expand it — prune entries the key does not allow. Applies to BOTH the normal and the
+	// large-payload path below (an MCP-bearing client can carry a large system prompt), so this
+	// runs ahead of the large-payload branch's early return rather than after it.
+	//
+	// Whether the credential may be used at all is settled when its permit is built, so usability
+	// reads the answer off the permits rather than asking the key again. Nothing is refused here
+	// either way: this hook only stamps and prunes, and the funnel refuses.
+	if access != nil && unusablePermit(access) == nil {
+		includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, access)
 
 		p.cfgMutex.RLock()
 		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
@@ -1233,10 +1356,70 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 		// the key's allowlist must be stamped on every path where injection can run.
 		includeClientsPresent := ctx.Value(schemas.MCPContextKeyIncludeClients) != nil
 		if !includeToolsProvided && (!autoInjectDisabled || includeClientsPresent) {
-			if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
+			// An access that lists nothing because it grants nothing stamps an empty list, which
+			// downstream reads as no tool being permitted: that is the answer, and it belongs on ctx.
+			if tools := access.MCPToolIncludeList(); tools != nil {
 				ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
 			}
 		}
+	}
+
+	// FORK: the CEL-based dynamic routing-rules engine (see routing.go) is virtual-key-centric
+	// and predates the access/grant model above; it resolves its own virtualKey independently
+	// rather than through access, and runs regardless of whether the access above is usable —
+	// matching its pre-access-model behavior, where routing applied to anonymous/keyless
+	// requests too (this hook only stamps and prunes; the funnel below refuses). Kept as a
+	// self-contained addition layered on top of upstream's access-based authorization/tool-
+	// pruning. See .github/fork-patches.txt for the architecture note on reconciling this with
+	// upstream's newer plugins/routing module.
+	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	hasRoutingRules := p.store.HasRoutingRules(ctx)
+	var virtualKey *configstoreTables.TableVirtualKey
+	if virtualKeyValue != "" {
+		if vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue); ok && vk != nil && vk.IsActiveValue() && !vk.IsExpiredAt(time.Now().UTC()) {
+			virtualKey = vk
+		}
+	}
+	stampGovernanceCtxFromVK(ctx, virtualKey)
+
+	// Large-payload mode: the body streams to the provider unparsed, so req.Model is
+	// empty for routes where the model lives in the body (OpenAI/Anthropic chat,
+	// responses, etc.). Route on LargePayloadMetadata.Model — the provider's
+	// streaming body rewriter (ApplyLargePayloadRequestBodyWithModelNormalization)
+	// reads metadata.Model when it rewrites the model field in the body prefix, so
+	// mutating it here is what propagates the routing decision to the upstream call.
+	if metadata, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); metadata != nil && metadata.Model != "" {
+		newModel, err := p.runPreRequestRouting(ctx, virtualKey, hasRoutingRules, metadata.Model, req.RequestType)
+		if err != nil {
+			return err
+		}
+		if newModel != "" && newModel != metadata.Model {
+			metadata.Model = newModel
+		}
+		largeProvider, largeRoutedModel := schemas.ParseModelString(metadata.Model, "")
+		p.PublishRoutingAllowlist(ctx, largeRoutedModel)
+		// This branch RETURNS, so it needs its own snapshot call — the one at the
+		// end of the function is unreachable from here. Without it a governed
+		// large-payload request emits no usage headers at all, which is invisible
+		// from the outside: an absent header reads the same as "no budget set".
+		p.recordUsageSnapshot(ctx, virtualKey, largeProvider, largeRoutedModel)
+		return nil
+	}
+
+	if hasRoutingRules {
+		if _, err := p.applyRoutingRules(ctx, req, virtualKey); err != nil {
+			return err
+		}
+	}
+
+	// Publish the VK provider allowlist for the (post routing-rules) model so downstream routing
+	// layers (load balancing, model-catalog resolution) and core enforcement intersect their
+	// candidates with it — a later layer must not select a provider the VK forbids for this model.
+	_, routedModel, _ := req.GetRequestFields()
+	p.PublishRoutingAllowlist(ctx, routedModel)
+
+	if err := p.LoadBalanceProvider(ctx, req); err != nil {
+		return err
 	}
 
 	// Record what enforcement just read, so the transport can tell the caller
@@ -1275,16 +1458,23 @@ func (p *GovernancePlugin) recordUsageSnapshot(ctx *schemas.BifrostContext, virt
 		return
 	}
 
-	// The VK TOKEN from the context, matching what the usage tracker passes —
-	// CollectApplicableGovernanceIDs resolves the key itself, and handing it the
-	// row's Value (a SecretVar that may hold an unresolved reference) would find
-	// no budgets and silently produce no header.
+	// The VK TOKEN from the context, matching what the usage tracker passes.
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	if virtualKeyValue == "" {
 		return
 	}
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
-	budgetIDs, _ := p.store.CollectApplicableGovernanceIDs(ctx, virtualKeyValue, userID, provider, model)
+	// Same limit set enforcement/usage-tracking gathers off the request's grant (see
+	// GetBudgetAndRateLimitStatus), so the windows reported here are exactly the ones
+	// that will be charged and enforced.
+	var budgetIDs []string
+	if grant := ctx.Grant(); grant != nil {
+		if limits, _, err := p.store.GatherLimits(ctx, grant.Access(), provider, model); err == nil {
+			budgetIDs = make([]string, 0, len(limits))
+			for _, limit := range limits {
+				budgetIDs = append(budgetIDs, limit.ID)
+			}
+		}
+	}
 	// NOT an early return on an empty budget list. A key with no budget
 	// configured still has a lifetime spend, and returning here would drop
 	// x-usage-spend for exactly those keys — which is what the first version of
@@ -1482,6 +1672,11 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Extract request type, provider, and model
 	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
 
+	// Extract governance information
+	// NOTE: list-models VK filtering used to happen here (filterModelsForVirtualKey); upstream's
+	// #6309 refactor moved that to ResolveEffectiveAccess-based filtering earlier in the request
+	// path, so it is not repeated here.
+	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 
 	// Batch ownership (see batchownership.go): capture owner on a successful

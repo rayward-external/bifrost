@@ -305,6 +305,50 @@ func hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx *schemas.Bifrost
 	}
 }
 
+const anthropicMessagesPathSuffix = "/v1/messages"
+
+// rejectAnthropicMessagesInvalidMaxTokens short-circuits /v1/messages requests whose max_tokens is
+// missing or non-positive, matching Anthropic's own validation wording (which differs between an
+// absent field and an explicit invalid value).
+func rejectAnthropicMessagesInvalidMaxTokens(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error) {
+	r, ok := req.(*anthropic.AnthropicMessageRequest)
+	if !ok {
+		return false, nil
+	}
+	// ctx.Path() rather than extractExactPath(): the latter strips the
+	// integration prefix (leaving "v1/messages", no leading slash) and appends
+	// the query string, so neither end of a suffix match survives it.
+	if path := strings.TrimSuffix(string(ctx.Path()), "/"); !strings.HasSuffix(path, anthropicMessagesPathSuffix) {
+		return false, nil
+	}
+	if r.MaxTokens >= 1 {
+		return false, nil
+	}
+
+	// MaxTokens is a plain int, so an absent field and an explicit 0 both arrive
+	// here as 0. Anthropic words those two rejections differently, so read the
+	// raw body to tell them apart rather than guessing.
+	message := "max_tokens: Field required"
+	if gjson.GetBytes(ctx.PostBody(), "max_tokens").Exists() {
+		message = "max_tokens: Input should be greater than or equal to 1"
+	}
+
+	body, err := sonic.Marshal(&anthropic.AnthropicMessageError{
+		Type: "error",
+		Error: anthropic.AnthropicMessageErrorStruct{
+			Type:    "invalid_request_error",
+			Message: message,
+		},
+	})
+	if err != nil {
+		return true, fmt.Errorf("failed to encode max_tokens validation error: %w", err)
+	}
+	ctx.SetStatusCode(fasthttp.StatusBadRequest)
+	ctx.SetContentType("application/json")
+	ctx.SetBody(body)
+	return true, nil
+}
+
 // checkAnthropicPassthrough configures provider-native forwarding for Claude Code requests.
 // Alongside the required auth, path, and raw-response settings, it registers an
 // Anthropic-owned text rewriter so raw request bytes cannot bypass runtime redaction.

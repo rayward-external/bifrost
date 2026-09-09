@@ -267,7 +267,7 @@ func TestEvaluateRoutingRules_ComplexityUnavailableNegativePredicatesDoNotMatch(
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+			store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 			require.NoError(t, err)
 
 			rule := complexityRoutingRule("complexity-unavailable-"+tt.name, tt.expression)
@@ -296,7 +296,7 @@ func TestEvaluateRoutingRules_ComplexityUnavailableNegativePredicatesDoNotMatch(
 
 func TestEvaluateRoutingRules_ComplexityTierLiteralDoesNotComputeComplexity(t *testing.T) {
 	ctx := context.Background()
-	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := complexityRoutingRule("complexity-tier-literal", `model == "complexity_tier"`)
@@ -325,7 +325,7 @@ func TestEvaluateRoutingRules_ComplexityTierLiteralDoesNotComputeComplexity(t *t
 
 func TestEvaluateRoutingRules_ComplexityNegativePredicateMatchesAvailableTier(t *testing.T) {
 	ctx := context.Background()
-	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := complexityRoutingRule("complexity-available-not-simple", `complexity_tier != "SIMPLE"`)

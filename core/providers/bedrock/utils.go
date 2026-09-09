@@ -18,6 +18,7 @@ import (
 	"github.com/tidwall/sjson"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	openai "github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
@@ -427,6 +428,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 
 	// Convert inference config
 	if inferenceConfig := convertInferenceConfig(bifrostReq.Params, caps); inferenceConfig != nil {
+		inferenceConfig.MaxTokens = clampMaxTokens(ctx, inferenceConfig.MaxTokens, caps)
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
 
@@ -567,11 +569,15 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				}
 
 				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
-			} else {
-				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
-					"type":          "enabled",
-					"budget_tokens": tokenBudget,
-				})
+			} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
+				// Converse exposes no token budget for these models, so express the
+				// budget as the effort it corresponds to.
+				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
+				if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.MaxTokens != nil {
+					maxTokens = *bedrockReq.InferenceConfig.MaxTokens
+				}
+				effort := providerUtils.GetReasoningEffortFromBudgetTokens(tokenBudget, MinimumReasoningMaxTokens, maxTokens)
+				setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, effort)
 			}
 		} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
 			modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
@@ -638,6 +644,8 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 						"budget_tokens": budgetTokens,
 					})
 				}
+			} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
+				setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, *bifrostReq.Params.Reasoning.Effort)
 			}
 		} else {
 			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
@@ -650,10 +658,8 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 					"type": "disabled",
 				})
-			} else {
-				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
-					"type": "disabled",
-				})
+			} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
+				setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, "none")
 			}
 		}
 	}
@@ -679,7 +685,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
 			(bifrostReq.Params.Reasoning.MaxTokens != nil ||
 				(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
-		if !caps.SyntheticSOToolChoiceOmitted(schemas.IsLlamaModelFamily(ctx, bifrostReq.Model)) && !thinkingEnabled {
+		// Fable 5.1+ rejects a forced tool_choice outright, so the synthetic tool
+		// is left unpinned there too and reached under Converse's default "auto".
+		if !caps.SyntheticSOToolChoiceOmitted(schemas.IsLlamaModelFamily(ctx, bifrostReq.Model)) && !thinkingEnabled &&
+			caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(caps.Model())) {
 			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
 				Tool: &BedrockToolChoiceTool{
 					Name: responseFormatTool.ToolSpec.Name,
@@ -1116,8 +1125,29 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage) 
 
 	// Add reasoning content first
 	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ReasoningDetails) > 0 {
+		shape := converseReasoningShape(model)
 		for _, detail := range msg.ChatAssistantMessage.ReasoningDetails {
+			if shape == schemas.BedrockReasoningShapeRedacted {
+				// These models reject reasoningText in every form -- with a
+				// signature, without one, empty or not -- with an opaque 500. The
+				// encrypted blob is the only replayable detail, and dropping the
+				// rest beats sending a shape that cannot be accepted.
+				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil {
+					contentBlocks = append(contentBlocks, BedrockContentBlock{
+						ReasoningContent: &BedrockReasoningContent{RedactedContent: detail.Data},
+					})
+				}
+				continue
+			}
 			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
+				// Claude verifies the signature on every thinking block it is
+				// handed back and rejects an unsigned one in every serialisation
+				// (#6624), so the block cannot be replayed at all; the turn's
+				// text and tool calls still go through. Nova keeps receiving
+				// unsigned blocks with the field omitted, as before.
+				if reasoningSignatureForBedrock(detail.Signature) == nil && converseRequiresSignedReasoning(model) {
+					continue
+				}
 				// Text must never reach Bedrock as nil. It is
 				// `*string json:"text,omitempty"`, so a nil pointer drops the key
 				// from the request rather than sending an explicit null, and
@@ -1188,6 +1218,12 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage) 
 			withPlaceholder = append(withPlaceholder, contentBlocks[at:]...)
 			contentBlocks = withPlaceholder
 		}
+	}
+
+	// BedrockMessage.Content has no `omitempty`, so a nil/empty slice here would
+	// serialize as content:null and Bedrock rejects that outright (#2765).
+	if len(contentBlocks) == 0 {
+		contentBlocks = []BedrockContentBlock{{Text: schemas.Ptr(bedrockDocumentPlaceholderText)}}
 	}
 
 	bedrockMsg.Content = contentBlocks
@@ -1883,36 +1919,108 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 	}, nil, nil
 }
 
-// bedrockRejectsSamplingParams reports whether the Bedrock-served model rejects
-// inferenceConfig.temperature / inferenceConfig.topP.
+// Effort ladders Converse accepts, verified against bedrock-runtime: both
+// families reject "minimal", and Grok additionally rejects "max".
+// NormalizeReasoningEffort snaps an unsupported label onto the nearest rung, so
+// "minimal" resolves to "low" and Grok's "max" to "xhigh" with no explicit renames.
+var (
+	bedrockConverseOpenAIEffortLevels = &schemas.EffortControl{
+		Levels: []string{"none", "low", "medium", "high", "xhigh", "max"},
+	}
+	bedrockConverseGrokEffortLevels = &schemas.EffortControl{
+		Levels: []string{"none", "low", "medium", "high", "xhigh"},
+	}
+)
+
+// converseReasoningEffortLevels returns the effort ladder for models that take
+// the OpenAI-shaped `reasoning: {effort}` field on Converse, and false for the
+// models that take no reasoning field at all.
 //
-// Adaptive-only Claude models (Opus >= 4.7, Sonnet >= 5, and the Fable/Mythos
-// family) removed the sampling knobs entirely; Bedrock forwards Converse's
-// inferenceConfig straight through to the underlying Messages request, so a
-// Bedrock-served claude-opus-5 returns the same
+// Verified against bedrock-runtime: gpt-5.6 accepts only this shape and rejects
+// Nova's reasoningConfig outright, while Grok accepts every shape but honors
+// only this one — so the reasoningConfig sent today is silently ignored there
+// and a caller asking to disable reasoning still gets it. No other Converse
+// family surfaces reasoning at all: DeepSeek R1 fails on any
+// additionalModelRequestFields, and DeepSeek V3.2, Qwen, GLM and Gemma accept
+// the field and ignore it. Their reasoning is only reachable on the
+// OpenAI-compatible mantle surface, so on Converse they get nothing.
+// Takes ModelCaps rather than the wire model: callers hold the raw request
+// value, which for an alias or an application inference profile is an opaque id
+// carrying no family. IsOpenAIModelFamily walks the alias chain on its own, but
+// IsGrokModel is a bare substring match, so a Grok alias would fall through and
+// silently lose reasoning entirely. caps.Model() is the canonical name.
+func converseReasoningEffortLevels(ctx *schemas.BifrostContext, caps schemas.ModelCaps) (*schemas.EffortControl, bool) {
+	switch {
+	case schemas.IsGrokModel(caps.Model()):
+		return bedrockConverseGrokEffortLevels, true
+	case schemas.IsOpenAIModelFamily(ctx, caps.Model()):
+		return bedrockConverseOpenAIEffortLevels, true
+	}
+	return nil, false
+}
+
+// converseReasoningShape reports which reasoning content variant the model uses
+// on Converse, preferring the datasheet and falling back to family detection.
 //
-//	"`temperature` is deprecated for this model"
+// Verified against bedrock-runtime: gpt-5.6 and Grok return
+// reasoningContent.redactedContent, an opaque blob; Anthropic (through 4.8
+// adaptive thinking) and DeepSeek R1 return reasoningContent.reasoningText.
+// Replaying the wrong variant is rejected either way — 400 on Anthropic, an
+// opaque 500 on OpenAI and xAI.
 //
-// 400 that the direct Anthropic provider does. The anthropic provider strips
-// them in ToAnthropicChatRequest (chat.go, gated on IsAdaptiveOnlyThinkingModel);
-// this is the Bedrock Converse equivalent, deliberately reusing the SAME shared
-// version predicate rather than re-deriving the model list here.
+// Takes the canonical model id rather than ModelCaps because the message
+// converters that need it hold exactly that and no BifrostContext; they resolve
+// caps inline the same way convertToolConfig does.
+func converseReasoningShape(model string) schemas.BedrockReasoningShape {
+	fallback := schemas.BedrockReasoningShapeText
+	if schemas.IsGrokModel(model) || schemas.IsOpenAIModel(model) {
+		fallback = schemas.BedrockReasoningShapeRedacted
+	}
+	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockReasoningShape(fallback)
+}
+
+// converseRequiresSignedReasoning reports whether the model verifies reasoning
+// signatures on Converse, in which case a reasoningText block with no signature
+// must be dropped from the replay rather than sent (#6624). Claude does; Nova,
+// MiniMax and DeepSeek accept an unsigned block with the field omitted.
 //
-// model is the canonical/capability model string (schemas.ResolveCanonicalModel).
-// It may still be a raw Bedrock id — "us.anthropic.claude-opus-5-20260901-v1:0",
-// "global.anthropic.claude-sonnet-5", or an inference-profile ARN such as
-// "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5-...".
-// anthropic.IsAdaptiveOnlyThinkingModel parses those shapes directly (it strips
-// everything ahead of the "claude" segment and ignores date/version suffixes),
-// so no pre-normalisation is needed or wanted — trimming here would be a second
-// place to keep in sync.
+// Same resolution as converseReasoningShape: the datasheet row wins when it
+// says anything, the model family answers otherwise.
+func converseRequiresSignedReasoning(model string) bool {
+	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockRequiresSignedReasoning(schemas.IsAnthropicModel(model))
+}
+
+// setConverseReasoningEffort writes the OpenAI-shaped reasoning field, mapping
+// the requested effort onto a rung the model publishes.
+func setConverseReasoningEffort(fields *schemas.OrderedMap, caps schemas.ModelCaps, levels *schemas.EffortControl, effort string) {
+	fields.Set("reasoning", map[string]any{"effort": caps.NormalizeReasoningEffort(effort, levels)})
+}
+
+// clampMaxTokens raises maxTokens to the floor the model enforces on
+// max_output_tokens, leaving it alone when the model has none.
 //
-// Non-Claude ids (Nova, GLM, Llama, Mistral, ...) and opaque
-// application-inference-profile ARNs that carry no model name parse to the zero
-// value, for which the predicate is false — those keep temperature/topP exactly
-// as before.
-func bedrockRejectsSamplingParams(model string) bool {
-	return anthropic.DefaultAdaptiveOnlyThinking(model)
+// Bedrock serves the OpenAI family and xAI Grok from an OpenAI-compatible
+// backend that rejects anything below 16, while Claude and Nova happily return a
+// single token — so this is gated rather than applied to Converse as a whole.
+// The mantle path gets the same clamp for free from the OpenAI request builder;
+// Converse builds its own body and needs its own. The datasheet's
+// min_output_tokens overrides the name-based guess.
+func clampMaxTokens(ctx *schemas.BifrostContext, maxTokens *int, caps schemas.ModelCaps) *int {
+	if maxTokens == nil {
+		return nil
+	}
+	// IsOpenAIModelFamily walks the alias chain (canonical name → wire id → alias
+	// key), so an application inference profile whose model_id is an opaque
+	// resource id is still recognised. Grok has no ModelFamily of its own, so it
+	// stays a name match on the canonical model.
+	fallback := 0
+	if schemas.IsOpenAIModelFamily(ctx, caps.Model()) || schemas.IsGrokModel(caps.Model()) {
+		fallback = openai.MinMaxCompletionTokens
+	}
+	if floor := caps.MinOutputTokens(fallback); floor > 0 && *maxTokens < floor {
+		return schemas.Ptr(floor)
+	}
+	return maxTokens
 }
 
 // convertInferenceConfig converts Bifrost parameters to Bedrock inference config
@@ -2304,6 +2412,12 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 			// (mirrors the synthetic-tool gate in convertChatParameters).
 			if toolChoice != nil && toolChoice.Tool != nil &&
 				!caps.ToolChoiceStructSupported(!schemas.IsLlamaModelFamily(ctx, model)) {
+				toolChoice = nil
+			}
+			// Fable 5.1+ rejects forced tool use outright; drop both spellings so
+			// the model answers under Converse's default "auto".
+			if toolChoice != nil && (toolChoice.Any != nil || toolChoice.Tool != nil) &&
+				!caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(caps.Model())) {
 				toolChoice = nil
 			}
 			if toolChoice != nil {

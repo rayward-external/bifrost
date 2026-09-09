@@ -132,6 +132,7 @@ jobs:
             github.com:443
             huggingface.co:443
             iojs.org:443
+            learn.microsoft.com:443
             login.microsoftonline.com:443
             maxim-o1.openai.azure.com:443
             nodejs.org:443

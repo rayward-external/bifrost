@@ -6,9 +6,12 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 )
 
-// validWriterConfig returns a baseline config that passes validateWriterConfig,
-// so each test case can mutate a single field to exercise one bound.
-func validWriterConfig() logstore.WriterConfig {
+// validWriterConfigWithLogstoreDefaults returns a baseline config that passes
+// validateWriterConfig, so each test case can mutate a single field to exercise
+// one bound. Named distinctly from writerconfig_test.go's own validWriterConfig
+// (upstream-added, hardcoded literals) since this one is keyed on the shared
+// logstore.DefaultWriter*/MaxWriter* constants both files' assertions rely on.
+func validWriterConfigWithLogstoreDefaults() logstore.WriterConfig {
 	return logstore.WriterConfig{
 		MaxBatchSize:             logstore.DefaultWriterMaxBatchSize,
 		BatchInterval:            logstore.DefaultWriterBatchInterval,
@@ -18,6 +21,12 @@ func validWriterConfig() logstore.WriterConfig {
 	}
 }
 
+// TestValidateWriterConfig_UpperBounds covers MaxBatchSize only: validateWriterConfig
+// bounds it directly against the shared logstore.MaxWriterMaxBatchSize constant.
+// WriteQueueCapacity and DeferredUsageConcurrency are bounded against this package's
+// own (tighter, upstream-added) maxWriterQueueCapacity/maxWriterDeferredUsageConcurrency
+// constants instead — see writerconfig_test.go's TestValidateWriterConfigBounds, which
+// already covers both against those actual values.
 func TestValidateWriterConfig_UpperBounds(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -31,22 +40,10 @@ func TestValidateWriterConfig_UpperBounds(t *testing.T) {
 		{"max_batch_size over limit", func(c *logstore.WriterConfig) {
 			c.MaxBatchSize = logstore.MaxWriterMaxBatchSize + 1
 		}, true},
-		{"write_queue_capacity at limit", func(c *logstore.WriterConfig) {
-			c.WriteQueueCapacity = logstore.MaxWriterQueueCapacity
-		}, false},
-		{"write_queue_capacity over limit", func(c *logstore.WriterConfig) {
-			c.WriteQueueCapacity = logstore.MaxWriterQueueCapacity + 1
-		}, true},
-		{"deferred_usage_concurrency at limit", func(c *logstore.WriterConfig) {
-			c.DeferredUsageConcurrency = logstore.MaxWriterDeferredUsageConcurrency
-		}, false},
-		{"deferred_usage_concurrency over limit", func(c *logstore.WriterConfig) {
-			c.DeferredUsageConcurrency = logstore.MaxWriterDeferredUsageConcurrency + 1
-		}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := validWriterConfig()
+			c := validWriterConfigWithLogstoreDefaults()
 			tt.mutate(&c)
 			err := validateWriterConfig(c)
 			if (err != nil) != tt.wantErr {

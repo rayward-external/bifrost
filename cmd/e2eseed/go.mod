@@ -8,7 +8,7 @@ replace (
 )
 
 require (
-	github.com/maximhq/bifrost/core v1.8.3
+	github.com/maximhq/bifrost/core v1.8.5
 	github.com/maximhq/bifrost/framework v1.3.15
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
@@ -123,7 +123,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.starlark.net v0.0.0-20260102030733-3fee463870c9 // indirect
 	golang.org/x/arch v0.23.0 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect

@@ -22,7 +22,7 @@ require (
 	github.com/valyala/fasthttp v1.74.0
 	github.com/weaviate/weaviate v1.38.0
 	github.com/weaviate/weaviate-go-client/v5 v5.7.1
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/sync v0.22.0
 	google.golang.org/api v0.282.0
 	google.golang.org/grpc v1.83.1

@@ -1486,8 +1486,9 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
-          # Fork patch: skip upstream-broken tests — see fork-patches.txt; remove when upstream fixes
-          GOTEST_SKIP: 'TestPoolGetSkipsStaleIdleConnection$|TestConvertToBifrostContext_HarnessSessionHeaderFallback/baggage_session-id_member_is_not_a_session_id$'
+          # Fork patch: skip a test whose upstream assumption conflicts with a fork-only
+          # feature — see fork-patches.txt; permanent, not a transient upstream bug
+          GOTEST_SKIP: 'TestConvertToBifrostContext_HarnessSessionHeaderFallback/baggage_session-id_member_is_not_a_session_id$'
         run: ./.github/workflows/scripts/test-bifrost-http.sh
 
   # Migration tests - validates database migrations from previous versions

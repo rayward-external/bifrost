@@ -39881,7 +39881,7 @@
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
         },
         "summary": "Get the calling user's virtual-key creation policy",
-        "description": "Reports whether virtual keys the **calling** user creates will be adopted into one of their\naccess profiles, and if so which one. The create form uses this to lock the policy fields\nup front rather than letting a user author a policy that is about to be overwritten.\n\nSelf-scoped: it always describes the caller and takes no user ID. Returns\n`{\"governed\": false}` when the caller has no per-user identity (local admin or password\nauth) or when no profile they hold has **Govern virtual keys created by members** enabled.\nWhen more than one of their profiles has it on, the first such profile governs.\n",
+        "description": "Resolves the access profile that would govern a virtual key the **calling** user creates,\nreturning its name or none. Whether governance applies at all is decided separately from the\n`VirtualKeys:CreateStandalone` permission (see `/api/governance/users/me/permissions`); this\nendpoint only resolves the profile, and the create form combines the two.\n\nSelf-scoped: it always describes the caller and takes no user ID. Returns\n`{\"has_access_profile\": false}` when the caller has no per-user identity (local admin) or holds\nno active access profile. When several of their profiles qualify, the highest-ranked one governs.\n",
         "tags": [
           "Users",
           "Virtual Keys"
@@ -39899,16 +39899,16 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "governed"
+                    "has_access_profile"
                   ],
                   "properties": {
-                    "governed": {
+                    "has_access_profile": {
                       "type": "boolean",
-                      "description": "Whether an access profile will adopt keys this user creates."
+                      "description": "Whether the caller holds an access profile that would govern keys they create."
                     },
                     "profile_name": {
                       "type": "string",
-                      "description": "Name of the governing access profile. Present only when `governed` is true."
+                      "description": "Name of the governing access profile. Present only when `has_access_profile` is true."
                     }
                   }
                 }
@@ -110787,7 +110787,7 @@
                 },
                 "budgets": {
                   "type": "array",
-                  "description": "Provider-specific budget quotas",
+                  "description": "Provider-specific budget quotas. Use this array instead of the removed singular `budget` or `budget_id` fields.",
                   "items": {
                     "$ref": "#/components/schemas/CreateBudgetRequest"
                   }
@@ -110797,6 +110797,7 @@
                 },
                 "key_ids": {
                   "type": "array",
+                  "description": "Provider API key IDs allowed for this config. `[\"*\"]` allows every key for the provider; an empty or omitted array denies all keys.",
                   "items": {
                     "type": "string"
                   }
@@ -110830,7 +110831,7 @@
           },
           "budgets": {
             "type": "array",
-            "description": "Budget quotas assigned directly to this virtual key",
+            "description": "Budget quotas assigned directly to this virtual key. Use this array instead of the removed singular `budget` or `budget_id` fields.",
             "items": {
               "$ref": "#/components/schemas/CreateBudgetRequest"
             }
@@ -110855,6 +110856,34 @@
             "format": "date-time",
             "description": "Optional expiry timestamp. Must be in the future. Omit for a key that never expires."
           }
+        },
+        "example": {
+          "name": "engineering-vk",
+          "provider_configs": [
+            {
+              "provider": "openai",
+              "weight": 1,
+              "allowed_models": [
+                "gpt-4o-mini"
+              ],
+              "key_ids": [
+                "*"
+              ],
+              "budgets": [
+                {
+                  "max_limit": 50,
+                  "reset_duration": "1M"
+                }
+              ]
+            }
+          ],
+          "budgets": [
+            {
+              "max_limit": 100,
+              "reset_duration": "1M"
+            }
+          ],
+          "is_active": true
         }
       },
       "UpdateVirtualKeyRequest": {
@@ -110899,7 +110928,7 @@
                 },
                 "budgets": {
                   "type": "array",
-                  "description": "Provider-specific budget quotas. Replaces all budgets for that provider config when provided.",
+                  "description": "Provider-specific budget quotas. Replaces all budgets for that provider config when provided; the removed singular `budget` and `budget_id` fields are not request fields.",
                   "items": {
                     "$ref": "#/components/schemas/CreateBudgetRequest"
                   }
@@ -110909,6 +110938,7 @@
                 },
                 "key_ids": {
                   "type": "array",
+                  "description": "Provider API key IDs allowed for this config. `[\"*\"]` allows every key for the provider; an empty or omitted array denies all keys.",
                   "items": {
                     "type": "string"
                   }
@@ -110944,7 +110974,7 @@
           },
           "budgets": {
             "type": "array",
-            "description": "Budget quotas assigned directly to this virtual key. Replaces all direct virtual-key budgets when provided.",
+            "description": "Budget quotas assigned directly to this virtual key. Replaces all direct virtual-key budgets when provided; the removed singular `budget` and `budget_id` fields are not request fields.",
             "items": {
               "$ref": "#/components/schemas/CreateBudgetRequest"
             }
@@ -110970,6 +111000,34 @@
             "type": "string",
             "description": "RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged."
           }
+        },
+        "example": {
+          "description": "Updated engineering access",
+          "provider_configs": [
+            {
+              "provider": "openai",
+              "weight": 1,
+              "allowed_models": [
+                "gpt-4o",
+                "gpt-4o-mini"
+              ],
+              "key_ids": [
+                "*"
+              ],
+              "budgets": [
+                {
+                  "max_limit": 75,
+                  "reset_duration": "1M"
+                }
+              ]
+            }
+          ],
+          "budgets": [
+            {
+              "max_limit": 150,
+              "reset_duration": "1M"
+            }
+          ]
         }
       },
       "Team": {
@@ -111249,11 +111307,6 @@
               }
             },
             "additionalProperties": false
-          },
-          "calendar_aligned": {
-            "type": "boolean",
-            "description": "When true, resets align to calendar period boundaries in UTC (not rolling from last reset)",
-            "default": false
           },
           "last_reset": {
             "type": "string",

@@ -143,3 +143,15 @@ exclude_lines = [
 # root's entry in uv.lock and breaks `uv sync --frozen`.
 package = false
 exclude-newer = "2026-08-11T00:00:00Z"
+
+[tool.uv.exclude-newer-package]
+# Security sweep 2026-09-09: httpx2 2.10.0 (genai-prices's dep) carries GHSA-8xx6-hgc6-gc2m
+# (high), GHSA-h4x7-gw46-3wm6 and GHSA-pf96-p4fj-6566 (medium), fixed in 2.11.0/2.12.0 -- both
+# published 2026-08-18, past the global exclude-newer cutoff above. httpcore2 must move in
+# lockstep: httpx2==2.12.0 pins httpcore2==2.12.0 exactly, also published 2026-08-18. Scoped
+# override lets these two resolve past the cutoff while everything else stays pinned to it.
+# REMOVAL CONDITION: drop once the global exclude-newer cutoff passes 2026-08-18T13:22:07Z
+# (httpcore2 2.12.0's publish time, the later of the two) and re-run `uv lock` to confirm both
+# still resolve to >=2.12.0 without the override.
+httpx2 = "2026-08-19T00:00:00Z"
+httpcore2 = "2026-08-19T00:00:00Z"

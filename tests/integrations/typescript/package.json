@@ -30,12 +30,12 @@
     "@types/node": "22.10.0",
     "@typescript-eslint/eslint-plugin": "8.65.0",
     "@typescript-eslint/parser": "8.65.0",
-    "@vitest/coverage-v8": "4.1.10",
-    "@vitest/ui": "4.1.10",
+    "@vitest/coverage-v8": "4.1.11",
+    "@vitest/ui": "4.1.11",
     "dotenv": "16.4.0",
     "eslint": "10.7.0",
     "typescript": "5.7.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   },
   "overrides": {
     "ast-v8-to-istanbul": "1.0.0",

@@ -136,16 +136,21 @@ func TestLargePayloadBranchRecordsItsOwnSnapshot(t *testing.T) {
 	}
 }
 
-// loadBalanceProvider mutates the request, so a provider read before it can be
+// LoadBalanceProvider mutates the request, so a provider read before it can be
 // empty for a VK with weighted providers and a bare model. The snapshot would
 // then collect different budgets than the request is billed against — the header
 // disagreeing with enforcement is the one failure this snapshot exists to avoid.
+//
+// LastIndex, not Index: PreRequestHook's own call (the one this guards) is the
+// LAST "p.LoadBalanceProvider(" in the file — runPreRequestRouting (used only by
+// the large-payload branch, which returns before reaching here) has its own,
+// earlier call on a synthetic request.
 func TestSnapshotReadsTheProviderAfterLoadBalancing(t *testing.T) {
 	src := repoFile(t, "plugins/governance/main.go")
 
-	lb := strings.Index(src, "p.loadBalanceProvider(")
+	lb := strings.LastIndex(src, "p.LoadBalanceProvider(")
 	if lb < 0 {
-		t.Fatal("loadBalanceProvider call is gone; this guard needs rewriting")
+		t.Fatal("LoadBalanceProvider call is gone; this guard needs rewriting")
 	}
 	// The final snapshot call — the one guarded here — is the last in the file.
 	snap := strings.LastIndex(src, "p.recordUsageSnapshot(")

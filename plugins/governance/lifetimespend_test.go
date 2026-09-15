@@ -41,7 +41,7 @@ func storeWithVK(t *testing.T, vkID string, starting float64) *LocalGovernanceSt
 	}
 	require.NoError(t, configStore.CreateVirtualKey(ctx, vk))
 
-	gs, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil)
+	gs, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil, nil)
 	require.NoError(t, err)
 	return gs
 }
@@ -163,7 +163,7 @@ func TestAFailedDumpDoesNotLoseTheSpend(t *testing.T) {
 	}
 	require.NoError(t, configStore.CreateVirtualKey(ctx, vk))
 
-	gs, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil)
+	gs, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil, nil)
 	require.NoError(t, err)
 
 	gs.BumpVirtualKeyLifetimeSpend(ctx, "vk-dump-fail", 3)

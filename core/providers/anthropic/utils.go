@@ -111,6 +111,15 @@ func ValidateChatToolsForProvider(tools []schemas.ChatTool, caps schemas.ModelCa
 	return keep, dropped
 }
 
+// ProviderRequiresSyntheticStructuredOutput reports whether a provider's Anthropic Messages
+// surface rejects native structured outputs (output_config.format) and must receive the schema as
+// the synthetic bf_so_* tool instead. Single source of truth for the typed converters and for the
+// raw-body passthrough guards, which have to agree: a body the converter would have rewritten must
+// never reach the provider verbatim ("output_config.format: Extra inputs are not permitted").
+func ProviderRequiresSyntheticStructuredOutput(provider schemas.ModelProvider) bool {
+	return provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure
+}
+
 // ValidateResponsesToolsForProvider is the Responses-path mirror of
 // ValidateChatToolsForProvider. It partitions []schemas.ResponsesTool into a
 // keep-set (function/custom tools + server tools supported on the target
@@ -882,15 +891,19 @@ func IsOpus5Plus(model string) bool {
 	return parseClaudeModel(model).isFamilyAtLeast(claudeFamilyOpus, 5, 0)
 }
 
-// IsSonnet5Plus returns true for Claude Sonnet 5 (and later Sonnet 5.x). Sonnet 5
+// IsSonnet5Plus returns true for Claude Sonnet at version 5 or later. Sonnet 5
 // is a drop-in for Sonnet 4.6 but adopts the Opus 4.7+ request surface: extended
 // thinking (budget_tokens) is removed and temperature/top_p/top_k are rejected
-// with a 400 — adaptive thinking is the only thinking-on mode. Matching "sonnet-5"
-// excludes "sonnet-4-5" and matches Bedrock/Vertex/date-suffixed forms.
+// with a 400 — adaptive thinking is the only thinking-on mode.
+//
+// The comparison is numeric (see parseClaudeModel), not a substring match: a
+// substring match on "sonnet-5" excludes "sonnet-4-5" correctly but also excludes
+// every future Sonnet major (sonnet-6, sonnet-7, ...) — the same version-rot bug
+// class issue #351 exists to prevent for Opus (see IsOpus47Plus).
 //
 // Source: https://platform.claude.com/docs/en/about-claude/models/whats-new-sonnet-5
 func IsSonnet5Plus(model string) bool {
-	return strings.Contains(strings.ToLower(model), "sonnet-5")
+	return parseClaudeModel(model).isFamilyAtLeast(claudeFamilySonnet, 5, 0)
 }
 
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
@@ -972,15 +985,18 @@ func RejectsDisabledThinking(model string, effort *string) bool {
 	return false
 }
 
-// DefaultSupportsFastMode: speed:"fast" is a research preview on Opus 4.6 and
-// Opus 4.7+ (which covers 4.8 and 5); every other model rejects it with a 400.
+// DefaultSupportsFastMode: speed:"fast" is a research preview on the exact Opus
+// versions Anthropic documents (see fastModeOpusVersions) — NOT every Opus 4.7+,
+// which would forward speed:"fast" to a model outside the documented window and
+// get it rejected with a 400. The set is intentionally closed and bounded, unlike
+// the open-ended IsOpus47Plus/IsOpus5Plus version-floor checks used elsewhere.
 func DefaultSupportsFastMode(model string) bool {
-	if IsOpus47Plus(model) {
-		return true
+	v := parseClaudeModel(model)
+	if v.Family != claudeFamilyOpus || !v.HasVersion {
+		return false
 	}
-	m := strings.ToLower(model)
-	return strings.Contains(m, "opus") &&
-		(strings.Contains(m, "4-6") || strings.Contains(m, "4.6"))
+	_, ok := fastModeOpusVersions[[2]int{v.Major, v.Minor}]
+	return ok
 }
 
 // DefaultSupportsAdaptiveThinking: thinking.type "adaptive" is accepted on Opus
@@ -1184,8 +1200,17 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 	var blocks []AnthropicContentBlock
 	if content.ContentStr != nil && *content.ContentStr != "" {
 		// The string form has nowhere to hang a per-block cache_control, so no breakpoint was
-		// sent and none may be invented — that would burn a cache checkpoint (max 4) the caller
-		// never asked for.
+		// sent and none may be invented HERE — that would burn a cache checkpoint (max 4) the
+		// caller never asked for.
+		//
+		// Breakpoints are synthesized in exactly one place, and it is not this one: the
+		// opt-in injector at core/providers/utils/promptcache.go, gated on the provider's
+		// prompt_cache config. Conversion paths like this one never synthesize a marker, so a
+		// request either carries the caller's intent or the operator's, never a third thing
+		// invented mid-translation. Note that "never synthesizes" is the guarantee, not
+		// "never drops": the loop below deliberately collapses intermediate markers onto the
+		// last block, for the reasons stated there. Adding is what changes the caller's cost
+		// profile behind their back; collapsing a redundant marker does not.
 		blocks = append(blocks, AnthropicContentBlock{
 			Type: AnthropicContentBlockTypeText,
 			Text: schemas.Ptr(wrap(*content.ContentStr)),
@@ -1438,8 +1463,18 @@ const anthropicDefaultEffort = "medium"
 // cannot be switched off through effort at all (callers that want thinking off
 // handle effort=="none" before reaching here, via thinking:{type:"disabled"}).
 func MapBifrostEffortToAnthropic(effort string) string {
-	switch effort {
-	case "minimal":
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	case "xhigh":
+		return "xhigh"
+	case "max":
+		return "max"
+	case "minimal", "none":
 		return "low"
 	case "adaptive":
 		// "Don't pass `adaptive` as an `effort` value: `adaptive` is a thinking mode,
@@ -2692,6 +2727,21 @@ func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopRe
 		return providerReason
 	}
 	return AnthropicStopReason(bifrostReason)
+}
+
+// anthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
+// Anthropic stop_reason, for terminal events that carry no explicit stop reason.
+func anthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
+	if details == nil {
+		return ""
+	}
+	switch details.Reason {
+	case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+		return AnthropicStopReasonMaxTokens
+	case schemas.ResponsesResponseIncompleteReasonContentFilter:
+		return AnthropicStopReasonRefusal
+	}
+	return ""
 }
 
 // ConvertToAnthropicImageBlock converts a Bifrost image block to Anthropic format

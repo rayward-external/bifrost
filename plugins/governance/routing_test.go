@@ -222,7 +222,7 @@ func TestValidateRoutingDecision_MissingModel(t *testing.T) {
 
 // TestEvaluateRoutingRules_NilContext tests EvaluateRoutingRules with nil context
 func TestEvaluateRoutingRules_NilContext(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
@@ -235,7 +235,7 @@ func TestEvaluateRoutingRules_NilContext(t *testing.T) {
 
 // TestEvaluateRoutingRules_NoRulesMatch tests EvaluateRoutingRules when no rules match
 func TestEvaluateRoutingRules_NoRulesMatch(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
@@ -255,7 +255,7 @@ func TestEvaluateRoutingRules_NoRulesMatch(t *testing.T) {
 
 // TestEvaluateRoutingRules_GlobalRuleMatches tests global scope rule matching
 func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -307,7 +307,7 @@ func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 // RoutingDecision and, when applied the same way governance/main.go does it, into the
 // BifrostContext under BifrostContextKeyAPIKeyID.
 func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
@@ -399,7 +399,7 @@ func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T
 
 // TestEvaluateRoutingRules_ScopePrecedence tests virtual_key scope takes precedence over global
 func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -463,7 +463,7 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 // TestEvaluateRoutingRules_PriorityOrdering tests rules within scope are evaluated by priority.
 // Lower numeric Priority is higher precedence (model/UI semantics); rules are ordered ASC.
 func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -516,7 +516,7 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 
 // TestResolveRoutingWithFallback_RuleMatches tests resolving with matching rule
 func TestResolveRoutingWithFallback_RuleMatches(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -553,7 +553,7 @@ func TestResolveRoutingWithFallback_RuleMatches(t *testing.T) {
 
 // TestResolveRoutingWithFallback_NoMatch tests resolving when no rule matches
 func TestResolveRoutingWithFallback_NoMatch(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	ctx := &RoutingContext{
@@ -578,7 +578,7 @@ func TestResolveRoutingWithFallback_NoMatch(t *testing.T) {
 
 // TestEvaluateRoutingRules_DisabledRulesIgnored tests that disabled rules are ignored
 func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -630,7 +630,7 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 
 // TestEvaluateRoutingRules_ComplexExpression tests evaluation with complex CEL expression
 func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -674,7 +674,7 @@ func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
 
 // TestEvaluateRoutingRules_NilVirtualKey tests evaluation without VirtualKey
 func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -710,7 +710,7 @@ func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
 
 // TestEvaluateRoutingRules_MissingHeaderGracefully tests that missing headers don't cause evaluation errors
 func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -755,7 +755,7 @@ func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
 // TestEvaluateRoutingRules_ChainRuleReEvaluation tests that chain_rule=true causes re-evaluation
 // with the resolved provider/model fed back into the engine.
 func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -813,7 +813,7 @@ func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
 // TestEvaluateRoutingRules_TerminalRuleStopsChain tests that a terminal rule (chain_rule=false)
 // halts the chaining loop immediately without re-evaluation.
 func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -870,7 +870,7 @@ func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {
 // TestEvaluateRoutingRules_SelfLoopContinuesToNextRule tests that a chain_rule=true rule which
 // resolves to the same provider/model (self-loop) fires once and then allows the next rule to run.
 func TestEvaluateRoutingRules_SelfLoopContinuesToNextRule(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -928,7 +928,7 @@ func TestEvaluateRoutingRules_SelfLoopContinuesToNextRule(t *testing.T) {
 // TestEvaluateRoutingRules_SelfLoopAloneTerminates tests that a self-looping chain rule with no
 // other rules terminates cleanly after firing once (TERMINATION 1: no remaining rule matches).
 func TestEvaluateRoutingRules_SelfLoopAloneTerminates(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -969,7 +969,7 @@ func TestEvaluateRoutingRules_SelfLoopAloneTerminates(t *testing.T) {
 // TestEvaluateRoutingRules_MaxDepthCutoff tests that the chain stops once chainMaxDepth is reached,
 // returning the last successfully resolved decision rather than continuing further.
 func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -1046,7 +1046,7 @@ func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
 func TestCompileAndCacheProgram_ValidExpression_Routing(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1073,7 +1073,7 @@ func TestCompileAndCacheProgram_ValidExpression_Routing(t *testing.T) {
 func TestCompileAndCacheProgram_EmptyExpression_Routing(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1095,7 +1095,7 @@ func TestCompileAndCacheProgram_EmptyExpression_Routing(t *testing.T) {
 func TestCompileAndCacheProgram_InvalidExpression_Routing(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1116,7 +1116,7 @@ func TestCompileAndCacheProgram_InvalidExpression_Routing(t *testing.T) {
 func TestCompileAndCacheProgram_NilRule(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	_, err = store.GetRoutingProgram(context.Background(), nil)
@@ -1128,7 +1128,7 @@ func TestCompileAndCacheProgram_NilRule(t *testing.T) {
 func TestCompileAndCacheProgram_ListExpression(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1150,7 +1150,7 @@ func TestCompileAndCacheProgram_ListExpression(t *testing.T) {
 func TestCompileAndCacheProgram_RegexExpression(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1172,7 +1172,7 @@ func TestCompileAndCacheProgram_RegexExpression(t *testing.T) {
 func TestCompileAndCacheProgram_HeaderExpression(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1194,7 +1194,7 @@ func TestCompileAndCacheProgram_HeaderExpression(t *testing.T) {
 func TestCompileAndCacheProgram_RateLimitExpression(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1216,7 +1216,7 @@ func TestCompileAndCacheProgram_RateLimitExpression(t *testing.T) {
 func TestCompileAndCacheProgram_BudgetExpression(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1238,7 +1238,7 @@ func TestCompileAndCacheProgram_BudgetExpression(t *testing.T) {
 func TestCompileAndCacheProgram_ComplexExpression(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1294,7 +1294,7 @@ func TestValidateCELExpression_Invalid(t *testing.T) {
 func TestEvaluateCELExpression_TrueResult(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1325,7 +1325,7 @@ func TestEvaluateCELExpression_TrueResult(t *testing.T) {
 func TestEvaluateCELExpression_FalseResult(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1356,7 +1356,7 @@ func TestEvaluateCELExpression_FalseResult(t *testing.T) {
 func TestEvaluateCELExpression_ListMembership(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1394,7 +1394,7 @@ func TestEvaluateCELExpression_ListMembership(t *testing.T) {
 func TestEvaluateCELExpression_HeaderAccess(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -1967,7 +1967,7 @@ func getDefaultRouting(ctx *RoutingContext) *RoutingDecision {
 // only for the matching resolved user and is skipped for other users and for
 // requests carrying no user identity.
 func TestEvaluateRoutingRules_UserScopedRule(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -2016,7 +2016,7 @@ func TestEvaluateRoutingRules_UserScopedRule(t *testing.T) {
 // TestEvaluateRoutingRules_VirtualKeyPreemptsUser verifies chain precedence:
 // when both a virtual_key-scoped and a user-scoped rule match, the VK rule wins.
 func TestEvaluateRoutingRules_VirtualKeyPreemptsUser(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -2068,7 +2068,7 @@ func TestEvaluateRoutingRules_VirtualKeyPreemptsUser(t *testing.T) {
 // TestEvaluateRoutingRules_UserIDCELVariable verifies rule CEL expressions can
 // target the resolved user via the user_id variable.
 func TestEvaluateRoutingRules_UserIDCELVariable(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 

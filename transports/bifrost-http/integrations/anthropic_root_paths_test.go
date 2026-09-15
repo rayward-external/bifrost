@@ -13,7 +13,7 @@ import (
 // panics on duplicate method+path registration, so a completed registration IS
 // the collision test).
 func TestNewAnthropicRouterMountsRootPaths(t *testing.T) {
-	ar := NewAnthropicRouter(nil, nil, &testLogger{})
+	ar := NewAnthropicRouter(nil, nil, nil, &testLogger{})
 
 	r := router.New()
 	// Simulate the core routes that share the router in production

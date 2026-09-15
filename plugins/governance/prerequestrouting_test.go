@@ -16,7 +16,7 @@ func newPreRequestRoutingPlugin(t *testing.T, vk *configstoreTables.TableVirtual
 	logger := NewMockLogger()
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 	return &GovernancePlugin{
 		logger:   logger,
@@ -37,7 +37,7 @@ func TestRunPreRequestRouting_ExplicitProviderPrefixSkipsLoadBalancing(t *testin
 	p := newPreRequestRoutingPlugin(t, vk)
 
 	for range 20 {
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx := emptyCtx()
 		got, err := p.runPreRequestRouting(ctx, vk, false, "openai/gpt-4o", schemas.ChatCompletionRequest)
 		require.NoError(t, err)
 		assert.Equal(t, "openai/gpt-4o", got)
@@ -51,7 +51,11 @@ func TestRunPreRequestRouting_UnprefixedModelLoadBalances(t *testing.T) {
 		buildProviderConfig("openai", []string{"*"}),
 	})
 	p := newPreRequestRoutingPlugin(t, vk)
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	// LoadBalanceProvider reads the request's access off ctx.Grant(), the way the full
+	// PreRequestHook path resolves it before reaching this helper — so the test must too.
+	ctx := presentCtx("sk-bf-lb")
+	_, err := p.ResolveAccess(ctx)
+	require.NoError(t, err)
 
 	got, err := p.runPreRequestRouting(ctx, vk, false, "gpt-4o", schemas.ChatCompletionRequest)
 	require.NoError(t, err)
@@ -66,7 +70,9 @@ func TestRunPreRequestRouting_UnknownPrefixIsTreatedAsModelNamespace(t *testing.
 		buildProviderConfig("groq", []string{"*"}),
 	})
 	p := newPreRequestRoutingPlugin(t, vk)
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx := presentCtx("sk-bf-lb")
+	_, err := p.ResolveAccess(ctx)
+	require.NoError(t, err)
 
 	got, err := p.runPreRequestRouting(ctx, vk, false, "meta-llama/llama-3.1-8b-instant", schemas.ChatCompletionRequest)
 	require.NoError(t, err)

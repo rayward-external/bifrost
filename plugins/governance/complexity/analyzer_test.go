@@ -21,9 +21,8 @@ func TestAnalyze_CustomTierBoundaries(t *testing.T) {
 	defaultAnalyzer := NewComplexityAnalyzer()
 	cfg := DefaultAnalyzerConfig()
 	cfg.TierBoundaries = TierBoundaries{
-		SimpleMedium:     0.05,
-		MediumComplex:    0.10,
-		ComplexReasoning: 0.20,
+		SimpleMedium:  0.05,
+		MediumComplex: 0.10,
 	}
 	customAnalyzer := NewComplexityAnalyzerWithConfig(&cfg)
 
@@ -37,7 +36,7 @@ func TestAnalyze_CustomTierBoundaries(t *testing.T) {
 
 func TestAnalyze_CustomReasoningKeywordsAffectOverride(t *testing.T) {
 	cfg := DefaultAnalyzerConfig()
-	cfg.Keywords.ReasoningKeywords = []string{"deepmagic"}
+	cfg.Keywords.ComplexKeywords = []string{"deepmagic"}
 	a := NewComplexityAnalyzerWithConfig(&cfg)
 
 	result := a.Analyze(ComplexityInput{

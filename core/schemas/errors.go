@@ -9,6 +9,9 @@ const (
 	ProviderConnectionFailed = "provider_connection_failed"
 	// Classification reads the declaration core makes at the same site, not this.
 	NoKeySupportsModel = "no_key_supports_model"
+	// InvalidRequestErrorType matches OpenAI's error.type for caller-input failures,
+	// so SDKs raise BadRequestError rather than retrying an unretryable request.
+	InvalidRequestErrorType = "invalid_request_error"
 )
 
 // ErrorType is the normalized reason a request failed, used as the error_type metric

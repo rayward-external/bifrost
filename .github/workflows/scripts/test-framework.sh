@@ -34,7 +34,29 @@ else
   exit 1
 fi
 $COMPOSE -f tests/docker-compose.yml up -d
-sleep 20
+
+# Wait for Postgres to accept connections instead of a blind `sleep 20`. The
+# postgres service has no compose healthcheck; polling pg_isready (bundled in
+# postgres:16-alpine) is strictly better hygiene than a fixed sleep and is
+# usually FASTER (a few seconds vs. 20s). NOTE: this readiness gate is secondary
+# — the postgres-backed framework tests gracefully skip when the DB is down
+# rather than failing, so "postgres not ready" is not itself the flake. The
+# retry-once guard below is the primary defense; see the comment there.
+echo "⏳ Waiting for Postgres to accept connections..."
+pg_ready=false
+for i in $(seq 1 45); do
+  if $COMPOSE -f tests/docker-compose.yml exec -T postgres pg_isready -U bifrost -d bifrost >/dev/null 2>&1; then
+    echo "✅ Postgres ready after ~$((i * 2))s"
+    pg_ready=true
+    break
+  fi
+  sleep 2
+done
+if [ "$pg_ready" != "true" ]; then
+  echo "⚠️ Postgres not ready after 90s; continuing so the test output surfaces the real error"
+fi
+# Brief settle for the remaining services (redis/qdrant/weaviate/pinecone).
+sleep 5
 
 # The framework logstore tests fail (not skip) in CI when ClickHouse is
 # unreachable, and `up -d` does not wait for health, so gate on its /ping.

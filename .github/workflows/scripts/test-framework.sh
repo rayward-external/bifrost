@@ -58,6 +58,22 @@ fi
 # Brief settle for the remaining services (redis/qdrant/weaviate/pinecone).
 sleep 5
 
+# The framework logstore tests fail (not skip) in CI when ClickHouse is
+# unreachable, and `up -d` does not wait for health, so gate on its /ping.
+echo "⏳ Waiting for ClickHouse to become ready..."
+for attempt in $(seq 1 60); do
+  if $COMPOSE -f tests/docker-compose.yml exec -T clickhouse wget --spider -q http://127.0.0.1:8123/ping 2>/dev/null; then
+    echo "✅ ClickHouse is ready"
+    break
+  fi
+  if [ "$attempt" -eq 60 ]; then
+    echo "❌ ClickHouse did not become ready within 120s"
+    $COMPOSE -f tests/docker-compose.yml logs --tail=50 clickhouse || true
+    exit 1
+  fi
+  sleep 2
+done
+
 # Validate framework build
 echo "🔨 Validating framework build..."
 cd framework

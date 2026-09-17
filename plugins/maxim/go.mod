@@ -5,8 +5,8 @@ go 1.27.0
 require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.8.6
-	github.com/maximhq/bifrost/framework v1.6.2
+	github.com/maximhq/bifrost/core v1.9.0
+	github.com/maximhq/bifrost/framework v1.7.0
 	github.com/maximhq/maxim-go v0.2.1
 )
 
@@ -107,7 +107,7 @@ require (
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/mark3labs/mcp-go v0.43.2 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect

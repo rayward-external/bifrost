@@ -21,16 +21,13 @@ func ToAnthropicChatCompletionError(bifrostErr *schemas.BifrostError) *Anthropic
 	// is the fallback so internal errors still carry a distinguishable type on this dialect
 	// instead of collapsing to the generic "api_error" default.
 	errorType := "api_error"
-	message := ""
+	message := bifrostErr.GetErrorString()
 	if bifrostErr.Error != nil {
 		if bifrostErr.Error.Type != nil && *bifrostErr.Error.Type != "" {
 			errorType = *bifrostErr.Error.Type
 		} else if bifrostErr.Type != nil && *bifrostErr.Type != "" {
 			errorType = *bifrostErr.Type
 		}
-		message = bifrostErr.Error.Message
-	} else if bifrostErr.Type != nil && *bifrostErr.Type != "" {
-		errorType = *bifrostErr.Type
 	}
 
 	// Handle nested error fields with nil checks

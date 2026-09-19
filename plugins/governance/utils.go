@@ -229,29 +229,33 @@ func PresentedAnyCredential(ctx *schemas.BifrostContext) bool {
 	return presentedGrantBearingCredential(ctx) || hasDirectKeyAuth(ctx)
 }
 
-// stampGovernanceCtxFromVK copies team/customer identifiers from the VK onto ctx so
-// downstream plugins (logging, observability) see the governance scope.
-func stampGovernanceCtxFromVK(ctx *schemas.BifrostContext, vk *configstoreTables.TableVirtualKey) {
-	if vk == nil {
-		return
+// PresentedCredentialResolved reports whether the credential the request presented resolved to
+// usable access. It is the second admission question realtime asks after PresentedAnyCredential:
+// not "was something presented" but "did what was presented turn out to exist". It reads the
+// answer ResolveAccess recorded on the request's grant rather than resolving anything itself, so
+// callers must run the per-request pipeline (PreRequestHook) first; asked earlier it reports the
+// credential unresolved, because it is.
+//
+// A direct provider key resolves to nothing by design (nothing in the governance model describes
+// it), so it counts as resolved here: refusing it for lacking an access it was never meant to
+// have would close direct-key requests entirely. A grant-bearing credential that resolved to no
+// access, or to access whose permit is unusable (revoked, expired, inactive), is exactly the
+// forged-or-revoked case this question exists to catch. Like PresentedAnyCredential, it settles
+// no limits, so admission cannot double-count usage against the turns that follow.
+func PresentedCredentialResolved(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
 	}
-	if vk.TeamID != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *vk.TeamID)
+	if hasDirectKeyAuth(ctx) {
+		return true
 	}
-	if vk.Team != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
-		if vk.Team.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.Team.CustomerID)
-			if vk.Team.Customer != nil {
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
-			}
-		}
-	} else {
-		if vk.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.CustomerID)
-		}
-		if vk.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
-		}
+	if !presentedGrantBearingCredential(ctx) {
+		return false
 	}
+	g := ctx.Grant()
+	if g == nil {
+		return false
+	}
+	access := g.Access()
+	return access != nil && unusablePermit(access) == nil
 }

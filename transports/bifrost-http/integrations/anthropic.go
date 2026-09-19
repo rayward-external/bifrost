@@ -12,6 +12,7 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 
@@ -58,6 +59,76 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		},
 		PreCallback: checkAnthropicPassthrough,
 	}
+}
+
+// anthropicMessagesShortCircuit chains the `/v1/messages` route's two independent
+// ShortCircuit checks: max_tokens validation (fork) and thread-continue refusal
+// (upstream). RouteConfig has room for exactly one ShortCircuit, and an upstream
+// sync that wires in anthropicRefuseThreadContinue directly would silently drop
+// rejectAnthropicMessagesInvalidMaxTokens from the route (the function would still
+// exist and pass its own direct-call tests, but never run against a real request).
+// max_tokens validation runs first: a structurally invalid request should get that
+// error rather than an unrelated thread-state one.
+func anthropicMessagesShortCircuit(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error) {
+	if handled, err := rejectAnthropicMessagesInvalidMaxTokens(ctx, bifrostCtx, req); handled || err != nil {
+		return handled, err
+	}
+	return anthropicRefuseThreadContinue(ctx, bifrostCtx, req)
+}
+
+// anthropicRefuseThreadContinue is the ShortCircuit for the `/v1/messages` routes
+// implementing Bifrost's stateless handling of Anthropic server-side threads.
+// Thread state is bound to the upstream account that created it, and Bifrost's
+// per-request key selection, retries, and fallbacks cannot keep a continuation
+// on that account. A `thread: {"type": "continue"}` request carries only the
+// conversation delta, which Bifrost cannot serve, so it is refused with the
+// `thread_unsupported_request` error code; the client then resends the turn in
+// full and drops the thread field for the rest of the session. Create requests
+// pass through here and have the field stripped on the provider's raw-body path
+// (BuildAnthropicResponsesRequestBody), since they carry the full conversation.
+func anthropicRefuseThreadContinue(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error) {
+	anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest)
+	if !ok {
+		return false, nil
+	}
+	// The parser captures unknown top-level fields as compacted RawMessage. In
+	// large-payload mode the body is never parsed, so the enterprise metadata
+	// extractor surfaces the thread type through the routing metadata instead
+	// (already resolved and cached by the hydration in checkAnthropicPassthrough).
+	// An extractor that does not populate ThreadType leaves behavior unchanged.
+	threadType := ""
+	if threadRaw, ok := anthropicReq.ExtraParams["thread"].(json.RawMessage); ok {
+		threadType = gjson.GetBytes(threadRaw, "type").String()
+	} else if isLargePayload, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); isLargePayload {
+		if metadata := resolveLargePayloadMetadata(bifrostCtx); metadata != nil {
+			threadType = metadata.ThreadType
+		}
+	}
+	if threadType != "continue" {
+		return false, nil
+	}
+	// The count_tokens endpoint has its own static route without this hook; this
+	// guard keeps the wildcard /v1/messages/{path:*} route from refusing token
+	// counting if route registration ever changes. Token counting keeps working
+	// on full-replay bodies either way.
+	if strings.HasSuffix(string(ctx.Path()), "/count_tokens") {
+		return false, nil
+	}
+	payload, err := providerUtils.MarshalSorted(&anthropic.AnthropicMessageError{
+		Type: "error",
+		Error: anthropic.AnthropicMessageErrorStruct{
+			Type:    "invalid_request_error",
+			Message: `Bifrost does not keep Anthropic thread state; replay the full conversation with thread: {"type": "create"}.`,
+			Details: &anthropic.AnthropicMessageErrorDetails{ErrorCode: "thread_unsupported_request"},
+		},
+	})
+	if err != nil {
+		return true, err
+	}
+	ctx.SetStatusCode(fasthttp.StatusBadRequest)
+	ctx.SetContentType("application/json")
+	ctx.SetBody(payload)
+	return true, nil
 }
 
 // createAnthropicMessagesRouteConfig creates a route configuration for the `/v1/messages` endpoint.
@@ -182,7 +253,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				},
 			},
 			PreCallback:  checkAnthropicPassthrough,
-			ShortCircuit: rejectAnthropicMessagesInvalidMaxTokens,
+			ShortCircuit: anthropicMessagesShortCircuit,
 		})
 	}
 	return routes

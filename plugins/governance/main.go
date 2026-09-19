@@ -1661,6 +1661,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// path, so it is not repeated here.
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	billingNonce := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce)
 
 	// Batch ownership (see batchownership.go): capture owner on a successful
 	// create, and scope list output to the caller's ledger-known batches. A
@@ -1760,7 +1761,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
 		}()
 
 		// Publish this call's cost to the caller, for a BUFFERED response only.
@@ -1880,6 +1881,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	}
 
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	billingNonce := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce)
 
 	// Determine if request was successful
 	success := (resp != nil && bifrostErr == nil)
@@ -1930,6 +1932,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		Success:      success,
 		Cost:         toolCost,
 		RequestID:    requestID,
+		BillingNonce: billingNonce,
 		IsStreaming:  false,
 		IsFinalChunk: true,
 		HasUsageData: toolCost > 0, // Has usage data if we have a cost
@@ -2032,7 +2035,7 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -2105,6 +2108,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			TokensUsed:    int64(tokensUsed),
 			Cost:          cost,
 			RequestID:     requestID,
+			BillingNonce:  billingNonce,
 			IsStreaming:   isStreaming,
 			IsFinalChunk:  isFinalChunk,
 			HasUsageData:  tokensUsed > 0 || cost > 0,

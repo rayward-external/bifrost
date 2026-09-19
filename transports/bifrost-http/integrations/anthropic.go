@@ -61,6 +61,21 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 	}
 }
 
+// anthropicMessagesShortCircuit chains the `/v1/messages` route's two independent
+// ShortCircuit checks: max_tokens validation (fork) and thread-continue refusal
+// (upstream). RouteConfig has room for exactly one ShortCircuit, and an upstream
+// sync that wires in anthropicRefuseThreadContinue directly would silently drop
+// rejectAnthropicMessagesInvalidMaxTokens from the route (the function would still
+// exist and pass its own direct-call tests, but never run against a real request).
+// max_tokens validation runs first: a structurally invalid request should get that
+// error rather than an unrelated thread-state one.
+func anthropicMessagesShortCircuit(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error) {
+	if handled, err := rejectAnthropicMessagesInvalidMaxTokens(ctx, bifrostCtx, req); handled || err != nil {
+		return handled, err
+	}
+	return anthropicRefuseThreadContinue(ctx, bifrostCtx, req)
+}
+
 // anthropicRefuseThreadContinue is the ShortCircuit for the `/v1/messages` routes
 // implementing Bifrost's stateless handling of Anthropic server-side threads.
 // Thread state is bound to the upstream account that created it, and Bifrost's
@@ -238,7 +253,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				},
 			},
 			PreCallback:  checkAnthropicPassthrough,
-			ShortCircuit: anthropicRefuseThreadContinue,
+			ShortCircuit: anthropicMessagesShortCircuit,
 		})
 	}
 	return routes

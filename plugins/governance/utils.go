@@ -294,3 +294,30 @@ func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []str
 	}
 	return permits
 }
+
+// stampGovernanceCtxFromVK copies team/customer identifiers from the VK onto ctx so
+// downstream plugins (logging, observability) see the governance scope.
+func stampGovernanceCtxFromVK(ctx *schemas.BifrostContext, vk *configstoreTables.TableVirtualKey) {
+	if vk == nil {
+		return
+	}
+	if vk.TeamID != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *vk.TeamID)
+	}
+	if vk.Team != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
+		if vk.Team.CustomerID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.Team.CustomerID)
+			if vk.Team.Customer != nil {
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
+			}
+		}
+	} else {
+		if vk.CustomerID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.CustomerID)
+		}
+		if vk.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
+		}
+	}
+}

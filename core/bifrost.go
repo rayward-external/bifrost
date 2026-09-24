@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 
 	"github.com/maximhq/bifrost/core/keyselectors"
@@ -9588,6 +9589,41 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		setResponsesAffinityRecoveryRetries(ctx, len(supportedKeys)-1)
 	}
 	return supportedKeys, true, nil
+}
+
+// getCachedKeyFromStore retrieves a key ID from the KV store and looks it up in supportedKeys.
+// It is used by the responses-affinity cache (core/utils.go), which is independent of the
+// SessionAffinity seam (core/sessionaffinity.go) and keys on previous_response_id / encrypted
+// content hashes rather than on session id.
+func getCachedKeyFromStore(kvStore schemas.KVStore, kvKey string, supportedKeys []schemas.Key) (schemas.Key, bool, bool) {
+	raw, err := kvStore.Get(kvKey)
+	if err != nil {
+		return schemas.Key{}, false, false
+	}
+
+	var cachedKeyID string
+	switch v := raw.(type) {
+	case string:
+		cachedKeyID = v
+	case []byte:
+		var s string
+		if err := sonic.Unmarshal(v, &s); err == nil {
+			cachedKeyID = s
+		} else {
+			cachedKeyID = string(v)
+		}
+	}
+
+	if cachedKeyID != "" {
+		for _, k := range supportedKeys {
+			if k.ID == cachedKeyID {
+				return k, true, false
+			}
+		}
+		return schemas.Key{}, false, true
+	}
+
+	return schemas.Key{}, false, false
 }
 
 // Shutdown gracefully stops all workers when triggered.

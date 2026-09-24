@@ -255,7 +255,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					Provider:        provider,
 					Model:           model,
 					KeyID:           keyID,
-					Fallbacks:       rule.ParsedFallbacks,
+					Fallbacks:       configstoreTables.RoutingFallbackStrings(rule.ParsedFallbacks),
 					MatchedRuleID:   rule.ID,
 					MatchedRuleName: rule.Name,
 				}

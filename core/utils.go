@@ -3,6 +3,8 @@ package bifrost
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1094,6 +1096,25 @@ func pluginSpanNamesFor(name string) *pluginSpanNameSet {
 // IsCodemodeTool returns true if the given tool name is a codemode tool.
 func IsCodemodeTool(toolName string) bool {
 	return mcp.IsCodeModeTool(toolName)
+}
+
+// hashSHA256 returns a deterministic hex-encoded SHA-256 hash of the input.
+func hashSHA256(value string) string {
+	h := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(h[:])
+}
+
+// buildSessionKey is the legacy session-sticky KV key format, superseded by SessionAffinity's
+// SessionStateKey (see core/sessionaffinity.go). Kept only because bifrost_test.go still asserts
+// that a responses-affinity miss does not fall back to writing a key in this old format.
+func buildSessionKey(providerKey schemas.ModelProvider, sessionID string, model string) string {
+	// Hash session ID to prevent PII leakage and ensure bounded key size
+	hashedSessionID := hashSHA256(sessionID)
+	discriminator := model
+	if discriminator == "" {
+		discriminator = "__modelless__"
+	}
+	return "session:" + string(providerKey) + ":" + hashedSessionID + ":" + hashSHA256(discriminator)
 }
 
 // isPromptOptionalImageEditType returns true for edit task types that do not require a text prompt.

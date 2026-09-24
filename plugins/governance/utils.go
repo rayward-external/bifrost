@@ -260,29 +260,37 @@ func PresentedCredentialResolved(ctx *schemas.BifrostContext) bool {
 	return access != nil && unusablePermit(access) == nil
 }
 
-// stampGovernanceCtxFromVK copies team/customer identifiers from the VK onto ctx so
-// downstream plugins (logging, observability) see the governance scope.
-func stampGovernanceCtxFromVK(ctx *schemas.BifrostContext, vk *configstoreTables.TableVirtualKey) {
-	if vk == nil {
-		return
+// AppendAllProviderPermits completes a permit that grants every provider. Such a permit names none,
+// so the providers it grants by the flag alone are materialised here, from what the deployment has
+// configured, and the permit then carries its whole grant in one readable list.
+//
+// Doing it at permit construction rather than where a consumer reads the permit is what keeps every
+// consumer honest: enumerating provider permits and asking whether the permit allows a provider give
+// the same answer, so a listing cannot refuse what the request path admits. Built per request, so a
+// provider added after the permit was last written is granted by the same rule.
+//
+// A provider the permit already names keeps its own entry: those are overrides, and the flag widens
+// the set rather than relaxing them. A materialised entry narrows nothing - every model, every key,
+// nothing blocked - and carries no weight, because a weight is a routing preference a provider
+// config expresses and this one expresses none.
+func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []string) []schemas.ProviderPermit {
+	named := make(map[string]struct{}, len(permits))
+	for i := range permits {
+		named[permits[i].Provider] = struct{}{}
 	}
-	if vk.TeamID != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *vk.TeamID)
+	for _, provider := range configured {
+		if provider == "" {
+			continue
+		}
+		if _, dup := named[provider]; dup {
+			continue
+		}
+		named[provider] = struct{}{}
+		permits = append(permits, schemas.ProviderPermit{
+			Provider:      provider,
+			AllowedModels: schemas.WhiteList{"*"},
+			KeyIDs:        schemas.WhiteList{"*"},
+		})
 	}
-	if vk.Team != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
-		if vk.Team.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.Team.CustomerID)
-			if vk.Team.Customer != nil {
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
-			}
-		}
-	} else {
-		if vk.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.CustomerID)
-		}
-		if vk.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
-		}
-	}
+	return permits
 }

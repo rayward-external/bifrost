@@ -1104,6 +1104,9 @@ func hashSHA256(value string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// buildSessionKey is the legacy session-sticky KV key format, superseded by SessionAffinity's
+// SessionStateKey (see core/sessionaffinity.go). Kept only because bifrost_test.go still asserts
+// that a responses-affinity miss does not fall back to writing a key in this old format.
 func buildSessionKey(providerKey schemas.ModelProvider, sessionID string, model string) string {
 	// Hash session ID to prevent PII leakage and ensure bounded key size
 	hashedSessionID := hashSHA256(sessionID)

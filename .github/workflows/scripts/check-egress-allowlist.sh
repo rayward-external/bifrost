@@ -150,6 +150,7 @@ HARNESS_MARKERS = ("test-core.sh", "test-provider-harness.sh")
 NOT_DIALLED_HOSTS = {
     # Fetched by the provider's own server-side tooling, never by Bifrost.
     "example.com": "MCP server_url and web_fetch targets - dereferenced by the provider",
+    "mcp.deepwiki.com": "Anthropic mcp_servers connector URL in a request body - Anthropic's API dereferences it server-side, Bifrost only forwards the URL string",
     "www.youtube.com": "Gemini video input - Google fetches the URL server-side",
     "en.wikipedia.org": "googleSearch excludeDomains filter value, not a URL anyone fetches",
     "placeholder.search.windows.net": "Azure AI Search placeholder in a request body; never resolved",

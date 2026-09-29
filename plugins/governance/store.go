@@ -3268,6 +3268,9 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 	// Load providers
 	providers := config.Providers
 
+	// Load routing rules
+	routingRules := config.RoutingRules
+
 	// Populate teams with their relationships
 	for i := range teams {
 		team := &teams[i]

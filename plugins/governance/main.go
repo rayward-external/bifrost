@@ -254,6 +254,12 @@ func Init(
 	// 3. Tracker (business logic owner, depends on store and resolver)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
 
+	// Routing engine (dynamically routing requests based on routing rules)
+	engine, err := NewRoutingEngine(governanceStore, logger, routingChainMaxDepth)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
+	}
+
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
 		ctx:                   ctx,
@@ -330,6 +336,13 @@ func InitFromStore(
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
+
+	// Routing engine (dynamically routing requests based on routing rules)
+	engine, err := NewRoutingEngine(governanceStore, logger, routingChainMaxDepth)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
+	}
+
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
 		ctx:                   ctx,

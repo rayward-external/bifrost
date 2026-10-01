@@ -19,6 +19,9 @@ for the codebase guide; it applies to every tool.
   `--repo rayward-external/bifrost` on every `gh pr` and `gh issue` command. A bare
   `gh pr create` here opens a PR against `maximhq/bifrost`, and because upstream shares
   the same PR numbering, a bare `gh pr view <n>` returns *upstream's* PR with no error.
-- **Never merge a PR without explicit user confirmation** ("merge it" / "ship it").
-  A prior okay does not generalize to later PRs in the session.
+- **In interactive sessions, never merge a PR without explicit user confirmation**
+  ("merge it" / "ship it"). A prior okay does not generalize to later PRs in the session.
+  The owner's scheduled maintenance routines count as standing confirmation for the PRs
+  they own (the daily upstream-sync PR, security-sweep fix PRs, and Dependabot bump PRs)
+  once the merge gate passes: all required checks green and the PR mergeable.
 - **Always share the PR link** in your reply, every time, without being asked.

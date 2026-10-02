@@ -40,6 +40,15 @@ jobs:
           echo "Open code-scanning alerts: $(jq length alerts.json)" >> $GITHUB_STEP_SUMMARY
           jq -c '[.[] | {number, rule: .rule.id, description: .rule.description, severity: .rule.security_severity_level, tool: .tool.name, path: .most_recent_instance.location.path, line: .most_recent_instance.location.start_line, message: .most_recent_instance.message.text, created_at, html_url}]' alerts.json
 
+          # Mirror each alert as a job annotation (GitHub Actions workflow command,
+          # needs no extra permission) so it is readable via GET /check-runs/{id}/annotations
+          # over api.github.com — some egress policies redirect run-log/artifact
+          # downloads to Azure Blob Storage and block that host outright.
+          jq -r '.[] | [ (.most_recent_instance.location.path // "unknown"), (.most_recent_instance.location.start_line // 1), .number, .rule.id, (.rule.security_severity_level // "n/a"), .html_url, (.most_recent_instance.message.text // "" | gsub("\\r?\\n"; " ")) ] | @tsv' alerts.json |
+            while IFS=$'\t' read -r path line number rule severity url msg; do
+              echo "::notice file=${path},line=${line}::alert #${number} [${rule}] severity=${severity} ${url} -- ${msg}"
+            done
+
       - name: Upload alerts artifact
         if: inputs.mode == 'list'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

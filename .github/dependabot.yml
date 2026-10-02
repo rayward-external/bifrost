@@ -266,6 +266,18 @@ updates:
     open-pull-requests-limit: 0
 
   - package-ecosystem: npm
+    directory: /.github/workflows/tools/csv-parse-compat
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /.github/workflows/tools/faker-compat
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
     directory: /tests/e2e/api/newman-reporter-dbverify
     schedule:
       interval: daily

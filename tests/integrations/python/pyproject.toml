@@ -24,7 +24,7 @@ dependencies = [
     # AI/ML SDK dependencies
     "openai>=1.30.0",
     "anthropic>=0.25.0",
-    "litellm==1.84.0",
+    "litellm==1.88.6",
     "langchain-openai==1.1.14",
     "langchain-core>=1.3.3",
     "langchain-anthropic==1.5.4",
@@ -155,3 +155,20 @@ package = false
 # minimum for them. Integration tests run with --frozen so the lock is used
 # as-is without re-resolving typesafe past this cutoff.
 exclude-newer = "2026-09-09T00:00:00Z"
+
+# Matches uv.lock's recorded [options.exclude-newer-package] overrides so uv
+# does not consider the lockfile stale on every invocation (pre-existing drift,
+# unrelated to the exclude-newer cutoff's own purpose above).
+[tool.uv.exclude-newer-package]
+httpcore2 = "2026-08-19T00:00:00Z"
+httpx2 = "2026-08-19T00:00:00Z"
+# typesafe-sdk==0.7.0 (pinned exact above) was published 2026-09-18, after the
+# global cutoff; exempt only this package so it can still resolve.
+typesafe-sdk = "2026-09-19T00:00:00Z"
+# urllib3 2.8.0 (security fix, PYSEC-2026-4175/4176/4177) was published
+# 2026-09-15, after the global cutoff; exempt only this package.
+urllib3 = "2026-09-16T00:00:00Z"
+# pyjwt 2.15.0 (security fix, GHSA-42vr-xj54-vc7v HMAC-confusion/BOM-bypass,
+# applied 2026-10-01) was published 2026-09-23, after the global cutoff;
+# exempt only this package so a future relock doesn't silently revert it.
+pyjwt = "2026-09-24T00:00:00Z"

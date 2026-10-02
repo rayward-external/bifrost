@@ -150,8 +150,15 @@ exclude_lines = [
 # above would otherwise make uv treat it as an editable package, which changes the
 # root's entry in uv.lock and breaks `uv sync --frozen`.
 package = false
-# typesafe-sdk (the exception above) is grafted into uv.lock; every other
-# package stays at its pre-existing version, so this cutoff keeps the 7-day
-# minimum for them. Integration tests run with --frozen so the lock is used
-# as-is without re-resolving typesafe past this cutoff.
+# Global 7-day minimum-age cutoff. The few releases newer than it are exempted
+# individually in [tool.uv.exclude-newer-package] below.
 exclude-newer = "2026-09-09T00:00:00Z"
+
+# Security/feature releases newer than the global cutoff above. Each is already
+# pinned in uv.lock; these per-package cutoffs let `uv lock` and Dependabot
+# resolve them without moving the 7-day minimum for every other package.
+# Dates are each release's PyPI upload day plus one.
+[tool.uv.exclude-newer-package]
+typesafe-sdk = "2026-09-19T00:00:00Z"
+pyjwt = "2026-09-24T00:00:00Z"
+urllib3 = "2026-09-16T00:00:00Z"

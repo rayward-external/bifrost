@@ -260,12 +260,6 @@ updates:
     open-pull-requests-limit: 0
 
   - package-ecosystem: npm
-    directory: /.github/workflows/configs/newman
-    schedule:
-      interval: daily
-    open-pull-requests-limit: 0
-
-  - package-ecosystem: npm
     directory: /.github/workflows/tools
     schedule:
       interval: daily

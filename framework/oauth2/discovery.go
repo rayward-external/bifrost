@@ -150,24 +150,52 @@ func newOAuthDiscoveryHTTPClient(timeout time.Duration) *http.Client {
 		transport = newOAuthDiscoveryTransport(testDialContextOverride)
 	}
 	return &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// A 307/308 on the token or registration POST would make Go replay
-			// the credential-bearing body at the new location; only discovery
-			// GETs may follow a redirect.
-			if len(via) > 0 && via[0].Method != http.MethodGet {
-				return fmt.Errorf("refusing to follow a redirect for a %s request", via[0].Method)
-			}
-			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)
-			}
-			if len(via) >= 10 {
-				return fmt.Errorf("stopped after 10 redirects")
-			}
-			return nil
-		},
+		Timeout:       timeout,
+		Transport:     transport,
+		CheckRedirect: checkOAuthDiscoveryRedirect,
 	}
+}
+
+// adminOAuthDiscoveryTransport is the relaxed transport for the single
+// admin-trusted hop in OAuth discovery: the initial request to an MCP
+// client's own admin-configured server_url (DiscoverOAuthMetadata's first
+// request below). It permits private-network destinations the same way the
+// main MCP connection (core/mcp/clientmanager.go's buildTLSHTTPClient) already
+// does for the same URL - gated by the same management-API authentication
+// that protects MCP client configuration, matching network.
+// PrivateNetworkDialContext's own documented use case. Every later hop in the
+// chain (resource_metadata, .well-known, authorization_servers,
+// token_endpoint, registration_endpoint) is taken from a response the remote
+// server controls, so those keep the full public-only guard via
+// newOAuthDiscoveryHTTPClient/oauthDiscoveryTransport above.
+var adminOAuthDiscoveryTransport = newOAuthDiscoveryTransport(network.PrivateNetworkDialContext(10 * time.Second))
+
+func newAdminOAuthDiscoveryHTTPClient(timeout time.Duration) *http.Client {
+	transport := adminOAuthDiscoveryTransport
+	if testDialContextOverride != nil {
+		transport = newOAuthDiscoveryTransport(testDialContextOverride)
+	}
+	return &http.Client{
+		Timeout:       timeout,
+		Transport:     transport,
+		CheckRedirect: checkOAuthDiscoveryRedirect,
+	}
+}
+
+func checkOAuthDiscoveryRedirect(req *http.Request, via []*http.Request) error {
+	// A 307/308 on the token or registration POST would make Go replay
+	// the credential-bearing body at the new location; only discovery
+	// GETs may follow a redirect.
+	if len(via) > 0 && via[0].Method != http.MethodGet {
+		return fmt.Errorf("refusing to follow a redirect for a %s request", via[0].Method)
+	}
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)
+	}
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	return nil
 }
 
 // OAuthMetadata contains discovered OAuth configuration from authorization server
@@ -212,8 +240,12 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Starting discovery for server: %s", serverURL))
 	}
 
-	// Step 1: Attempt to connect to MCP server, expect 401 with WWW-Authenticate header
-	client := newOAuthDiscoveryHTTPClient(10 * time.Second)
+	// Step 1: Attempt to connect to MCP server, expect 401 with WWW-Authenticate header.
+	// serverURL is the admin-configured MCP connection_string, not a remote-controlled
+	// value, so this one request may target a private-network host (see
+	// newAdminOAuthDiscoveryHTTPClient); every later hop below uses the strict,
+	// public-only client instead.
+	client := newAdminOAuthDiscoveryHTTPClient(10 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", serverURL, nil)
 	if err != nil {

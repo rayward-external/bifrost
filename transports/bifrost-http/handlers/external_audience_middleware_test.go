@@ -491,7 +491,7 @@ func TestExternalAudienceMiddlewareIsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	const want = "handlers.ExternalAudienceHeaderMiddleware()(handlers.SecurityHeadersMiddleware()("
+	const want = "handlers.ExternalAudienceHeaderMiddleware()(handlers.ServerRootHandler("
 	if !strings.Contains(string(source), want) {
 		t.Fatalf("%s no longer wraps the handler chain in ExternalAudienceHeaderMiddleware "+
 			"as the outermost middleware; external callers get every response header. "+

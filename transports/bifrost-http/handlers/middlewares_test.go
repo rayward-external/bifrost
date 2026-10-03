@@ -7,15 +7,21 @@ import (
 	"context"
 	cryptoRand "crypto/rand"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/fasthttp/router"
 	"github.com/klauspost/compress/zstd"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -413,6 +419,191 @@ func TestChainMiddlewares_MiddlewareCanModifyContext(t *testing.T) {
 	chained(ctx)
 }
 
+// TestRecoveryMiddleware_RecoversFromPanic proves a panicking handler no longer
+// takes down the process: the request is answered with a 500 instead of
+// unwinding past RecoveryMiddleware.
+func TestRecoveryMiddleware_RecoversFromPanic(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := &fasthttp.RequestCtx{}
+
+	handler := func(ctx *fasthttp.RequestCtx) {
+		values := []int{1, 2, 3}
+		_ = values[10] // out-of-bounds access, mirrors an unguarded slice index in request-derived parsing
+	}
+
+	wrapped := RecoveryMiddleware(newRecoveryTestCors())(handler)
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("panic escaped RecoveryMiddleware: %v", r)
+			}
+		}()
+		wrapped(ctx)
+	}()
+
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Errorf("expected status %d, got %d", fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	}
+}
+
+// TestRecoveryMiddleware_DoesNotLogPanicValue asserts the recovery log never echoes
+// an arbitrary panic value, which can wrap request content or secrets, while still
+// keeping runtime error messages, which are runtime-generated and carry no request data.
+func TestRecoveryMiddleware_DoesNotLogPanicValue(t *testing.T) {
+	capLogger := &captureLogger{}
+	SetLogger(capLogger)
+	defer SetLogger(&mockLogger{})
+
+	secretPanic := func(*fasthttp.RequestCtx) { panic(errors.New("upstream rejected key sk-secret-123")) }
+	RecoveryMiddleware(newRecoveryTestCors())(secretPanic)(&fasthttp.RequestCtx{})
+
+	if len(capLogger.errors) != 1 {
+		t.Fatalf("error logs = %d, want 1", len(capLogger.errors))
+	}
+	if strings.Contains(capLogger.errors[0], "sk-secret-123") {
+		t.Errorf("recovery log leaked the panic value: %q", capLogger.errors[0])
+	}
+	if !strings.Contains(capLogger.errors[0], "*errors.errorString") {
+		t.Errorf("recovery log = %q, want the panic value type *errors.errorString", capLogger.errors[0])
+	}
+
+	runtimePanic := func(*fasthttp.RequestCtx) {
+		values := []int{1, 2, 3}
+		idx := 10
+		_ = values[idx]
+	}
+	RecoveryMiddleware(newRecoveryTestCors())(runtimePanic)(&fasthttp.RequestCtx{})
+
+	if len(capLogger.errors) != 2 {
+		t.Fatalf("error logs = %d, want 2", len(capLogger.errors))
+	}
+	if !strings.Contains(capLogger.errors[1], "index out of range [10] with length 3") {
+		t.Errorf("recovery log = %q, want the runtime error message kept", capLogger.errors[1])
+	}
+}
+
+// TestRecoveryMiddleware_PassesThroughNormalRequests confirms the middleware is
+// a no-op for handlers that don't panic.
+func TestRecoveryMiddleware_PassesThroughNormalRequests(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := &fasthttp.RequestCtx{}
+	handlerCalled := false
+
+	handler := func(ctx *fasthttp.RequestCtx) {
+		handlerCalled = true
+		ctx.SetStatusCode(fasthttp.StatusOK)
+	}
+
+	wrapped := RecoveryMiddleware(newRecoveryTestCors())(handler)
+	wrapped(ctx)
+
+	if !handlerCalled {
+		t.Error("handler was not called")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Errorf("expected status %d, got %d", fasthttp.StatusOK, ctx.Response.StatusCode())
+	}
+}
+
+// newRecoveryTestCors returns a CorsMiddleware with default config (localhost
+// origins allowed) for RecoveryMiddleware tests.
+func newRecoveryTestCors() *CorsMiddleware {
+	return NewCorsMiddleware(&lib.Config{ClientConfig: &configstore.ClientConfig{}})
+}
+
+// TestRecoveryMiddleware_KeepsOuterHeadersAndLogsStatus runs a panic through the
+// production server-level chain (ServerRootHandler). The 500 must still
+// carry the security and CORS headers the outer middlewares set before the
+// panic, and the CORS access log must record 500, not the default 200.
+func TestRecoveryMiddleware_KeepsOuterHeadersAndLogsStatus(t *testing.T) {
+	capLogger := &captureLogger{}
+	SetLogger(capLogger)
+	defer SetLogger(&mockLogger{})
+
+	cors := newRecoveryTestCors()
+	panicking := func(ctx *fasthttp.RequestCtx) {
+		ctx.Response.Header.Set("X-Handler-Partial", "stale")
+		panic("boom")
+	}
+	handler := ServerRootHandler(cors, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, panicking)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Origin", "http://localhost:3000")
+	handler(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", ctx.Response.StatusCode(), fasthttp.StatusInternalServerError)
+	}
+	if got := string(ctx.Response.Header.Peek("X-Frame-Options")); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
+	if got := string(ctx.Response.Header.Peek("Access-Control-Allow-Origin")); got != "http://localhost:3000" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want http://localhost:3000", got)
+	}
+	if got := string(ctx.Response.Header.Peek("X-Handler-Partial")); got != "" {
+		t.Errorf("X-Handler-Partial = %q, want partial handler headers dropped", got)
+	}
+	if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got != "" {
+		t.Errorf("x-bifrost-trace-id = %q, want none when Tracing did not run", got)
+	}
+	if len(capLogger.events) != 1 {
+		t.Fatalf("access log events = %d, want 1", len(capLogger.events))
+	}
+	if got := capLogger.events[0].intFields["http.status_code"]; got != fasthttp.StatusInternalServerError {
+		t.Errorf("access log http.status_code = %d, want %d", got, fasthttp.StatusInternalServerError)
+	}
+}
+
+// TestRecoveryMiddleware_TracingRecordsPanicAsError runs a panic through the
+// production stack: ServerRootHandler around the inference-route outer chain
+// (InferenceOuterMiddlewares). The root span must end as an
+// error with http.status_code 500, not be exported as a successful request.
+func TestRecoveryMiddleware_TracingRecordsPanicAsError(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	plugin := &captureTracePlugin{done: make(chan struct{})}
+	tm := NewTracingMiddleware(tracer)
+	tm.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+
+	panicking := func(*fasthttp.RequestCtx) { panic("boom") }
+	cors := newRecoveryTestCors()
+	route := lib.ChainMiddlewares(panicking, InferenceOuterMiddlewares(tm, cors)...)
+	handler := ServerRootHandler(cors, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, route)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-request-id", "req-panic-1")
+	handler(ctx)
+
+	// The 500 must still carry the correlation IDs so the caller can find the trace.
+	if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-panic-1" {
+		t.Errorf("x-request-id = %q, want req-panic-1", got)
+	}
+	if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
+		t.Error("expected x-bifrost-trace-id on the recovered 500")
+	}
+
+	select {
+	case <-plugin.done:
+		if plugin.rootStatus != schemas.SpanStatusError {
+			t.Errorf("root span status = %v, want %v", plugin.rootStatus, schemas.SpanStatusError)
+		}
+		if plugin.rootStatusCode != fasthttp.StatusInternalServerError {
+			t.Errorf("root span http.status_code = %v, want %d", plugin.rootStatusCode, fasthttp.StatusInternalServerError)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("trace was not flushed to the observability plugin")
+	}
+}
+
 func TestIsInferenceWSEndpoint(t *testing.T) {
 	paths := []string{
 		"/v1/responses",
@@ -732,6 +923,153 @@ func TestAuthMiddleware_SkillsPublicServeManagementSplit(t *testing.T) {
 	})
 }
 
+// TestAuthMiddleware_EncodedTraversalDoesNotBypassAuth exercises the same raw-path
+// router dispatch as production. Authorization must never use the decoded path
+// to whitelist a request dispatched to a protected parameterized handler.
+func TestAuthMiddleware_EncodedTraversalDoesNotBypassAuth(t *testing.T) {
+	am := newTraversalAuthMiddleware()
+	cases := []struct {
+		name, method, route, uri string
+		status                   int
+	}{
+		{"provider update", "PUT", "/api/providers/{provider}", "/api/providers/..%2Fskills%2Fserve%2Fmalicious", 401},
+		{"provider key creation", "POST", "/api/providers/{provider}/keys", "/api/providers/..%2Fskills%2Fserve%2Fmalicious/keys", 401},
+		{"provider deletion", "DELETE", "/api/providers/{provider}", "/api/providers/..%2Fskills%2Fserve%2Fmalicious", 401},
+		{"plugin dev prefix", "PUT", "/api/plugins/{name}", "/api/plugins/..%2Fdev%2Fmalicious", 401},
+		{"lowercase slash", "PUT", "/api/providers/{provider}", "/api/providers/..%2fskills%2fserve%2fmalicious", 401},
+		{"encoded dots", "PUT", "/api/providers/{provider}", "/api/providers/%2e%2e%2Fskills%2Fserve%2Fmalicious", 401},
+		{"double encoding", "PUT", "/api/providers/{provider}", "/api/providers/%252e%252e%252Fskills%252Fserve%252Fmalicious", 401},
+		{"query string", "PUT", "/api/providers/{provider}", "/api/providers/..%2Fskills%2Fserve%2Fmalicious?source=test", 401},
+		{"public skills", "GET", "/api/skills/serve/{path:*}", "/api/skills/serve/my-skill.git/info/refs?service=git-upload-pack", 204},
+		{"public dev", "GET", "/api/dev/pprof/{profile}", "/api/dev/pprof/goroutine", 204},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertTraversalAuthRoute(t, am, tc.method, tc.route, tc.uri, "", tc.status)
+		})
+	}
+}
+
+// traversalTokenStore only implements the lookup used by the real token service.
+// An embedded interface makes any unexpected store access fail loudly.
+type traversalTokenStore struct {
+	configstore.ConfigStore
+	row tables.TempToken
+}
+
+func (s *traversalTokenStore) GetTempTokenByHash(_ context.Context, hash string) (*tables.TempToken, error) {
+	if hash != s.row.TokenHash {
+		return nil, nil
+	}
+	row := s.row
+	return &row, nil
+}
+
+func newTraversalAuthMiddleware() *AuthMiddleware {
+	SetLogger(&mockLogger{})
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+	return am
+}
+
+// Record router selection separately from the protected handler: a 404 caused
+// by a malformed fixture must not be mistaken for successful auth enforcement.
+func assertTraversalAuthRoute(t *testing.T, am *AuthMiddleware, method, route, uri, token string, status int) {
+	t.Helper()
+	matched, reached := false, false
+	r := router.New()
+	protected := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+		reached = true
+		ctx.SetStatusCode(fasthttp.StatusNoContent)
+	})
+	r.Handle(method, route, func(ctx *fasthttp.RequestCtx) {
+		matched = true
+		protected(ctx)
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(method)
+	ctx.Request.SetRequestURI(uri)
+	if token != "" {
+		ctx.Request.Header.Set("X-Bifrost-Temp-Token", token)
+	}
+	r.Handler(ctx)
+	if !matched {
+		t.Fatalf("fixture did not match route %s %s: %q", method, route, uri)
+	}
+	if got := ctx.Response.StatusCode(); got != status {
+		t.Fatalf("%s %s: expected status %d, got %d (handler reached=%v)", method, uri, status, got, reached)
+	}
+	if wantReached := status == fasthttp.StatusNoContent; reached != wantReached {
+		t.Fatalf("%s %s: handler reached=%v, want %v", method, uri, reached, wantReached)
+	}
+	if reached && token != "" {
+		if ctx.UserValue(schemas.BifrostContextKeyTempTokenScope) == nil || ctx.UserValue(schemas.BifrostContextKeyTempTokenResourceID) == nil {
+			t.Fatal("successful token auth must attach the validated scope and resource ID")
+		}
+	}
+}
+
+func TestAuthMiddleware_TempTokenEncodedTraversal(t *testing.T) {
+	const token = "test-scoped-token"
+	const flowID = "flow-123"
+	for _, scope := range []temptoken.Scope{mcpAuthScope, mcpHeadersAuthScope, oauth2ConsentScope} {
+		t.Run(scope.Name, func(t *testing.T) {
+			store := &traversalTokenStore{row: tables.TempToken{
+				ID: "token-123", TokenHash: encrypt.HashSHA256(token),
+				Scope: scope.Name, ResourceID: flowID, ExpiresAt: time.Now().Add(time.Hour),
+			}}
+			am := newTraversalAuthMiddleware()
+			am.tempTokensService = temptoken.NewService(store, temptoken.NewRegistry())
+			if err := RegisterTempTokenScopes(am.tempTokensService); err != nil {
+				t.Fatal(err)
+			}
+			am.UpdateTempTokenAuthEnabled(true)
+			for _, allowed := range scope.AllowedRoutes {
+				path := strings.ReplaceAll(allowed.Path, scope.ResourceIDInPath, flowID)
+				t.Run(allowed.Method+" "+allowed.Path, func(t *testing.T) {
+					t.Run("legitimate", func(t *testing.T) {
+						assertTraversalAuthRoute(t, am, allowed.Method, allowed.Path, path+"?source=test", token, 204)
+					})
+					for _, target := range []string{"/api/providers/{provider}", "/api/plugins/{name}"} {
+						for _, slash := range []string{"%2F", "%2f"} {
+							for _, dots := range []string{"..", "%2e%2e"} {
+								uri := target[:strings.Index(target, "{")] + dots + slash + strings.ReplaceAll(strings.TrimPrefix(path, "/api/"), "/", slash)
+								t.Run(uri, func(t *testing.T) {
+									assertTraversalAuthRoute(t, am, allowed.Method, target, uri, token, 401)
+								})
+							}
+						}
+					}
+					t.Run("wrong resource", func(t *testing.T) {
+						assertTraversalAuthRoute(t, am, allowed.Method, allowed.Path, strings.ReplaceAll(path, flowID, "other-flow"), token, 401)
+					})
+					t.Run("wrong method", func(t *testing.T) {
+						assertTraversalAuthRoute(t, am, "POST", allowed.Path, path, token, 401)
+					})
+					t.Run("unknown token", func(t *testing.T) {
+						assertTraversalAuthRoute(t, am, allowed.Method, allowed.Path, path, "unknown-token", 401)
+					})
+					t.Run("expired", func(t *testing.T) {
+						expiresAt := store.row.ExpiresAt
+						store.row.ExpiresAt = time.Now().Add(-time.Hour)
+						defer func() { store.row.ExpiresAt = expiresAt }()
+						assertTraversalAuthRoute(t, am, allowed.Method, allowed.Path, path, token, 401)
+					})
+					t.Run("disabled", func(t *testing.T) {
+						am.UpdateTempTokenAuthEnabled(false)
+						defer am.UpdateTempTokenAuthEnabled(true)
+						assertTraversalAuthRoute(t, am, allowed.Method, allowed.Path, path, token, 401)
+					})
+				})
+			}
+		})
+	}
+}
+
 // TestAuthMiddleware_WhitelistedRoutes tests that whitelisted routes bypass auth
 func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -760,8 +1098,10 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 			ctx.Request.SetRequestURI(route)
 
 			nextCalled := false
+			bypassMarked := false
 			next := func(ctx *fasthttp.RequestCtx) {
 				nextCalled = true
+				bypassMarked, _ = ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
 			}
 
 			middleware := am.APIMiddleware()
@@ -770,6 +1110,12 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 
 			if !nextCalled {
 				t.Errorf("Next handler should be called for whitelisted route %s", route)
+			}
+			// A whitelisted request reaches its handler with no credential checked, so
+			// handlers that gate on genuine auth (proxy config, dial targets) must see
+			// it as bypassed rather than as an authenticated admin.
+			if !bypassMarked {
+				t.Errorf("whitelisted route %s must be marked auth-bypassed", route)
 			}
 		})
 	}
@@ -1777,6 +2123,46 @@ func TestRequestDecompressionMiddleware_DecompressedSizeLimit(t *testing.T) {
 	}
 }
 
+// TestRequestDecompressionMiddleware_ZstdOversizedWindowRejected reproduces
+// an oversized-window frame end to end through the actual middleware: a
+// ~9-byte zstd frame whose header declares a 512 MiB window, decoding to zero
+// bytes. RequestDecompressionMiddleware runs before routing and auth, so
+// without a bound on the decoder, this pre-allocates ~512 MiB per request
+// regardless of MaxRequestBodySizeMB - that limit only bounds decompressed
+// OUTPUT via io.LimitedReader, which never sees a byte here. The request must
+// be rejected, not merely produce a small/empty body.
+func TestRequestDecompressionMiddleware_ZstdOversizedWindowRejected(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	// zstd magic (28 b5 2f fd) + Frame_Header_Descriptor (00) +
+	// Window_Descriptor (98 -> 512 MiB window) + empty last raw block (01 00 00).
+	oversizedFrame := []byte{0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x98, 0x01, 0x00, 0x00}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "zstd")
+	ctx.Request.SetBodyRaw(oversizedFrame)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called for an oversized-window zstd frame")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+	}
+}
+
 func TestRequestDecompressionMiddleware_EmptyBodyWithContentEncoding(t *testing.T) {
 	config := &lib.Config{
 		ClientConfig: &configstore.ClientConfig{
@@ -2014,6 +2400,49 @@ func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T)
 	}
 }
 
+// TestRequestDecompressionMiddleware_StreamingPath_ReleasedOnPanic asserts the pooled
+// streaming decompressor is released even when the handler chain panics and
+// RecoveryMiddleware recovers it. zstd is used because ReleaseZstdDecoder calls
+// Reset(nil), which detaches the source: a released decoder can no longer yield
+// the body, while an unreleased one still can.
+func TestRequestDecompressionMiddleware_StreamingPath_ReleasedOnPanic(t *testing.T) {
+	SetLogger(&mockLogger{})
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	compressedBody, err := zstdCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to encode body: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "zstd")
+	// Chunked (-1) triggers the streaming path regardless of compressed size.
+	ctx.Request.SetBodyStream(bytes.NewReader(compressedBody), -1)
+
+	var decoder io.Reader
+	panicking := func(ctx *fasthttp.RequestCtx) {
+		decoder = ctx.RequestBodyStream()
+		panic("boom")
+	}
+	RecoveryMiddleware(newRecoveryTestCors())(RequestDecompressionMiddleware(config)(panicking))(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", ctx.Response.StatusCode(), fasthttp.StatusInternalServerError)
+	}
+	if decoder == nil {
+		t.Fatal("handler did not observe the streaming decompressor")
+	}
+	if got, _ := io.ReadAll(decoder); bytes.Equal(got, plainBody) {
+		t.Error("streaming decompressor was not released after a recovered panic")
+	}
+}
+
 func TestRequestDecompressionMiddleware_StreamingPath_InvalidBody(t *testing.T) {
 	config := &lib.Config{
 		ClientConfig: &configstore.ClientConfig{
@@ -2222,15 +2651,18 @@ func zstdCompress(data []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// captureTracePlugin is an ObservabilityPlugin that captures the root and llm.call
-// span timestamps from a flushed trace. Timestamps are copied synchronously inside
-// Inject because the tracer releases the pooled trace once Inject returns.
+// captureTracePlugin is an ObservabilityPlugin that captures the root span status and
+// the root and llm.call span timestamps from a flushed trace. Values are copied
+// synchronously inside Inject because the tracer releases the pooled trace once
+// Inject returns.
 type captureTracePlugin struct {
-	done      chan struct{}
-	rootStart time.Time
-	rootEnd   time.Time
-	llmEnd    time.Time
-	foundLLM  bool
+	done           chan struct{}
+	rootStart      time.Time
+	rootEnd        time.Time
+	rootStatus     schemas.SpanStatus
+	rootStatusCode any
+	llmEnd         time.Time
+	foundLLM       bool
 }
 
 func (p *captureTracePlugin) GetName() string { return "capture-trace" }
@@ -2242,6 +2674,8 @@ func (p *captureTracePlugin) Inject(_ context.Context, trace *schemas.Trace) err
 	}
 	p.rootStart = trace.RootSpan.StartTime
 	p.rootEnd = trace.RootSpan.EndTime
+	p.rootStatus = trace.RootSpan.Status
+	p.rootStatusCode = trace.RootSpan.Attributes["http.status_code"]
 	for _, span := range trace.Spans {
 		if span != nil && span.Kind == schemas.SpanKindLLMCall {
 			p.llmEnd = span.EndTime
@@ -2407,27 +2841,36 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 	})
 }
 
-// captureLogEvent records the structured string fields emitted on the access log so
-// a test can assert which correlation keys were written.
+// captureLogEvent records the structured string and int fields emitted on the access
+// log so a test can assert which correlation keys and status were written.
 type captureLogEvent struct {
 	strFields map[string]string
+	intFields map[string]int
 }
 
 func (c *captureLogEvent) Str(key, val string) schemas.LogEventBuilder {
 	c.strFields[key] = val
 	return c
 }
-func (c *captureLogEvent) Int(string, int) schemas.LogEventBuilder     { return c }
+func (c *captureLogEvent) Int(key string, val int) schemas.LogEventBuilder {
+	c.intFields[key] = val
+	return c
+}
 func (c *captureLogEvent) Int64(string, int64) schemas.LogEventBuilder { return c }
 func (c *captureLogEvent) Send()                                       {}
 
 type captureLogger struct {
 	mockLogger
 	events []*captureLogEvent
+	errors []string
+}
+
+func (l *captureLogger) Error(format string, args ...any) {
+	l.errors = append(l.errors, fmt.Sprintf(format, args...))
 }
 
 func (l *captureLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
-	e := &captureLogEvent{strFields: map[string]string{}}
+	e := &captureLogEvent{strFields: map[string]string{}, intFields: map[string]int{}}
 	l.events = append(l.events, e)
 	return e
 }
@@ -2715,5 +3158,29 @@ func TestSecurityHeadersMiddleware_APINoStore(t *testing.T) {
 				t.Fatalf("Cache-Control for %s = %q, want %q", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestAuthBypassedMiddleware_MarksRequest pins the marker the server installs when there is
+// no config store and so no auth middleware. Handlers that require genuine auth for dangerous
+// changes key off BifrostContextKeyAuthBypassed; an unmarked request reads as authenticated,
+// so without the marker every such guard fails open in exactly the no-auth deployment.
+func TestAuthBypassedMiddleware_MarksRequest(t *testing.T) {
+	var sawBypassed, sawLocalAdmin bool
+	handler := lib.ChainMiddlewares(func(ctx *fasthttp.RequestCtx) {
+		sawBypassed, _ = ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+		sawLocalAdmin, _ = ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
+	}, AuthBypassedMiddleware())
+
+	handler(&fasthttp.RequestCtx{})
+
+	if !sawBypassed {
+		t.Fatalf("expected request to be marked as auth-bypassed")
+	}
+	// Same posture as the auth-disabled branch of the real middleware: the request
+	// is the local admin for ordinary handlers (notifications check this marker
+	// directly), while the bypass marker keeps the sensitive-change guards closed.
+	if !sawLocalAdmin {
+		t.Fatalf("expected request to be marked local admin as well")
 	}
 }

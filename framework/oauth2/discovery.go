@@ -49,7 +49,7 @@ func SetDiscoveryDialContextForTests(dial func(ctx context.Context, network, add
 // oauthDiscoveryTransport is the one guarded transport every OAuth discovery,
 // registration and token-exchange client shares, so connections are reused
 // across flows and idle sockets are bounded instead of accumulating per call.
-var oauthDiscoveryTransport = newOAuthDiscoveryTransport(oauthDialContext(10*time.Second, proxiesFromEnvironment()...))
+var oauthDiscoveryTransport = newOAuthDiscoveryTransport(oauthDialContext(10*time.Second, proxiesFromEnvironment()...), oauthProxySelector)
 
 // oauthDialContext returns the guarded dialer with one distinction: a dial
 // addressed to an operator-configured proxy (exact host:port, as http.Transport
@@ -109,11 +109,13 @@ func proxiesFromEnvironment() []*url.URL {
 }
 
 // newOAuthDiscoveryTransport builds a transport around dial with bounded idle
-// connection settings. Production uses the single shared instance above; a
-// test dialer override gets its own transport so it never mutates the shared one.
-func newOAuthDiscoveryTransport(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
+// connection settings, using proxySelector to guard a chosen proxy's destination
+// (oauthProxySelector for the strict client, adminOAuthProxySelector for the
+// admin-trusted one). Production uses the two shared instances below; a test
+// dialer override gets its own transport so it never mutates a shared one.
+func newOAuthDiscoveryTransport(dial func(ctx context.Context, network, addr string) (net.Conn, error), proxySelector func(func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error)) *http.Transport {
 	return &http.Transport{
-		Proxy:               oauthProxySelector(http.ProxyFromEnvironment),
+		Proxy:               proxySelector(http.ProxyFromEnvironment),
 		DialContext:         dial,
 		MaxIdleConns:        32,
 		MaxIdleConnsPerHost: 4,
@@ -144,10 +146,30 @@ func oauthProxySelector(next func(*http.Request) (*url.URL, error)) func(*http.R
 	}
 }
 
+// adminOAuthProxySelector mirrors oauthProxySelector but permits a proxied
+// connection to a private/loopback/CGNAT IP-literal destination, matching
+// adminOAuthDiscoveryTransport's own DialContext (network.PrivateNetworkDialContext)
+// and core/mcp/clientmanager.go's mcpProxySelector for the same admin-configured
+// URL. Without this, an operator routing egress through HTTPS_PROXY/HTTP_PROXY
+// would still have the admin-trusted hop rejected at the proxy-selection step,
+// defeating the DialContext trust split entirely for proxied deployments.
+func adminOAuthProxySelector(next func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
+	return func(req *http.Request) (*url.URL, error) {
+		proxyURL, err := next(req)
+		if err != nil || proxyURL == nil {
+			return proxyURL, err
+		}
+		if err := network.CheckPrivateNetworkLiteral(req.URL.Hostname()); err != nil {
+			return nil, err
+		}
+		return proxyURL, nil
+	}
+}
+
 func newOAuthDiscoveryHTTPClient(timeout time.Duration) *http.Client {
 	transport := oauthDiscoveryTransport
 	if testDialContextOverride != nil {
-		transport = newOAuthDiscoveryTransport(testDialContextOverride)
+		transport = newOAuthDiscoveryTransport(testDialContextOverride, oauthProxySelector)
 	}
 	return &http.Client{
 		Timeout:       timeout,
@@ -163,17 +185,23 @@ func newOAuthDiscoveryHTTPClient(timeout time.Duration) *http.Client {
 // main MCP connection (core/mcp/clientmanager.go's buildTLSHTTPClient) already
 // does for the same URL - gated by the same management-API authentication
 // that protects MCP client configuration, matching network.
-// PrivateNetworkDialContext's own documented use case. Every later hop in the
-// chain (resource_metadata, .well-known, authorization_servers,
-// token_endpoint, registration_endpoint) is taken from a response the remote
-// server controls, so those keep the full public-only guard via
-// newOAuthDiscoveryHTTPClient/oauthDiscoveryTransport above.
-var adminOAuthDiscoveryTransport = newOAuthDiscoveryTransport(network.PrivateNetworkDialContext(10 * time.Second))
+// PrivateNetworkDialContext's own documented use case. A later hop reuses this
+// client only when its destination is still provably the admin-configured
+// server_url's own host (compared by exact scheme+host equality, never a
+// prefix or hostname-only match) - the .well-known candidates
+// attemptWellKnownDiscovery builds from serverURL itself, and the
+// base-as-authorization-server fallback it returns when no resource metadata
+// is published. Anything taken from a value the remote server actually chose
+// in a response body (resource_metadata's authorization_servers list, a
+// discovered token_endpoint/registration_endpoint) keeps the full public-only
+// guard via newOAuthDiscoveryHTTPClient/oauthDiscoveryTransport instead, since
+// equality against the admin's own host is exactly what keeps that reuse safe.
+var adminOAuthDiscoveryTransport = newOAuthDiscoveryTransport(network.PrivateNetworkDialContext(10*time.Second), adminOAuthProxySelector)
 
 func newAdminOAuthDiscoveryHTTPClient(timeout time.Duration) *http.Client {
 	transport := adminOAuthDiscoveryTransport
 	if testDialContextOverride != nil {
-		transport = newOAuthDiscoveryTransport(testDialContextOverride)
+		transport = newOAuthDiscoveryTransport(testDialContextOverride, adminOAuthProxySelector)
 	}
 	return &http.Client{
 		Timeout:       timeout,
@@ -240,11 +268,16 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Starting discovery for server: %s", serverURL))
 	}
 
+	// adminBase is serverURL's own scheme+host - the one value every later hop below
+	// compares against (never a prefix or hostname-only match) to decide whether it is
+	// still provably talking to the admin-configured server, not somewhere a remote
+	// response chose. See adminOAuthDiscoveryTransport's doc comment.
+	adminBase, _ := splitURL(serverURL)
+
 	// Step 1: Attempt to connect to MCP server, expect 401 with WWW-Authenticate header.
 	// serverURL is the admin-configured MCP connection_string, not a remote-controlled
 	// value, so this one request may target a private-network host (see
-	// newAdminOAuthDiscoveryHTTPClient); every later hop below uses the strict,
-	// public-only client instead.
+	// newAdminOAuthDiscoveryHTTPClient).
 	client := newAdminOAuthDiscoveryHTTPClient(10 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", serverURL, nil)
@@ -280,7 +313,8 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	var resource string
 
 	if resourceMetadataURL != "" {
-		authServers, resourceScopes, resource, err = fetchResourceMetadata(ctx, resourceMetadataURL)
+		// Remote-controlled: the server's own WWW-Authenticate response chose this URL.
+		authServers, resourceScopes, resource, err = fetchResourceMetadata(ctx, resourceMetadataURL, resourceMetadataURL == adminBase)
 		if err != nil {
 			// Log but continue to well-known discovery
 			logger.Warn(fmt.Sprintf("[OAuth Discovery] Failed to fetch resource metadata: %v", err))
@@ -300,7 +334,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	}
 
 	// Step 5: Fetch authorization server metadata
-	metadata, err := fetchAuthorizationServerMetadata(ctx, authServers)
+	metadata, err := fetchAuthorizationServerMetadata(ctx, authServers, adminBase)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch authorization server metadata: %w", err)
 	}
@@ -355,8 +389,17 @@ func parseWWWAuthenticateHeader(header string) (resourceMetadataURL string, scop
 }
 
 // fetchResourceMetadata fetches OAuth metadata from resource metadata endpoint (RFC 9728)
-func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, []string, string, error) {
+// trusted is true only when metadataURL's scheme+host is byte-equal to the
+// admin-configured server_url's own (see DiscoverOAuthMetadata's adminBase) -
+// never on a hostname-only or prefix match - so a resource_metadata URL taken
+// from a remote response (the WWW-Authenticate header) always passes false,
+// while the .well-known candidates attemptWellKnownDiscovery derives from
+// server_url itself pass true.
+func fetchResourceMetadata(ctx context.Context, metadataURL string, trusted bool) ([]string, []string, string, error) {
 	client := newOAuthDiscoveryHTTPClient(10 * time.Second)
+	if trusted {
+		client = newAdminOAuthDiscoveryHTTPClient(10 * time.Second)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
 	if err != nil {
@@ -406,7 +449,9 @@ func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string,
 
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying: %s", candidateURL))
-		authServers, scopes, resource, err := fetchResourceMetadata(ctx, candidateURL)
+		// Every candidateURL here is built from base/path above, i.e. derived
+		// directly from serverURL, so this fetch may use the admin-trusted client.
+		authServers, scopes, resource, err := fetchResourceMetadata(ctx, candidateURL, true)
 		if err == nil && len(authServers) > 0 {
 			logger.Debug(fmt.Sprintf("[OAuth Discovery] Found metadata at: %s", candidateURL))
 			return authServers, scopes, resource, nil
@@ -418,12 +463,20 @@ func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string,
 	return []string{base}, nil, "", nil
 }
 
-// fetchAuthorizationServerMetadata fetches OAuth endpoints from authorization server(s)
-// Tries multiple authorization servers until one succeeds
-func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string) (*OAuthMetadata, error) {
+// fetchAuthorizationServerMetadata fetches OAuth endpoints from authorization server(s).
+// Tries multiple authorization servers until one succeeds. adminBase is the
+// admin-configured server_url's own scheme+host (see DiscoverOAuthMetadata); an
+// issuer is only trusted with the private-network-capable client when it is
+// byte-equal to adminBase - true for the base-as-authorization-server fallback
+// attemptWellKnownDiscovery returns, and harmless even if a resource_metadata
+// response happens to name the server's own host as its authorization server.
+// Every other issuer (a different host a remote response chose) keeps the
+// strict public-only client, so a compromised server still can't redirect
+// Bifrost's credentials to some other private address via this list.
+func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string, adminBase string) (*OAuthMetadata, error) {
 	for _, issuer := range authServers {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Fetching metadata from authorization server: %s", issuer))
-		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer)
+		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer, issuer == adminBase)
 		if err == nil && metadata != nil {
 			logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully fetched metadata from: %s", issuer))
 			return metadata, nil
@@ -433,9 +486,10 @@ func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string)
 	return nil, fmt.Errorf("failed to fetch metadata from any authorization server")
 }
 
-// fetchSingleAuthServerMetadata tries multiple well-known endpoints for a single authorization server
-// Implements RFC 8414 discovery
-func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMetadata, error) {
+// fetchSingleAuthServerMetadata tries multiple well-known endpoints for a single authorization
+// server (RFC 8414 discovery). trusted selects the private-network-capable client; see
+// fetchAuthorizationServerMetadata's doc comment for how it is derived.
+func fetchSingleAuthServerMetadata(ctx context.Context, issuer string, trusted bool) (*OAuthMetadata, error) {
 	base, path := splitURL(issuer)
 	if base == "" {
 		return nil, fmt.Errorf("invalid issuer URL: %s", issuer)
@@ -456,6 +510,9 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 	)
 
 	client := newOAuthDiscoveryHTTPClient(10 * time.Second)
+	if trusted {
+		client = newAdminOAuthDiscoveryHTTPClient(10 * time.Second)
+	}
 
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", candidateURL))

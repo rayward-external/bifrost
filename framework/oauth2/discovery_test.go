@@ -41,7 +41,7 @@ func TestNewOAuthDiscoveryHTTPClientBlocksLoopback(t *testing.T) {
 // default-transport clients it replaced did: a proxy-only installation must
 // keep discovery, registration and token exchange working.
 func TestNewOAuthDiscoveryTransportHonorsProxyEnvironment(t *testing.T) {
-	transport := newOAuthDiscoveryTransport((&net.Dialer{}).DialContext)
+	transport := newOAuthDiscoveryTransport((&net.Dialer{}).DialContext, oauthProxySelector)
 	require.NotNil(t, transport.Proxy, "transport must consult the proxy environment")
 }
 
@@ -127,7 +127,7 @@ func TestNewOAuthDiscoveryTransportDialsConfiguredProxyOnPrivateAddress(t *testi
 	proxyURL, err := url.Parse(proxy.URL)
 	require.NoError(t, err)
 
-	transport := newOAuthDiscoveryTransport(oauthDialContext(2*time.Second, proxyURL))
+	transport := newOAuthDiscoveryTransport(oauthDialContext(2*time.Second, proxyURL), oauthProxySelector)
 	transport.Proxy = oauthProxySelector(func(*http.Request) (*url.URL, error) { return proxyURL, nil })
 	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
 

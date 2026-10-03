@@ -156,6 +156,7 @@ NOT_DIALLED_HOSTS = {
     "placeholder.search.windows.net": "Azure AI Search placeholder in a request body; never resolved",
     # Deliberately unresolvable - negative tests assert the failure path.
     "bifrost.invalid": "reserved .invalid TLD; negative-path tests assert it fails to resolve",
+    "harness.example": "reserved RFC 2606 .example TLD; redirect_uri value registered via POST /oauth2/register and echoed back through GET /oauth2/authorize in the raw-path-auth regression (#5765) - matchRedirectURI (mcpoauth2issuance.go) only string-compares it against the registered value, never dereferences it",
     # Documentation links inside descriptions and comments.
     "anthropic.com": "doc link in a folder description",
     "www.anthropic.com": "doc link in a folder description",

@@ -2313,14 +2313,17 @@ func (gs *LocalGovernanceStore) ModelConfigIndexKey(model string, provider *stri
 func (gs *LocalGovernanceStore) storeModelConfig(mc *configstoreTables.TableModelConfig) {
 	gs.modelConfigIndexMu.Lock()
 	defer gs.modelConfigIndexMu.Unlock()
-	gs.storeModelConfigLocked(mc)
+	gs.storeModelConfigLocked(mc, true)
 }
 
 // storeModelConfigLocked is storeModelConfig for a caller that already holds
 // modelConfigIndexMu. The evict-old-keys Range and the Store of the new key must happen
 // under one critical section: two updates of the same config racing to different keys
 // could otherwise both pass the Range before either Store and leave both keys indexed.
-func (gs *LocalGovernanceStore) storeModelConfigLocked(mc *configstoreTables.TableModelConfig) {
+// evictStaleKeys skips that Range scan for a caller populating a freshly emptied map (a
+// full rebuild): no row stored so far can be stale there, so the scan would only cost
+// O(N) per row — O(N^2) total — for no effect.
+func (gs *LocalGovernanceStore) storeModelConfigLocked(mc *configstoreTables.TableModelConfig, evictStaleKeys bool) {
 	scopeID := ""
 	if mc.ScopeID != nil {
 		scopeID = *mc.ScopeID
@@ -2333,12 +2336,14 @@ func (gs *LocalGovernanceStore) storeModelConfigLocked(mc *configstoreTables.Tab
 	key := modelConfigStoreKey(mc.Scope, scopeID, modelKey, mc.Provider)
 	// A rename or provider change moves the config to a new key; nothing may stay behind
 	// under the old one, or requests for the old model would keep drawing on its limits.
-	gs.modelConfigs.Range(func(k, v interface{}) bool {
-		if existing, ok := v.(*configstoreTables.TableModelConfig); ok && existing != nil && existing.ID == mc.ID && k != key {
-			gs.modelConfigs.Delete(k)
-		}
-		return true
-	})
+	if evictStaleKeys {
+		gs.modelConfigs.Range(func(k, v interface{}) bool {
+			if existing, ok := v.(*configstoreTables.TableModelConfig); ok && existing != nil && existing.ID == mc.ID && k != key {
+				gs.modelConfigs.Delete(k)
+			}
+			return true
+		})
+	}
 	if previous, exists := gs.modelConfigs.Load(key); exists && previous != nil {
 		if existing, ok := previous.(*configstoreTables.TableModelConfig); ok && existing != nil && existing.ID != mc.ID {
 			// Error, not Warn: this config's budget/rate-limit just stopped being enforced
@@ -3587,7 +3592,10 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 			mc.RateLimit.IsCalendarAligned = mc.CalendarAligned
 			gs.rateLimits.Store(mc.RateLimit.ID, mc.RateLimit)
 		}
-		gs.storeModelConfigLocked(mc)
+		// The map was just reset above, so no row stored so far can be stale under a
+		// different key yet - skip storeModelConfigLocked's eviction scan, or this loop
+		// is O(N^2) in the number of model configs.
+		gs.storeModelConfigLocked(mc, false)
 	}
 	gs.modelConfigIndexMu.Unlock()
 

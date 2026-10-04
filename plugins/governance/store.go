@@ -49,6 +49,7 @@ type LocalGovernanceStore struct {
 	modelConfigs       sync.Map   // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
 	modelConfigIndexMu sync.Mutex // serializes every modelConfigs index mutation (store, delete, rebuild)
 	providers          sync.Map   // string -> *Provider (Provider name -> Provider with preloaded relationships)
+	routingRules       sync.Map   // string -> []*TableRoutingRule (key: "scope:scopeID" -> rules, scopeID="" for global)
 	// Keying definitions by ID (not by VK) makes an edit one Store that every assigned VK reads at once.
 	virtualMCPs        sync.Map   // uint (vMCP ID) -> *configstoreTables.TableVirtualMCP
 	virtualMCPIDsByVK  sync.Map   // string (VK row ID) -> []uint (assigned vMCP IDs)

@@ -572,14 +572,11 @@ func (h *SkillsServingHandler) servePluginGit(harness string) fasthttp.RequestHa
 		repoCtx, cancel := skillsServingWorkContext()
 		defer cancel()
 
-		version, ok := h.corpusVersion(ctx, repoCtx)
-		if !ok {
-			return
-		}
+		currentVersion := func() (string, bool) { return h.corpusVersion(ctx, repoCtx) }
 
 		// Handle the bundled "all skills" plugin.
 		if rawName == allSkillsPluginName {
-			h.serveGitRepo(ctx, repoBase, repoBase, version, "all-skills", func() (*GitRepoSpec, error) {
+			h.serveGitRepo(ctx, repoBase, repoBase, "all-skills", currentVersion, func() (*GitRepoSpec, error) {
 				return h.assembleAllSkillsRepoSpec(repoCtx, harness)
 			})
 			return
@@ -587,7 +584,7 @@ func (h *SkillsServingHandler) servePluginGit(harness string) fasthttp.RequestHa
 
 		// Strip the "bifrost-" prefix to look up the actual skill name.
 		skillName := strings.TrimPrefix(rawName, pluginNamePrefix)
-		h.serveGitRepo(ctx, repoBase, repoBase, version, skillName, func() (*GitRepoSpec, error) {
+		h.serveGitRepo(ctx, repoBase, repoBase, skillName, currentVersion, func() (*GitRepoSpec, error) {
 			skill, err := h.store.GetSkillByName(repoCtx, skillName)
 			if err != nil {
 				return nil, err
@@ -646,13 +643,10 @@ func (h *SkillsServingHandler) codexMarketplaceGit() fasthttp.RequestHandler {
 func (h *SkillsServingHandler) serveMarketplaceGitRepo(ctx *fasthttp.RequestCtx, spec *GitRepoSpec, repoBase string, marketplaceJSON []byte) {
 	workCtx, cancel := skillsServingWorkContext()
 	defer cancel()
-	version, ok := h.corpusVersion(ctx, workCtx)
-	if !ok {
-		return
-	}
 	digest := sha256.Sum256(marketplaceJSON)
 	cacheKey := repoBase + "#" + hex.EncodeToString(digest[:])
-	h.serveGitRepo(ctx, repoBase, cacheKey, version, spec.Label, func() (*GitRepoSpec, error) { return spec, nil })
+	currentVersion := func() (string, bool) { return h.corpusVersion(ctx, workCtx) }
+	h.serveGitRepo(ctx, repoBase, cacheKey, spec.Label, currentVersion, func() (*GitRepoSpec, error) { return spec, nil })
 }
 
 // skillsCorpusServeConcurrency caps how many corpus-serving requests (git
@@ -852,9 +846,10 @@ func (c *skillsGitRepoCache) purge() {
 
 // serveGitRepo serves a git repository via direct git upload-pack calls
 // (inspired by go-git-http pattern; no CGI layer). The bare repo comes from the
-// cache keyed by cacheKey and fingerprinted by version; assemble runs only on a
-// miss. A configstore.ErrNotFound from assemble is a 404.
-func (h *SkillsServingHandler) serveGitRepo(ctx *fasthttp.RequestCtx, repoBase, cacheKey, version, label string, assemble func() (*GitRepoSpec, error)) {
+// cache keyed by cacheKey and fingerprinted by the version currentVersion
+// reports; assemble runs only on a miss. A configstore.ErrNotFound from
+// assemble is a 404.
+func (h *SkillsServingHandler) serveGitRepo(ctx *fasthttp.RequestCtx, repoBase, cacheKey, label string, currentVersion func() (string, bool), assemble func() (*GitRepoSpec, error)) {
 	releaseSlot, ok := acquireSkillsCorpusServeSlot(ctx)
 	if !ok {
 		return
@@ -872,8 +867,20 @@ func (h *SkillsServingHandler) serveGitRepo(ctx *fasthttp.RequestCtx, repoBase, 
 		}
 		return exportBareRepo(storage)
 	}
+	version, ok := currentVersion()
+	if !ok {
+		return // error already sent
+	}
 	repoDir, releaseRepo, err := h.gitRepos.acquire(cacheKey, version, buildRepo)
 	if errors.Is(err, errSkillsGitRepoDropped) {
+		// Refetch the version rather than retrying with the one captured above: that is
+		// exactly what changed underneath this request and dropped its build, so
+		// retrying with the stale value would again mismatch the cache's new version,
+		// wiping out whatever concurrent requests already rebuilt under it.
+		version, ok = currentVersion()
+		if !ok {
+			return // error already sent
+		}
 		repoDir, releaseRepo, err = h.gitRepos.acquire(cacheKey, version, buildRepo)
 	}
 	if err != nil {

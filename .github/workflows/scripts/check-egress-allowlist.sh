@@ -157,6 +157,8 @@ NOT_DIALLED_HOSTS = {
     # Deliberately unresolvable - negative tests assert the failure path.
     "bifrost.invalid": "reserved .invalid TLD; negative-path tests assert it fails to resolve",
     "harness.example": "reserved RFC 2606 .example TLD; redirect_uri value registered via POST /oauth2/register and echoed back through GET /oauth2/authorize in the raw-path-auth regression (#5765) - matchRedirectURI (mcpoauth2issuance.go) only string-compares it against the registered value, never dereferences it",
+    "does-not-resolve.invalid": "reserved .invalid TLD; POST /api/mcp/client connection_string in the harness's public-address-requirement test, which asserts a 403 before any dial - same assertion as the Go unit tests in mcpregistrationguard_test.go (rejectPrivateMCPTargetIfAuthBypassed rejects it pre-dial)",
+    "harness-endpoint-guard.example.invalid": "reserved .example.invalid; POST /api/providers/azure/keys endpoint value in the provider-endpoint-updates-require-dashboard-auth test, which asserts the write is refused (403) and the key never persisted - config data stored/compared, never dialed",
     # Documentation links inside descriptions and comments.
     "anthropic.com": "doc link in a folder description",
     "www.anthropic.com": "doc link in a folder description",

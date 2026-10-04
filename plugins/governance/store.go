@@ -2341,7 +2341,12 @@ func (gs *LocalGovernanceStore) storeModelConfigLocked(mc *configstoreTables.Tab
 	})
 	if previous, exists := gs.modelConfigs.Load(key); exists && previous != nil {
 		if existing, ok := previous.(*configstoreTables.TableModelConfig); ok && existing != nil && existing.ID != mc.ID {
-			gs.logger.Warn("model config %s (%s) shadows model config %s (%s) under the same key %q", mc.ID, mc.ModelName, existing.ID, existing.ModelName, key)
+			// Error, not Warn: this config's budget/rate-limit just stopped being enforced
+			// (silently shadowed by the other spelling of the same canonical name), which a
+			// pre-upgrade deployment can hit on its very first reload after adding
+			// CanonicalModelConfigName-based keying — rejectModelConfigSpellingCollision only
+			// blocks NEW collisions going forward, it does not detect ones already in the DB.
+			gs.logger.Error("model config %s (%q) shadows model config %s (%q) under canonical key %q — one of these model configs' budget/rate-limit is no longer enforced; merge or rename them", mc.ID, mc.ModelName, existing.ID, existing.ModelName, key)
 		}
 	}
 	gs.modelConfigs.Store(key, mc)

@@ -919,6 +919,20 @@ func TestToOpenAIChatRequest_PromptCacheOptions(t *testing.T) {
 	if fw == nil || fw.ChatParameters.PromptCacheOptions != nil {
 		t.Fatalf("expected prompt_cache_options stripped for Fireworks, got %#v", fw.ChatParameters.PromptCacheOptions)
 	}
+
+	// Bedrock and BedrockMantle use the same gpt-5.6+ prompt_cache_breakpoint
+	// mechanism as OpenAI/Azure (chatUsesPromptCacheBreakpoints lists both), so the
+	// options it sets must survive the generic OpenAI-native-field filter rather
+	// than being stripped like an ordinary OpenAI-compatible provider.
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle} {
+		got := ToOpenAIChatRequest(ctx, mkReq(provider, "gpt-5.6"))
+		if got == nil || got.ChatParameters.PromptCacheOptions == nil {
+			t.Fatalf("expected prompt_cache_options preserved for %s", provider)
+		}
+		if *got.ChatParameters.PromptCacheOptions.Mode != mode || *got.ChatParameters.PromptCacheOptions.TTL != ttl {
+			t.Fatalf("%s: unexpected options: %#v", provider, got.ChatParameters.PromptCacheOptions)
+		}
+	}
 }
 
 func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *testing.T) {

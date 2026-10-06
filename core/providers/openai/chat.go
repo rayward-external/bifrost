@@ -175,6 +175,16 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			openaiReq.Reasoning.Effort = nil
 		}
 		return openaiReq
+	case schemas.Bedrock, schemas.BedrockMantle:
+		// Bedrock Mantle is a literal OpenAI-compatible JSON endpoint and accepts
+		// prompt_cache_options the same way OpenAI/Azure do; the generic filter below
+		// otherwise strips it as an OpenAI-native-only field (FieldPromptCacheOptions
+		// defaults unsupported). Preserve it across the filter, same pattern as
+		// Fireworks' prediction/prompt_cache_key below.
+		promptCacheOptions := openaiReq.ChatParameters.PromptCacheOptions
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.ChatParameters.PromptCacheOptions = promptCacheOptions
+		return openaiReq
 	case schemas.Fireworks:
 		// Fireworks uses prompt_cache_isolation_key for cache isolation on chat/completions.
 		// Preserve it before the generic filter strips prompt_cache_key.

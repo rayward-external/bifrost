@@ -432,6 +432,19 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				return
 			}
 		}
+		// Stored credentials with auth switched off: the caller was admitted without any
+		// credential check, so switching auth back on, or replacing the stored credentials
+		// while it stays off, must prove control of the instance. Checked here, before any
+		// live mutation or persistence below, so a refused request changes nothing else.
+		if existingAuthConfig != nil && isAuthBypassed(ctx) {
+			passwordReplaced := payload.AuthConfig.AdminPassword != nil && !payload.AuthConfig.AdminPassword.ShouldPreserveStored()
+			usernameReplaced := payload.AuthConfig.AdminUserName != nil && payload.AuthConfig.AdminUserName.GetValue() != "" &&
+				!payload.AuthConfig.AdminUserName.Equals(existingAuthConfig.AdminUserName)
+			if (payload.AuthConfig.IsEnabled || passwordReplaced || usernameReplaced) &&
+				!h.verifyStoredAdminCredential(ctx, existingAuthConfig, payload.AuthConfig) {
+				return
+			}
+		}
 	}
 
 	// Validate MCP auth-mode / OAuth2 server settings before any live mutation

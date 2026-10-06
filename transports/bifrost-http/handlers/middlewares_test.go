@@ -3444,6 +3444,11 @@ func TestAuthBypassedMiddleware_MarksRequest(t *testing.T) {
 	}
 }
 
+// TestAuthMiddleware_ConfiguredSetupToken_OutlivesFirstAdmin pins the second use of the
+// operator-configured setup token: proving control when auth_config is changed while
+// dashboard auth is disabled. Unlike the first-admin bootstrap gate it must keep matching
+// only the exact configured value after an admin account exists and after
+// ClearBootstrapToken, and it must never match when no token is configured.
 func TestAuthMiddleware_ConfiguredSetupToken_OutlivesFirstAdmin(t *testing.T) {
 	SetLogger(&mockLogger{})
 	const token = "test-setup-token"

@@ -50,7 +50,8 @@ func clampTokenCap(changes *[]string, param string, field **int, limit int) bool
 		return false
 	}
 	*changes = append(*changes, fmt.Sprintf("%s: %d -> %d", param, **field, limit))
-	*field = new(limit)
+	clamped := limit
+	*field = &clamped
 	return true
 }
 
@@ -63,5 +64,6 @@ func clampReasoningBudget(changes *[]string, budget **int, limit int) {
 		return
 	}
 	*changes = append(*changes, fmt.Sprintf("reasoning.max_tokens: %d -> %d", **budget, limit-1))
-	*budget = new(limit - 1)
+	clamped := limit - 1
+	*budget = &clamped
 }

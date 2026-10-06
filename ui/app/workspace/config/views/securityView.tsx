@@ -10,11 +10,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
-import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
+import { getErrorMessage, useGetCoreConfigQuery, useIsAuthEnabledQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { authProofOfControlSchema, SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
-import { formatCooldown } from "@/lib/utils/duration";
+import { getApiBaseUrl } from "@/lib/utils/port";
 import { validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
@@ -80,6 +80,12 @@ export default function SecurityView() {
 	// configured via setup_token in config.json (or BIFROST_SETUP_TOKEN), so this
 	// field only needs to show up that once.
 	const isFirstTimeSetup = !bifrostConfig?.auth_config;
+	// OSS setup lock: while it is active, this page only loads because the browser holds
+	// the HttpOnly setup session cookie from the login setup view. Every request (the
+	// save below included) carries it, and the server accepts it as first-admin proof,
+	// so the token is never asked for again here.
+	const { data: authState } = useIsAuthEnabledQuery(undefined, { skip: IS_ENTERPRISE });
+	const authorizedBySetupToken = isFirstTimeSetup && !IS_ENTERPRISE && !!authState?.setup_required;
 	// The config layout gates this query on loading, not on error, so a failed
 	// GET /api/config?from_db=true still renders this form with no config (the
 	// dashboard shell's own config request can succeed). isFirstTimeSetup then
@@ -87,13 +93,6 @@ export default function SecurityView() {
 	// any toggle made in the meantime, leaving dashboard auth on with inference
 	// auth reset to the stored value.
 	const isConfigLoading = !bifrostConfig;
-	// An admin account exists but dashboard protection is switched off, so this browser
-	// was let in without any credential check. Turning protection back on (or replacing
-	// the stored credentials) from here has to prove control of the instance: PUT
-	// /api/config answers 403 unless the request carries the current admin password or
-	// the operator's setup token. Neither applies while auth is on (the session is signed
-	// in) or before the first admin exists (the setup token flow above covers that).
-	const isAuthDisabledWithStoredAccount = !isFirstTimeSetup && bifrostConfig?.auth_config?.is_enabled === false;
 
 	useEffect(() => {
 		if (bifrostConfig && config) {
@@ -208,32 +207,15 @@ export default function SecurityView() {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
-	const handleVkRotationCooldownChange = useCallback((value: string) => {
-		setLocalValues((prev) => ({ ...prev, vk_rotation_cooldown: value }));
-		// The backend accepts Go duration strings; empty input means 0 (disabled).
-		setLocalConfig((prev) => ({ ...prev, vk_rotation_cooldown: value.trim() === "" ? 0 : value.trim() }));
-	}, []);
-
 	const handleAuthToggle = useCallback(
 		(checked: boolean) => {
 			setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
-			setProofError("");
 			if (!isFirstTimeSetup || inferenceAuthTouchedRef.current) return;
 			// Untouched preselection follows the dashboard toggle both ways, so canceling setup restores the stored value.
 			setLocalConfig((prev) => ({ ...prev, enforce_auth_on_inference: checked || (config?.enforce_auth_on_inference ?? false) }));
 		},
 		[isFirstTimeSetup, config?.enforce_auth_on_inference],
 	);
-
-	const handleCurrentPasswordChange = useCallback((value: string) => {
-		setCurrentPassword(value);
-		setProofError("");
-	}, []);
-
-	const handleSetupTokenChange = useCallback((value: string) => {
-		setSetupToken(value);
-		setProofError("");
-	}, []);
 
 	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: SecretVar) => {
 		if (field === "admin_password") {
@@ -276,7 +258,7 @@ export default function SecurityView() {
 				passwordInputRef.current?.focus({ preventScroll: true });
 				return;
 			}
-			if (isFirstTimeSetup && authConfig.is_enabled && !setupToken.trim()) {
+			if (isFirstTimeSetup && authConfig.is_enabled && !authorizedBySetupToken && !setupToken.trim()) {
 				setSetupTokenErrorMessage(
 					"Enter the setup token configured by your operator to create the first admin account. It's set via setup_token in config.json or the BIFROST_SETUP_TOKEN environment variable.",
 				);
@@ -301,9 +283,7 @@ export default function SecurityView() {
 					? {
 							auth_config: {
 								...(authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false }),
-								...(isFirstTimeSetup ? { setup_token: setupToken.trim() } : {}),
-								...(proof?.success && proof.data.current_password ? { current_password: proof.data.current_password } : {}),
-								...(proof?.success && proof.data.setup_token ? { setup_token: proof.data.setup_token } : {}),
+								...(isFirstTimeSetup && !authorizedBySetupToken ? { setup_token: setupToken.trim() } : {}),
 							},
 						}
 					: {}),
@@ -312,6 +292,12 @@ export default function SecurityView() {
 			setCurrentPassword("");
 			setSetupTokenOpen(false);
 			toast.success("Security settings updated successfully.");
+			// Dashboard auth is now on, so the OSS setup lock is lifted. Expire the setup
+			// session cookie (logout clears it) and sign in with the new admin account.
+			if (showPasswordSection && authConfig.is_enabled && hasUsername && hasPassword && authorizedBySetupToken) {
+				await fetch(`${getApiBaseUrl()}/session/logout`, { method: "POST", credentials: "include" }).catch(() => undefined);
+				window.location.href = "/login";
+			}
 		} catch (error) {
 			const message = getErrorMessage(error);
 			const status = typeof error === "object" && error !== null && "status" in error ? (error as { status?: unknown }).status : undefined;
@@ -326,7 +312,7 @@ export default function SecurityView() {
 				toast.error(message);
 			}
 		}
-	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig, isFirstTimeSetup, setupToken, currentPassword, requiresProofOfControl]);
+	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig, isFirstTimeSetup, setupToken, authorizedBySetupToken]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
@@ -372,6 +358,7 @@ export default function SecurityView() {
 									<Label htmlFor="admin-username">Username</Label>
 									<SecretVarInput
 										id="admin-username"
+										autoComplete="username"
 										type="text"
 										placeholder="Enter admin username or env.VAR_NAME"
 										value={authConfig.admin_username}
@@ -384,6 +371,10 @@ export default function SecurityView() {
 									<SecretVarInput
 										ref={passwordInputRef}
 										id="admin-password"
+										// new-password: password managers offer to save or generate here instead of
+										// filling a password saved for this host, which would silently replace what
+										// the operator typed.
+										autoComplete="new-password"
 										aria-invalid={!!passwordError}
 										aria-describedby={passwordError ? "admin-password-error" : undefined}
 										type="password"
@@ -401,67 +392,12 @@ export default function SecurityView() {
 										</p>
 									) : null}
 								</div>
-								{requiresProofOfControl ? (
-									<div className="space-y-2 rounded-sm border border-dashed p-3" data-testid="security-proof-of-control">
-										<Label htmlFor="current-password">Confirm with current admin password</Label>
-										<Input
-											ref={currentPasswordInputRef}
-											id="current-password"
-											data-testid="security-current-password-input"
-											type="password"
-											autoComplete="current-password"
-											aria-invalid={!!proofError}
-											aria-describedby={proofError ? "current-password-error" : undefined}
-											placeholder="Enter the admin password currently in use"
-											value={currentPassword}
-											onChange={(e) => handleCurrentPasswordChange(e.target.value)}
-										/>
-										<p className="text-muted-foreground text-xs">
-											Dashboard protection is switched off, so this session is not signed in. Turning it back on or changing the admin
-											credentials requires the admin password that is currently stored.
-										</p>
-										<Collapsible open={setupTokenOpen} onOpenChange={setSetupTokenOpen}>
-											<CollapsibleTrigger asChild>
-												<Button
-													type="button"
-													variant="link"
-													size="sm"
-													className="h-auto p-0 text-xs"
-													data-testid="security-setup-token-toggle"
-												>
-													{setupTokenOpen ? "Hide setup token" : "...or confirm with a setup token instead"}
-												</Button>
-											</CollapsibleTrigger>
-											<CollapsibleContent className="space-y-2 pt-2">
-												<Label htmlFor="setup-token">Setup token</Label>
-												<Input
-													id="setup-token"
-													data-testid="security-setup-token-input"
-													type="password"
-													autoComplete="off"
-													placeholder="Paste the setup token configured by your operator"
-													value={setupToken}
-													onChange={(e) => handleSetupTokenChange(e.target.value)}
-												/>
-												<p className="text-muted-foreground text-xs">
-													If the current password is not at hand, the <code>setup_token</code> from <code>config.json</code> (or the{" "}
-													<code>BIFROST_SETUP_TOKEN</code> environment variable) confirms this change too.
-												</p>
-											</CollapsibleContent>
-										</Collapsible>
-										{proofError ? (
-											<p
-												id="current-password-error"
-												data-testid="security-current-password-error"
-												className="text-destructive text-xs"
-												role="alert"
-											>
-												{proofError}
-											</p>
-										) : null}
-									</div>
-								) : null}
-								{isFirstTimeSetup && authConfig.is_enabled ? (
+								{isFirstTimeSetup && authConfig.is_enabled && authorizedBySetupToken ? (
+									<p className="text-muted-foreground text-xs" data-testid="security-setup-token-authorized">
+										Authorized with the setup token entered on the setup screen. Saving creates the admin account, after which the setup
+										token stops working.
+									</p>
+								) : isFirstTimeSetup && authConfig.is_enabled ? (
 									<div className="space-y-2">
 										<Label htmlFor="setup-token">Setup token</Label>
 										<Input
@@ -474,9 +410,9 @@ export default function SecurityView() {
 											onChange={(e) => handleSetupTokenChange(e.target.value)}
 										/>
 										<p className="text-muted-foreground text-xs">
-											No admin account exists yet, so this instance is reachable without a password. To finish setup, ask your operator for
-											the setup token configured via <code>setup_token</code> in <code>config.json</code> (or the{" "}
-											<code>BIFROST_SETUP_TOKEN</code> environment variable) and paste it here.
+											No admin account exists yet, so management APIs only accept the setup token. Enter the token configured via{" "}
+											<code>setup_token</code> in <code>config.json</code> (or the <code>BIFROST_SETUP_TOKEN</code> environment variable) to
+											create the admin account. Once it is enabled, the setup token stops working.
 										</p>
 									</div>
 								) : null}

@@ -254,6 +254,7 @@ type BifrostHTTPServer struct {
 	IntegrationHandler   *handlers.IntegrationHandler
 
 	AuthMiddleware       *handlers.AuthMiddleware
+	setupLockInstalled   bool // OSS setup-lock gate guards /api (see AuthMiddleware.SetupLockMiddleware); never set on enterprise
 	CORSMiddleware       *handlers.CorsMiddleware
 	TracingMiddleware    *handlers.TracingMiddleware
 	WSTicketStore        *handlers.WSTicketStore
@@ -2491,6 +2492,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)
+	if s.setupLockInstalled && s.AuthMiddleware != nil {
+		sessionHandler.SetSetupLock(s.AuthMiddleware)
+	}
 	promptsHandler := handlers.NewPromptsHandler(s.Config.ConfigStore, callbacks)
 	featureFlagsHandler := handlers.NewFeatureFlagsHandler(s.Config.FeatureFlags, s.Config.ConfigStore)
 	// Going ahead with API handlers
@@ -2958,7 +2962,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			return fmt.Errorf("failed to initialize auth middleware: %v", err)
 		}
 		if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
-			apiMiddlewares = append(apiMiddlewares, s.AuthMiddleware.APIMiddleware())
+			// OSS only: lock /api behind the setup token while dashboard auth is not
+			// active. It must run before APIMiddleware, whose auth-off branch lets
+			// every request through.
+			apiMiddlewares = append(apiMiddlewares, s.AuthMiddleware.SetupLockMiddleware(), s.AuthMiddleware.APIMiddleware())
+			s.setupLockInstalled = true
 		}
 	}
 	// Add semantic cache plugin embedding request executor if it exists
@@ -3129,11 +3137,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		// RAYWARD FORK PATCH: ExternalAudienceHeaderMiddleware is OUTERMOST on
-		// purpose — it strips the response down to an allowlist for external
-		// callers and must therefore observe the final header set, security
-		// headers and CORS included. See handlers/external_audience_middleware.go.
-		Handler:            handlers.ExternalAudienceHeaderMiddleware()(handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler)),
+		Handler:            handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 	}

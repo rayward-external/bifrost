@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -1053,16 +1052,6 @@ func changedDialTargets(old *schemas.Key, next schemas.Key) []string {
 	}
 	slices.Sort(changed)
 	return changed
-}
-
-// isAuthBypassed reports whether ctx was let through the auth middleware's fail-open branch
-// (dashboard auth disabled/unconfigured) rather than a genuine credential check. Handlers
-// gating a capability that's fine for a real admin but dangerous for anyone on the network
-// (e.g. pointing a dial destination somewhere new) should check this, not
-// IsLocalAdminContextKey, which is also true for genuinely authenticated sessions.
-func isAuthBypassed(ctx *fasthttp.RequestCtx) bool {
-	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
-	return bypassed
 }
 
 // requireGenuineAuthForEndpointChange rejects a provider-key create/update that sets, moves

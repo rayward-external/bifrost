@@ -103,17 +103,16 @@ export function useSetTopbarTitle(title: TopbarTitleValue | null | undefined) {
 	// and the callback current at the same time.
 	const forwarding = useMemo(() => {
 		if (!Array.isArray(resolved)) return resolved;
-		return resolved.map(
-			(crumb, index): Breadcrumb =>
-				crumb.onSelect
-					? {
-							...crumb,
-							onSelect: () => {
-								const latest = resolvedRef.current;
-								if (Array.isArray(latest)) latest[index]?.onSelect?.();
-							},
-						}
-					: crumb,
+		return resolved.map((crumb, index): Breadcrumb =>
+			crumb.onSelect
+				? {
+						...crumb,
+						onSelect: () => {
+							const latest = resolvedRef.current;
+							if (Array.isArray(latest)) latest[index]?.onSelect?.();
+						},
+					}
+				: crumb,
 		);
 		// Rebuilt only when the trail itself changes; see titleKey.
 		// eslint-disable-next-line react-hooks/exhaustive-deps

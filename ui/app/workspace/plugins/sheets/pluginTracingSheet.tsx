@@ -43,7 +43,7 @@ function buildFilter(toggles: Record<string, boolean>): PluginSpanFilter | null 
 function PluginRow({ name, checked, onChange }: { name: string; checked: boolean; onChange: (v: boolean) => void }) {
 	return (
 		<div className="flex items-center justify-between rounded-md border px-3 py-2.5">
-			<span className="text-sm font-mono">{name}</span>
+			<span className="font-mono text-sm">{name}</span>
 			<div className="flex items-center gap-2">
 				<Switch checked={checked} onCheckedChange={onChange} data-testid={`plugin-tracing-toggle-${name}`} />
 			</div>
@@ -111,7 +111,7 @@ export default function PluginTracingSheet({ open, onClose }: PluginTracingSheet
 					<div className="flex flex-col gap-4">
 						<div>
 							<div className="mb-2 flex items-center justify-between">
-								<p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Built-in Plugins</p>
+								<p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Built-in Plugins</p>
 								<TriStateCheckbox
 									allIds={builtinPluginNames}
 									selectedIds={builtinPluginNames.filter((n) => toggles[n] ?? true)}
@@ -137,7 +137,7 @@ export default function PluginTracingSheet({ open, onClose }: PluginTracingSheet
 						{customPluginNames.length > 0 && (
 							<div>
 								<div className="mb-2 flex items-center justify-between">
-									<p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Custom Plugins</p>
+									<p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Custom Plugins</p>
 									<TriStateCheckbox
 										allIds={customPluginNames}
 										selectedIds={customPluginNames.filter((n) => toggles[n] ?? true)}
@@ -167,7 +167,8 @@ export default function PluginTracingSheet({ open, onClose }: PluginTracingSheet
 					<Alert variant="info">
 						<AlertDescription>
 							<span>
-								If <strong className="inline">plugin_span_filter</strong> is set inside the OTEL plugin config in config.json, it takes precedence over these settings after restarting Bifrost.
+								If <strong className="inline">plugin_span_filter</strong> is set inside the OTEL plugin config in config.json, it takes
+								precedence over these settings after restarting Bifrost.
 							</span>
 						</AlertDescription>
 					</Alert>

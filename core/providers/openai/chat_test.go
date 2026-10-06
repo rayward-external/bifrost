@@ -933,6 +933,20 @@ func TestToOpenAIChatRequest_PromptCacheOptions(t *testing.T) {
 			t.Fatalf("%s: unexpected options: %#v", provider, got.ChatParameters.PromptCacheOptions)
 		}
 	}
+
+	// A custom provider built on Bedrock reaches the switch's default branch with
+	// its own (non-literal) Provider key — chatUsesPromptCacheBreakpoints resolves
+	// the base provider via context and turns the options on, so the default
+	// branch must resolve the same base provider to preserve them, not just
+	// literal Bedrock/BedrockMantle.
+	customCtx := ctx.WithValue(schemas.BifrostContextKeyBaseProviderType, schemas.Bedrock)
+	custom := ToOpenAIChatRequest(customCtx, mkReq(schemas.ModelProvider("my-bedrock"), "gpt-5.6"))
+	if custom == nil || custom.ChatParameters.PromptCacheOptions == nil {
+		t.Fatal("expected prompt_cache_options preserved for a custom provider based on Bedrock")
+	}
+	if *custom.ChatParameters.PromptCacheOptions.Mode != mode || *custom.ChatParameters.PromptCacheOptions.TTL != ttl {
+		t.Fatalf("custom bedrock-based provider: unexpected options: %#v", custom.ChatParameters.PromptCacheOptions)
+	}
 }
 
 func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *testing.T) {

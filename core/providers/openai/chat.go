@@ -175,16 +175,6 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			openaiReq.Reasoning.Effort = nil
 		}
 		return openaiReq
-	case schemas.Bedrock, schemas.BedrockMantle:
-		// Bedrock Mantle is a literal OpenAI-compatible JSON endpoint and accepts
-		// prompt_cache_options the same way OpenAI/Azure do; the generic filter below
-		// otherwise strips it as an OpenAI-native-only field (FieldPromptCacheOptions
-		// defaults unsupported). Preserve it across the filter, same pattern as
-		// Fireworks' prediction/prompt_cache_key below.
-		promptCacheOptions := openaiReq.ChatParameters.PromptCacheOptions
-		openaiReq.filterOpenAISpecificParameters(caps)
-		openaiReq.ChatParameters.PromptCacheOptions = promptCacheOptions
-		return openaiReq
 	case schemas.Fireworks:
 		// Fireworks uses prompt_cache_isolation_key for cache isolation on chat/completions.
 		// Preserve it before the generic filter strips prompt_cache_key.
@@ -207,6 +197,19 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	default:
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
+			return openaiReq
+		}
+		// A custom provider whose resolved base is one chatUsesPromptCacheBreakpoints
+		// lists (OpenAI, Azure, Bedrock, BedrockMantle) reaches here with its literal
+		// Provider unmatched by any case above (including literal Bedrock/BedrockMantle
+		// itself, which also falls through: OpenAI/Azure have their own case above and
+		// return early, but there is no case for the other two). Preserve the options the
+		// check above just set, same pattern as Fireworks' prediction/prompt_cache_key.
+		switch schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) {
+		case schemas.OpenAI, schemas.Azure, schemas.Bedrock, schemas.BedrockMantle:
+			promptCacheOptions := openaiReq.ChatParameters.PromptCacheOptions
+			openaiReq.filterOpenAISpecificParameters(caps)
+			openaiReq.ChatParameters.PromptCacheOptions = promptCacheOptions
 			return openaiReq
 		}
 		openaiReq.filterOpenAISpecificParameters(caps)

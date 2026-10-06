@@ -309,6 +309,8 @@ export default function SecurityView() {
 							auth_config: {
 								...(authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false }),
 								...(isFirstTimeSetup && !authorizedBySetupToken ? { setup_token: setupToken.trim() } : {}),
+								...(proof?.success && proof.data.current_password ? { current_password: proof.data.current_password } : {}),
+								...(proof?.success && proof.data.setup_token ? { setup_token: proof.data.setup_token } : {}),
 							},
 						}
 					: {}),

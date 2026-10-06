@@ -403,7 +403,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Validate first-admin setup before any live mutation or persistence below.
 	var existingAuthConfig *configstore.AuthConfig
-	var initialPasswordHash string
 	if payload.AuthConfig != nil {
 		var err error
 		existingAuthConfig, err = h.store.ConfigStore.GetAuthConfig(ctx)
@@ -425,8 +424,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(failures, ", ")))
 				return
 			}
-			initialPasswordHash, err = encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
-			if err != nil {
+			// Validate the password is hashable (e.g. bcrypt's 72-byte limit) before any
+			// mutation below; the actual hash used to persist the password is computed by
+			// h.hashAdminPassword further down.
+			if _, err := encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue()); err != nil {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid auth password: %v", err))
 				return
 			}
@@ -1011,24 +1012,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 					hashed, ok := h.hashAdminPassword(ctx, payload.AuthConfig.AdminPassword)
 					if !ok {
 						return
-					}
-					// We will hash the password
-					hashedPassword := initialPasswordHash
-					if hashedPassword == "" {
-						hashedPassword, err = encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
-					}
-					if err != nil {
-						logger.Warn("failed to hash password: %v", err)
-						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
-						return
-					}
-					// Preserve env/vault reference metadata when storing hashed password
-					if payload.AuthConfig.AdminPassword.IsFromSecret() {
-						sv := *payload.AuthConfig.AdminPassword
-						sv.Val = hashedPassword
-						payload.AuthConfig.AdminPassword = &sv
-					} else {
-						payload.AuthConfig.AdminPassword = &schemas.SecretVar{Val: hashedPassword}
 					}
 					payload.AuthConfig.AdminPassword = hashed
 				}

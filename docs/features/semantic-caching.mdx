@@ -461,13 +461,6 @@ without a virtual key (no governance/VK enforcement in use) are partitioned by c
 same as before.
 </Note>
 
-<Note>
-Responses that carry tool calls (chat `tool_calls`, or Responses API `function_call`,
-`custom_tool_call`, `computer_call`, `local_shell_call`, `mcp_call`, `mcp_approval_request` items)
-are **not cached by default**: a replayed tool call would run in a later caller's agent loop with arguments the model
-chose for someone else's prompt. Set `cache_tool_call_responses: true` to opt in.
-</Note>
-
 <Tabs group="cache-triggering">
 
 <Tab title="HTTP API">

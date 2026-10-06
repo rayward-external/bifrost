@@ -865,6 +865,32 @@ func TestDeepCopyResponsesMessagePreservesCacheControls(t *testing.T) {
 	}
 }
 
+// TestDeepCopyResponsesMessagePreservesOutputConfig guards the per-message effort override
+// (Anthropic mid-conversation output_config) surviving the deep copy InjectResponsesCacheBreakpoints
+// runs before adding a cache marker; dropping it would silently discard the effort change.
+func TestDeepCopyResponsesMessagePreservesOutputConfig(t *testing.T) {
+	effort := "high"
+	original := ResponsesMessage{
+		Role:         Ptr(ResponsesInputMessageRoleSystem),
+		OutputConfig: &ResponsesMessageOutputConfig{Effort: &effort},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+
+	if copied.OutputConfig == nil {
+		t.Fatal("deep copy dropped output config")
+	}
+	if copied.OutputConfig.Effort == nil || *copied.OutputConfig.Effort != effort {
+		t.Fatalf("output config effort = %#v, want %q", copied.OutputConfig.Effort, effort)
+	}
+	if copied.OutputConfig == original.OutputConfig {
+		t.Error("copy aliases the original output config struct")
+	}
+	if copied.OutputConfig.Effort == original.OutputConfig.Effort {
+		t.Error("copy aliases the original output config effort")
+	}
+}
+
 // TestDeepCopyResponsesMessagePreservesExtendedFields verifies newly supported Responses fields survive the shared copy path.
 func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 	fileType := "application/pdf"

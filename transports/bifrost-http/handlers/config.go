@@ -403,7 +403,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Validate first-admin setup before any live mutation or persistence below.
 	var existingAuthConfig *configstore.AuthConfig
-	var initialPasswordHash string
 	if payload.AuthConfig != nil {
 		var err error
 		existingAuthConfig, err = h.store.ConfigStore.GetAuthConfig(ctx)
@@ -411,21 +410,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
 			return
 		}
-		// Stored credentials with auth switched off: the caller was admitted without any
-		// credential check, so switching auth back on, or replacing the stored credentials
-		// while it stays off, must prove control of the instance. Checked here, before any
-		// live mutation or persistence below, so a refused request changes nothing else.
-		if existingAuthConfig != nil && isAuthBypassed(ctx) {
-			passwordReplaced := payload.AuthConfig.AdminPassword != nil && !payload.AuthConfig.AdminPassword.ShouldPreserveStored()
-			usernameReplaced := payload.AuthConfig.AdminUserName != nil && payload.AuthConfig.AdminUserName.GetValue() != "" &&
-				!payload.AuthConfig.AdminUserName.Equals(existingAuthConfig.AdminUserName)
-			if (payload.AuthConfig.IsEnabled || passwordReplaced || usernameReplaced) &&
-				!h.verifyStoredAdminCredential(ctx, existingAuthConfig, payload.AuthConfig) {
-				return
-			}
-		}
 		if existingAuthConfig == nil && payload.AuthConfig.IsEnabled {
-			if !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
+			if !isSetupTokenAuthenticated(ctx) && !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
 				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account")
 				return
 			}
@@ -438,9 +424,24 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(failures, ", ")))
 				return
 			}
-			initialPasswordHash, err = encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
-			if err != nil {
+			// Validate the password is hashable (e.g. bcrypt's 72-byte limit) before any
+			// mutation below; the actual hash used to persist the password is computed by
+			// h.hashAdminPassword further down.
+			if _, err := encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue()); err != nil {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid auth password: %v", err))
+				return
+			}
+		}
+		// Stored credentials with auth switched off: the caller was admitted without any
+		// credential check, so switching auth back on, or replacing the stored credentials
+		// while it stays off, must prove control of the instance. Checked here, before any
+		// live mutation or persistence below, so a refused request changes nothing else.
+		if existingAuthConfig != nil && isAuthBypassed(ctx) {
+			passwordReplaced := payload.AuthConfig.AdminPassword != nil && !payload.AuthConfig.AdminPassword.ShouldPreserveStored()
+			usernameReplaced := payload.AuthConfig.AdminUserName != nil && payload.AuthConfig.AdminUserName.GetValue() != "" &&
+				!payload.AuthConfig.AdminUserName.Equals(existingAuthConfig.AdminUserName)
+			if (payload.AuthConfig.IsEnabled || passwordReplaced || usernameReplaced) &&
+				!h.verifyStoredAdminCredential(ctx, existingAuthConfig, payload.AuthConfig) {
 				return
 			}
 		}
@@ -1001,7 +1002,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			// setup_token or BIFROST_SETUP_TOKEN env var) so that action can't be taken by
 			// an unauthenticated network caller racing the real operator to a freshly
 			// exposed instance.
-			if authConfig == nil && !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
+			if authConfig == nil && !isSetupTokenAuthenticated(ctx) && !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
 				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account; configure setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and pass it in this request")
 				return
 			}
@@ -1024,11 +1025,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 					hashed, ok := h.hashAdminPassword(ctx, payload.AuthConfig.AdminPassword)
 					if !ok {
 						return
-					}
-					// First-time setup pre-hashed the password while validating the request
-					// (initialPasswordHash); reuse that hash rather than computing a second one.
-					if initialPasswordHash != "" {
-						hashed.Val = initialPasswordHash
 					}
 					payload.AuthConfig.AdminPassword = hashed
 				}
@@ -1366,11 +1362,6 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 	return nil
 }
 
-// checkURLAccessibilityDialContext is the dial function checkURLAccessibility's
-// HTTP client uses. Overridable in tests that need to reach a loopback-bound
-// httptest.Server; production code must never reassign it.
-var checkURLAccessibilityDialContext = network.SSRFSafeDialContext(10 * time.Second)
-
 // errURLNotReachable is the only failure checkURLAccessibility reports for a
 // URL that could not be fetched, whatever the cause.
 var errURLNotReachable = errors.New("url is not reachable")
@@ -1378,25 +1369,27 @@ var errURLNotReachable = errors.New("url is not reachable")
 // errFileURLOverAPI is returned for a file:// URL supplied over the API.
 var errFileURLOverAPI = errors.New("file:// URLs can only be configured in config.json, not over the API")
 
-// checkURLAccessibility verifies that a datasheet or catalog URL supplied over
-// the API is an http(s) URL that answers 200 OK.
+// checkURLAccessibilityDialContext is the dial function checkURLAccessibility's
+// HTTP client uses. Overridable in tests that need to reach a loopback-bound
+// httptest.Server; production code must never reassign it.
+var checkURLAccessibilityDialContext = network.SSRFSafeDialContext(10 * time.Second)
+
+// checkURLAccessibility verifies that the given URL is reachable.
+// For file:// URLs it checks that the path exists on disk.
+// For http(s):// URLs it performs a GET and expects a 200 OK.
 //
-// file:// URLs are refused here. They are an operator feature for values set
-// in config.json (air-gapped deployments; see
-// docs/deployment-guides/how-to/airgapped.mdx), where whoever writes the file
-// already has the host's filesystem. Accepting one from an API caller would let
-// that caller name any path on the host for the catalog loaders to read.
-//
-// This runs against an admin-supplied URL, and no documented deployment points
-// these at a private-network HTTP(S) target, so private/link-local/CGNAT
-// addresses are rejected outright: both the save-time hostname check
-// (ValidateExternalURL) and the actual dial are guarded, since a save-time-only
-// check leaves a DNS-rebinding window, and the dial guard applies to every
-// redirect hop. A failed fetch reports only errURLNotReachable: the transport
-// error names the address that was dialed and, for a non-HTTP service, quotes
-// the bytes it could not parse, which would turn this endpoint into a
-// port-scan and banner oracle for anyone who can call it. That detail is
-// useful to the operator, so it goes to the server log only.
+// This runs against an admin-supplied URL (framework config's pricing_url,
+// model_parameters_url, mcp_library_url), and no documented deployment
+// (including the air-gapped guide, which uses file:// instead) points these
+// at a private-network HTTP(S) target, so private/link-local/CGNAT addresses
+// are rejected outright rather than allowed. Both the save-time hostname
+// check (ValidateExternalURL) and the actual dial are guarded, since a save-time-only
+// check leaves a DNS-rebinding window between validation and the real
+// connection. Errors are deliberately generic: a non-HTTP service on the
+// target port can make Go's client surface its raw response bytes (e.g. an
+// SSH banner) inside the transport error, which would otherwise be reflected
+// straight back to the caller as a fingerprinting/banner-grab primitive - the
+// detailed error is logged server-side only.
 func checkURLAccessibility(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -1435,7 +1428,7 @@ func checkURLAccessibility(rawURL string) error {
 			logErr = urlErr.Err
 		}
 		logger.Warn(fmt.Sprintf("URL accessibility check failed for host %s: %v", parsed.Hostname(), logErr))
-		return errURLNotReachable
+		return fmt.Errorf("URL is not accessible")
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)

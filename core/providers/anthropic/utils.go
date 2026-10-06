@@ -1636,7 +1636,7 @@ func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model 
 	if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) {
 		return true
 	}
-	return v.isFamilyAtLeast(claudeFamilyOpus, 4, 8)
+	return parseClaudeModel(m).isFamilyAtLeast(claudeFamilyOpus, 4, 8)
 }
 
 // fastModeOpusVersions is the exact set of Opus (major, minor) versions

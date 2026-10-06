@@ -1251,6 +1251,8 @@ var apiSystemWhitelistedRoutes = []string{
 	"/api/session/logout",
 	"/api/oauth/callback",
 	"/health",
+	"/livez",
+	"/readyz",
 	"/login",
 	"/favicon.ico",
 	"/assets/*",
@@ -1258,7 +1260,6 @@ var apiSystemWhitelistedRoutes = []string{
 	"/api/scim/oauth/callback",
 	"/api/scim/oauth/refresh",
 	"/api/scim/oauth/logout",
-	"/health",
 	"/api/version",
 }
 
@@ -1390,17 +1391,6 @@ func (m *AuthMiddleware) validSetupSession(value string, now time.Time) bool {
 		return false
 	}
 	return hmac.Equal([]byte(sig), []byte(signSetupSession(setupSessionKey(*current), payload)))
-}
-
-// CheckConfiguredSetupToken reports whether token matches the operator-configured setup
-// token. Unlike CheckBootstrapToken it never opens up once an admin account exists and is
-// never cleared. It is false when no token is configured.
-func (m *AuthMiddleware) CheckConfiguredSetupToken(token string) bool {
-	current := m.setupToken.Load()
-	if current == nil || token == "" {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(*current), []byte(token)) == 1
 }
 
 // IsDashboardAuthActive reports whether an admin account exists and dashboard auth is on.

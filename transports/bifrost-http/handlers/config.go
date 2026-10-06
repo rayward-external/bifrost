@@ -1159,15 +1159,18 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// The stored config feeds the bypass gate, the destination check and the password
+	// placeholder below; read it once.
+	existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
+		return
+	}
+
 	// Under the fail-open bypass (dashboard auth disabled/unconfigured), refuse to point the
 	// global proxy somewhere new or to stop verifying its TLS: either lets whoever runs the
 	// proxy read the provider credentials of every proxied request.
 	if isAuthBypassed(ctx) {
-		existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
-		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
-			return
-		}
 		if changed := globalProxyInterceptionChanges(existingConfig, payload); len(changed) > 0 {
 			SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing the global proxy (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
 			return
@@ -1363,6 +1366,13 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 	return nil
 }
 
+// errURLNotReachable is the only failure checkURLAccessibility reports for a
+// URL that could not be fetched, whatever the cause.
+var errURLNotReachable = errors.New("url is not reachable")
+
+// errFileURLOverAPI is returned for a file:// URL supplied over the API.
+var errFileURLOverAPI = errors.New("file:// URLs can only be configured in config.json, not over the API")
+
 // checkURLAccessibilityDialContext is the dial function checkURLAccessibility's
 // HTTP client uses. Overridable in tests that need to reach a loopback-bound
 // httptest.Server; production code must never reassign it.
@@ -1449,6 +1459,49 @@ func validateGlobalToolSyncIntervalMinutes(minutes int) error {
 		return fmt.Errorf("mcp_tool_sync_interval must be at most %d minutes", maxToolSyncIntervalMinutes)
 	}
 	return nil
+}
+
+// hashAdminPassword applies the password policy to a newly submitted admin password and
+// returns its hash, keeping env/vault reference metadata so the stored value still records
+// where the password came from. On failure it sends the response and returns false.
+func (h *ConfigHandler) hashAdminPassword(ctx *fasthttp.RequestCtx, password *schemas.SecretVar) (*schemas.SecretVar, bool) {
+	if failures := getPasswordPolicyFailures(password.GetValue()); len(failures) > 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(failures, ", ")))
+		return nil, false
+	}
+	hashed, err := encrypt.Hash(password.GetValue())
+	if err != nil {
+		logger.Warn("failed to hash password: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
+		return nil, false
+	}
+	if password.IsFromSecret() {
+		sv := *password
+		sv.Val = hashed
+		return &sv, true
+	}
+	return &schemas.SecretVar{Val: hashed}, true
+}
+
+// verifyStoredAdminCredential authorizes an auth_config change made while dashboard auth is
+// disabled but admin credentials are stored. Such a request reached the handler without any
+// credential check (BifrostContextKeyAuthBypassed), so switching auth back on or replacing
+// the stored credentials must prove control of the instance: either current_password matches
+// the stored admin password, or setup_token matches the operator-configured setup token
+// (which, unlike the first-admin gate, stays valid for the life of the process). Without that
+// proof anyone who can reach the port could install their own admin account. On failure it
+// sends the 403 and returns false.
+func (h *ConfigHandler) verifyStoredAdminCredential(ctx *fasthttp.RequestCtx, stored *configstore.AuthConfig, payload *authConfigWithSetupToken) bool {
+	if payload.CurrentPassword != "" && stored.AdminPassword != nil {
+		if ok, err := encrypt.CompareHash(stored.AdminPassword.GetValue(), payload.CurrentPassword); err == nil && ok {
+			return true
+		}
+	}
+	if payload.SetupToken != "" && h.configManager.ValidateConfiguredSetupToken(payload.SetupToken) {
+		return true
+	}
+	SendError(ctx, fasthttp.StatusForbidden, "dashboard auth is disabled but an admin account exists; re-enabling it or changing the admin credentials requires current_password (the stored admin password) or a valid setup_token")
+	return false
 }
 
 // globalProxyInterceptionChanges returns the global proxy settings next adds or changes,

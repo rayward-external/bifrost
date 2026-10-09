@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/examples/plugins/secretvar-config
 
-go 1.26.5
+go 1.27.2
 
 require github.com/maximhq/bifrost/core v1.7.10
 

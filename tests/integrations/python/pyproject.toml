@@ -33,7 +33,7 @@ dependencies = [
     "langgraph>=0.1.0",
     "mistralai>=0.4.0",
     "google-genai>=1.50.0",
-    "pydantic-ai>=1.56.0",
+    "pydantic-ai>=1.107.7,<2",
     "boto3>=1.34.0",
     "cohere>=5.13.0",
     # Testing utilities
@@ -163,3 +163,7 @@ typesafe-sdk = "2026-09-19T00:00:00Z"
 pyjwt = "2026-09-24T00:00:00Z"
 urllib3 = "2026-09-16T00:00:00Z"
 multidict = "2026-09-22T00:00:00Z"
+pydantic-ai = "2026-10-01T00:00:00Z"
+pydantic-ai-slim = "2026-10-01T00:00:00Z"
+pydantic-graph = "2026-10-01T00:00:00Z"
+pydantic-evals = "2026-10-01T00:00:00Z"

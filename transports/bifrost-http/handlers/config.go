@@ -1136,11 +1136,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 					if !ok {
 						return
 					}
-					// First-time setup pre-hashed the password while validating the request
-					// (initialPasswordHash); reuse that hash rather than computing a second one.
-					if initialPasswordHash != "" {
-						hashed.Val = initialPasswordHash
-					}
 					payload.AuthConfig.AdminPassword = hashed
 				}
 			}
@@ -1267,6 +1262,13 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 	var payload configstoreTables.GlobalProxyConfig
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	// The stored config feeds the bypass gate and the password placeholder below; read it once.
+	existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
 		return
 	}
 

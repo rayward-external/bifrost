@@ -41,6 +41,7 @@ type testHandlerStore struct {
 	allowDirectKeys bool
 }
 
+func (s testHandlerStore) GetAvailableProviders() []schemas.ModelProvider    { return nil }
 func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                  { return s.matcher }
 func (s testHandlerStore) GetStreamChunkInterceptor() StreamChunkInterceptor { return nil }
 func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor   { return nil }

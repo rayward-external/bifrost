@@ -320,6 +320,12 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Starting discovery for server: %s", serverURL))
 	}
 
+	// adminBase is serverURL's own scheme+host - the one value every later hop below
+	// compares against (never a prefix or hostname-only match) to decide whether it is
+	// still provably talking to the admin-configured server, not somewhere a remote
+	// response chose. See adminOAuthDiscoveryTransport's doc comment.
+	adminBase, _ := splitURL(serverURL)
+
 	// Step 1: Attempt to connect to MCP server, expect 401 with WWW-Authenticate header
 	client := newOAuthDiscoveryHTTPClient(ctx, 10*time.Second)
 
@@ -431,8 +437,13 @@ func parseWWWAuthenticateHeader(header string) (resourceMetadataURL string, scop
 	return resourceMetadataURL, scopes
 }
 
-// fetchResourceMetadata fetches OAuth metadata from resource metadata endpoint (RFC 9728)
-func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, []string, string, error) {
+// fetchResourceMetadata fetches OAuth metadata from resource metadata endpoint (RFC 9728).
+// trusted mirrors fetchSingleAuthServerMetadata's parameter of the same name: both are
+// currently unused by the client-selection logic below, which now routes entirely through
+// the ctx-based policy in newOAuthDiscoveryHTTPClient (see requirePublicTargetFrom), not a
+// per-hop admin/public client split. Kept for call-site symmetry with the hop's trust
+// determination (resourceMetadataURL == adminBase) in DiscoverOAuthMetadata.
+func fetchResourceMetadata(ctx context.Context, metadataURL string, trusted bool) ([]string, []string, string, error) {
 	client := newOAuthDiscoveryHTTPClient(ctx, 10*time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)

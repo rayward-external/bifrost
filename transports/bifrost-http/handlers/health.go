@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -70,8 +71,18 @@ func (h *HealthHandler) getHealth(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, map[string]any{"status": "ok", "components": map[string]any{"db_pings": "disabled"}})
 		return
 	}
-	// Pinging config store
-	reqCtx, cancel := RequestWorkContext(ctx, 10*time.Second)
+	if errs := h.pingStores(ctx, 10*time.Second); len(errs) > 0 {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, errs[0])
+		return
+	}
+	SendJSON(ctx, map[string]any{"status": "ok", "components": map[string]any{"db_pings": "ok"}})
+}
+
+// pingStores pings the config, logs, and vector stores concurrently, bounded by
+// timeout. It returns a human-readable error string for each store that failed
+// (empty slice = all healthy).
+func (h *HealthHandler) pingStores(ctx context.Context, timeout time.Duration) []string {
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var errors []string
 	var mu sync.Mutex

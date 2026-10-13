@@ -348,6 +348,22 @@ func responseHasToolCalls(res *schemas.BifrostResponse) bool {
 	return false
 }
 
+// cachedStreamHasToolCalls reports whether any serialized chunk of a stored stream
+// carries a tool call. A chunk that does not decode is skipped here, matching the replay,
+// which logs and skips it too.
+func cachedStreamHasToolCalls(chunks []string) bool {
+	for _, chunkStr := range chunks {
+		var cached schemas.BifrostResponse
+		if err := json.Unmarshal([]byte(chunkStr), &cached); err != nil {
+			continue
+		}
+		if responseHasToolCalls(&cached) {
+			return true
+		}
+	}
+	return false
+}
+
 func responsesOutputHasToolCalls(output []schemas.ResponsesMessage) bool {
 	for _, item := range output {
 		if item.Type != nil && isResponsesToolCallItem(*item.Type) {

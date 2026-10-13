@@ -180,30 +180,6 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 	return nil
 }
 
-// failStreamAccumulator marks the stream for requestID as failed: one of its
-// chunks could not be serialized, and a replay missing even one chunk is
-// wrong, so the stream must never be flushed. addStreamingResponse discards
-// every later chunk. When the failing chunk is the final one, nothing else
-// will arrive to drop the accumulator, so it is dropped here. Returns true
-// on the first failure for the stream so the caller can warn exactly once.
-//
-// The failing chunk is still a chunk arrival, so LastSeenAt is refreshed:
-// the Failed marker has to outlive the reaper for as long as the stream
-// keeps producing chunks, or a later chunk would start a clean accumulator
-// and the final chunk would flush a partial entry.
-func (plugin *Plugin) failStreamAccumulator(requestID string, storageID string, isFinalChunk bool) (first bool) {
-	accumulator := plugin.getOrCreateStreamAccumulator(requestID, storageID, nil, nil, 0)
-	accumulator.mu.Lock()
-	first = !accumulator.Failed
-	accumulator.Failed = true
-	accumulator.LastSeenAt = time.Now()
-	accumulator.mu.Unlock()
-	if isFinalChunk {
-		plugin.cleanupStreamAccumulator(requestID)
-	}
-	return first
-}
-
 // cleanupStreamAccumulator drops the accumulator for requestID. Safe to call
 // when no entry exists.
 func (plugin *Plugin) cleanupStreamAccumulator(requestID string) {

@@ -6476,22 +6476,22 @@ func ResolveFrameworkPricingConfig(
 	}
 
 	return &configstoreTables.TableFrameworkConfig{
-		ID:                     configID,
-		PricingURL:             resolvedPricingURL,
-		PricingSyncInterval:    resolvedSyncSeconds,
-		ModelParametersURL:     resolvedModelParametersURL,
-		MCPLibraryURL:          resolvedMCPLibraryURL,
-		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
-		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
-		ConfigHash:             persistedHash,
-	}, &modelcatalog.Config{
-		PricingURL:             resolvedPricingURL,
-		PricingSyncInterval:    resolvedSyncSeconds,
-		ModelParametersURL:     resolvedModelParametersURL,
-		MCPLibraryURL:          resolvedMCPLibraryURL,
-		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
-		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
-	}, needsDBUpdate
+			ID:                     configID,
+			PricingURL:             resolvedPricingURL,
+			PricingSyncInterval:    resolvedSyncSeconds,
+			ModelParametersURL:     resolvedModelParametersURL,
+			MCPLibraryURL:          resolvedMCPLibraryURL,
+			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+			ConfigHash:             persistedHash,
+		}, &modelcatalog.Config{
+			PricingURL:             resolvedPricingURL,
+			PricingSyncInterval:    resolvedSyncSeconds,
+			ModelParametersURL:     resolvedModelParametersURL,
+			MCPLibraryURL:          resolvedMCPLibraryURL,
+			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+		}, needsDBUpdate
 }
 
 // initFrameworkConfig initializes framework config and pricing manager from file
@@ -7505,6 +7505,12 @@ func (c *Config) GetA2AExternalClientURL() string {
 		return ""
 	}
 	return c.ClientConfig.A2AExternalClientURL.GetValue()
+}
+
+// GetAvailableProviders returns the list of all configured provider names.
+func (c *Config) GetAvailableProviders() []schemas.ModelProvider {
+	providers, _ := c.GetAllProviders()
+	return providers
 }
 
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.

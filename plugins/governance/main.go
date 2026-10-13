@@ -88,6 +88,28 @@ type Config struct {
 	RequiredHeaders       *[]string `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
 	IsEnterprise          bool      `json:"is_enterprise"`
 	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
+	RoutingChainMaxDepth  *int      `json:"routing_chain_max_depth"` // Pointer to live config value; changes are reflected immediately without restart
+
+	// BatchAdminVirtualKeyIDs lists virtual-key row IDs that bypass batch
+	// ownership scoping (the batch-ownership ledger). Empty by default. This is
+	// an explicit operator opt-in: cross-tenant batch inspection is meant for
+	// the dashboard/API plane, not for an inference key. An admin key sees every
+	// batch in list output and can act on any batch id.
+	//
+	// Pointer to the live ClientConfig field so an /api/config update takes
+	// effect without a restart (read at request time, never snapshotted).
+	BatchAdminVirtualKeyIDs *[]string `json:"batch_admin_virtual_key_ids,omitempty"`
+
+	// UnknownBatchIDPolicy controls how per-id batch lifecycle verbs (retrieve /
+	// cancel / results / delete) treat a batch id that is absent from the
+	// ownership ledger — e.g. created before this ledger existed or out of band.
+	// "deny" (default) returns a 404; "allow" relays it upstream (migration
+	// window). Foreign-owned ids (present in the ledger under another tenant)
+	// are always denied regardless of this setting.
+	//
+	// Pointer to the live ClientConfig field so an /api/config update takes
+	// effect without a restart (read at request time, never snapshotted).
+	UnknownBatchIDPolicy *string `json:"unknown_batch_id_policy,omitempty"`
 	// Reports the live client.enforce_vk_object_ownership; nil means on
 	ObjectOwnershipEnforced func() bool `json:"-"`
 }
@@ -194,6 +216,32 @@ type GovernancePlugin struct {
 	isEnterprise          bool
 	disableAutoToolInject *bool
 
+	// Batch-ownership enforcement (see batchownership.go). batchLedger is the
+	// configstore-backed ownership ledger (nil in in-memory-only mode, or when
+	// the store does not support the optional ledger capability — either
+	// disables enforcement). batchAdminVKIDs / batchUnknownIDPolicy are LIVE
+	// pointers to the ClientConfig fields (read at request time so /api/config
+	// updates apply without a restart). batchClient lets the plugin issue the
+	// in-process compensating cancel; it is injected post-construction (the core
+	// client is created after plugins) and may be nil.
+	batchLedger          batchLedger
+	batchPager           batchPager // optional keyset-pagination capability (nil => owned-id fallback)
+	batchAdminVKIDs      *[]string
+	batchUnknownIDPolicy *string
+	batchClient          BatchLifecycleClient
+
+	// File-ownership enforcement (see fileownership.go), the file-lifecycle
+	// sibling of the batch fields above. fileLedger is the configstore-backed
+	// file-ownership ledger (nil disables enforcement); filePager is the optional
+	// keyset pager (nil => single-upstream-page filter fallback). The admin list,
+	// unknown-id policy, and lifecycle client are SHARED with the batch gate
+	// (batchAdminVKIDs / batchUnknownIDPolicy / batchClient) — one tenant, one
+	// posture, one injected client.
+	fileLedger     fileLedger
+	filePager      filePager            // optional keyset-pagination capability (nil => single-upstream-page filter fallback)
+	fileProvenance fileProvenanceLinker // optional provenance-linking capability (nil => input-file SourceBatchID skipped)
+
+	complexityAnalyzer        atomic.Pointer[complexity.ComplexityAnalyzer]
 	objectOwnershipEnforcedFn func() bool
 }
 
@@ -260,11 +308,17 @@ func Init(
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
+	var routingChainMaxDepth *int
 	var objectOwnershipEnforcedFn func() bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
+		routingChainMaxDepth = config.RoutingChainMaxDepth
+	}
+	if routingChainMaxDepth == nil {
+		defaultDepth := DefaultRoutingChainMaxDepth
+		routingChainMaxDepth = &defaultDepth
 		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
 	}
 
@@ -281,6 +335,12 @@ func Init(
 
 	// 3. Tracker (business logic owner, depends on store and resolver)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
+
+	// Routing engine (dynamically routing requests based on routing rules)
+	engine, err := NewRoutingEngine(governanceStore, logger, routingChainMaxDepth)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
+	}
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
@@ -347,15 +407,28 @@ func InitFromStore(
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
+	var routingChainMaxDepth *int
 	var objectOwnershipEnforcedFn func() bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
+		routingChainMaxDepth = config.RoutingChainMaxDepth
+	}
+	if routingChainMaxDepth == nil {
+		defaultDepth := DefaultRoutingChainMaxDepth
+		routingChainMaxDepth = &defaultDepth
 		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
+
+	// Routing engine (dynamically routing requests based on routing rules)
+	engine, err := NewRoutingEngine(governanceStore, logger, routingChainMaxDepth)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
+	}
+
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
 		ctx:                   ctx,
@@ -1868,6 +1941,11 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		p.recordProviderObjectLifecycle(ctx, requestType, string(provider), result)
 	}
 
+	// Extract governance information
+	// NOTE: list-models VK filtering used to happen here (filterModelsForVirtualKey); upstream's
+	// #6309 refactor moved that to ResolveEffectiveAccess-based filtering earlier in the request
+	// path, so it is not repeated here.
+	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	billingNonce := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce)
 

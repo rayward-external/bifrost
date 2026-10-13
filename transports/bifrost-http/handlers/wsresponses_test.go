@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,6 +30,10 @@ import (
 type testWSHandlerStore struct {
 	matcher         *lib.HeaderMatcher
 	allowDirectKeys bool
+}
+
+func (s testWSHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
+	return nil
 }
 
 func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {

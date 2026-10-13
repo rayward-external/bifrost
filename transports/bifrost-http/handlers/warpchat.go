@@ -163,7 +163,7 @@ func (h *WarpHandler) chatStreaming(ctx *fasthttp.RequestCtx, agentCtx context.C
 	ctx.Response.Header.Set("Connection", "keep-alive")
 
 	reader := lib.NewSSEStreamReader()
-	ctx.Response.SetBodyStream(reader, -1)
+	ctx.Response.SetBodyStream(lib.WrapSSEForExternalAudience(ctx, reader), -1)
 
 	go func() {
 		defer cancel()

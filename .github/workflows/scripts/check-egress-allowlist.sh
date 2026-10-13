@@ -152,17 +152,27 @@ NOT_DIALLED_HOSTS = {
     "example.com": "MCP server_url and web_fetch targets - dereferenced by the provider",
     "mcp.deepwiki.com": "Anthropic mcp_servers connector URL in a request body - Anthropic's API dereferences it server-side, Bifrost only forwards the URL string",
     "www.youtube.com": "Gemini video input - Google fetches the URL server-side",
+    "www.wikipedia.org": "Gemini urlContext tool input (\"what is https://www.wikipedia.org/ about?\") - Google fetches the URL server-side, same as www.youtube.com",
     "en.wikipedia.org": "googleSearch excludeDomains filter value, not a URL anyone fetches",
     "placeholder.search.windows.net": "Azure AI Search placeholder in a request body; never resolved",
+    "replace-me.search.windows.net": "azureSearchEndpoint collection-variable placeholder, meant to be overridden locally with real credentials; same pattern as placeholder.search.windows.net",
+    "does-not-exist-h146.search.windows.net": "148.6 [EXPECT-4XX] azure On Your Data data_sources endpoint - Azure OpenAI's On-Your-Data feature dereferences it server-side, Bifrost only forwards the URL string",
     # Deliberately unresolvable - negative tests assert the failure path.
     "bifrost.invalid": "reserved .invalid TLD; negative-path tests assert it fails to resolve",
     "harness.example": "reserved RFC 2606 .example TLD; redirect_uri value registered via POST /oauth2/register and echoed back through GET /oauth2/authorize in the raw-path-auth regression (#5765) - matchRedirectURI (mcpoauth2issuance.go) only string-compares it against the registered value, never dereferences it",
+    "unlisted.example": "reserved .example TLD; [EXPECT-400] openai oauth-redirect-policy remote callback rejected - redirect_uri is string-compared against the registered value, never dereferences it, same mechanism as harness.example",
+    "idp.example": "reserved .example TLD; oauth_key_config token_url in three [EXPECT-400] save-rejection tests (half-oauth, http-oauth, query-auth-style) - the save itself is refused, so the config is never persisted or activated",
     "does-not-resolve.invalid": "reserved .invalid TLD; POST /api/mcp/client connection_string in the harness's public-address-requirement test, which asserts a 403 before any dial - same assertion as the Go unit tests in mcpregistrationguard_test.go (rejectPrivateMCPTargetIfAuthBypassed rejects it pre-dial)",
+    "does-not-exist-h150.invalid": "152.2 [EXPECT-4XX] openai responses mcp tool server_url - OpenAI's Responses API dereferences the MCP server_url server-side, Bifrost only forwards the URL string, same pattern as mcp.deepwiki.com",
+    "dbx-fixture-workspace.invalid": "databricks service-principal OAuth token_url (#8254) - routed through the harness's own local proxy fixture (tests/e2e/api/runners/databricks-token-fixture.mjs, 127.0.0.1:8795 by default) which terminates TLS for the workspace host itself; per the test's own prerequest-script comment, no request leaves the machine",
     "harness-endpoint-guard.example.invalid": "reserved .example.invalid; POST /api/providers/azure/keys endpoint value in the provider-endpoint-updates-require-dashboard-auth test, which asserts the write is refused (403) and the key never persisted - config data stored/compared, never dialed",
+    "harness-credential-guard.example.invalid": "reserved .example.invalid; [EXPECT-401] vertex key-credential-dial-targets test - the management API call itself is refused (401, missing setup token) before the credential JSON is ever read, same guard mechanism as harness-endpoint-guard.example.invalid",
+    "harness-plugin-guard.example.invalid": "reserved .example.invalid; [EXPECT-401] openai plugin-config-dial-targets test - the management API call itself is refused (401, missing setup token) before the otel config is ever read, same guard mechanism as harness-endpoint-guard.example.invalid",
     # Documentation links inside descriptions and comments.
     "anthropic.com": "doc link in a folder description",
     "www.anthropic.com": "doc link in a folder description",
     "platform.claude.com": "doc link in a folder description",
+    "code.claude.com": "doc link in a test case description (auto-mode-classifier-billing)",
     "developers.openai.com": "doc link in a folder description",
     "docs.aws.amazon.com": "doc link in a folder description",
     "docs.x.ai": "doc link in a folder description",
@@ -170,6 +180,7 @@ NOT_DIALLED_HOSTS = {
     # Identifiers that merely look like endpoints.
     "s3.amazonaws.com": "XML namespace URI in a ListBucketResult document; namespaces are names, not fetches",
     "www.googleapis.com": "the cloud-platform OAuth SCOPE string; the token exchange itself goes to oauth2.googleapis.com",
+    "www.ietf.org": "WebRTC SDP a=extmap identifier URI (draft-holmer-rmcat-transport-wide-cc-extensions-01) - an RFC-style namespace identifier, not a URL anyone fetches, same pattern as s3.amazonaws.com",
 }
 
 HOST_RE = re.compile(r"https?://([A-Za-z0-9._-]+\.[A-Za-z]{2,})")

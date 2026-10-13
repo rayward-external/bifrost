@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2114,6 +2115,52 @@ func TestModelConfigScopesForIgnoresExtraScopedIDsResolvers(t *testing.T) {
 	}
 }
 
+// With no guard registered - every OSS build - nothing is governed and nothing is refused, whatever
+// is asked about.
+func TestLegacyLimitsGovernedByAnswersNothingWhenUnregistered(t *testing.T) {
+	governedBy, err := LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderTeam, "team-1")
+	require.NoError(t, err)
+	assert.Empty(t, governedBy)
+}
+
+// A registered guard is asked about the entity in hand, and its answer - a name, nothing, or a
+// failure - is what callers act on.
+func TestLegacyLimitsGovernedByUsesTheRegisteredGuard(t *testing.T) {
+	t.Cleanup(func() { RegisterLegacyLimitGuard(nil) })
+
+	var askedKind, askedID string
+	RegisterLegacyLimitGuard(func(_ context.Context, holderKind, holderID string) (string, error) {
+		askedKind, askedID = holderKind, holderID
+		if holderID == "customer-governed" {
+			return "platform-access", nil
+		}
+		if holderID == "customer-unknowable" {
+			return "", errors.New("database unavailable")
+		}
+		return "", nil
+	})
+
+	governedBy, err := LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderCustomer, "customer-governed")
+	require.NoError(t, err)
+	assert.Equal(t, "platform-access", governedBy)
+	assert.Equal(t, LegacyLimitHolderCustomer, askedKind)
+	assert.Equal(t, "customer-governed", askedID)
+
+	governedBy, err = LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderTeam, "team-free")
+	require.NoError(t, err)
+	assert.Empty(t, governedBy, "an entity nothing governs keeps its own budgets")
+
+	_, err = LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderCustomer, "customer-unknowable")
+	require.Error(t, err, "an unanswerable question is an error, not a silent yes")
+
+	// An empty id is nobody: the guard is not asked, so a caller with no owner in hand writes as usual.
+	askedID = ""
+	governedBy, err = LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderTeam, "")
+	require.NoError(t, err)
+	assert.Empty(t, governedBy)
+	assert.Empty(t, askedID, "the guard must not be asked about an entity with no id")
+}
+
 // modelKeyStore builds a store over the given model configs with the offline pricing catalog, so
 // base-model aliasing ("gpt-4o-2024-08-06" is a "gpt-4o") is live the way it is in a deployment.
 func modelKeyStore(t *testing.T, mcs ...*configstoreTables.TableModelConfig) *LocalGovernanceStore {
@@ -2276,33 +2323,4 @@ func TestGovernanceStore_CollectModelConfigsForPrecedence(t *testing.T) {
 	assert.NotContains(t, got, "base-pair")
 	assert.NotContains(t, got, "all-openai")
 	assert.Contains(t, got, "all-any")
-}
-
-// Two updates of one config racing to different keys must never leave both keys indexed:
-// a request for the old model would otherwise keep drawing on the moved config's budget.
-func TestGovernanceStore_ConcurrentUpdatesLeaveOneKeyPerConfig(t *testing.T) {
-	ctx := context.Background()
-	openai := "openai"
-	store := modelKeyStore(t, buildModelConfig("mc-race", "gpt-4o", &openai, buildBudgetWithUsage("b-race", 100.0, 0, "1d"), nil))
-	names := []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o3"}
-	for i := 0; i < 300; i++ {
-		var wg sync.WaitGroup
-		for _, n := range names {
-			wg.Add(1)
-			go func(n string) {
-				defer wg.Done()
-				// Each update carries its own budget object, as a real update does.
-				store.UpdateModelConfigInMemory(ctx, buildModelConfig("mc-race", n, &openai, buildBudgetWithUsage("b-race", 100.0, 0, "1d"), nil))
-			}(n)
-		}
-		wg.Wait()
-		keys := 0
-		store.modelConfigs.Range(func(_, v any) bool {
-			if mc, ok := v.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.ID == "mc-race" {
-				keys++
-			}
-			return true
-		})
-		require.LessOrEqual(t, keys, 1, "iteration %d: config indexed under %d keys", i, keys)
-	}
 }

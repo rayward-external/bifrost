@@ -145,6 +145,7 @@
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/cerebras",
+                  "providers/supported-providers/cloudflare",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/databricks",
                   "providers/supported-providers/deepseek",
@@ -181,6 +182,7 @@
               "providers/reasoning",
               "providers/performance",
               "providers/custom-providers",
+              "providers/self-hosted-decision-models",
               "providers/custom-pricing",
               "providers/request-options",
               "providers/test-harness-coverage"
@@ -240,6 +242,8 @@
             "pages": [
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
+              "features/complexity-router",
+              "features/warp",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
@@ -253,8 +257,7 @@
                   "features/governance/budget-and-limits",
                   "features/governance/model-limits",
                   "features/governance/mcp-tools",
-                  "features/governance/required-headers",
-                  "features/governance/complexity-router"
+                  "features/governance/required-headers"
                 ]
               },
               "features/telemetry",
@@ -327,6 +330,7 @@
             "pages": [
               "enterprise/user-provisioning",
               "enterprise/how-identity-sync-works",
+              "enterprise/teams-business-units-customers",
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
@@ -356,7 +360,8 @@
                       "integrations/guardrails/patronus-ai",
                       "integrations/guardrails/checkpoint",
                       "integrations/guardrails/repello-argus",
-                      "integrations/guardrails/singulr-ai"
+                      "integrations/guardrails/singulr-ai",
+                      "integrations/guardrails/a10"
                     ]
                   }
                 ]
@@ -611,7 +616,8 @@
               "integrations/guardrails/patronus-ai",
               "integrations/guardrails/checkpoint",
               "integrations/guardrails/repello-argus",
-              "integrations/guardrails/singulr-ai"
+              "integrations/guardrails/singulr-ai",
+              "integrations/guardrails/a10"
             ]
           },
           {
@@ -953,6 +959,7 @@
                   "POST /openai/v1/responses/compact",
                   "POST /openai/v1/embeddings",
                   "POST /openai/openai/deployments/{deployment-id}/embeddings",
+                  "POST /openai/v1/decisions",
                   "POST /openai/v1/audio/speech",
                   "POST /openai/openai/deployments/{deployment-id}/audio/speech",
                   "POST /openai/v1/audio/transcriptions",
@@ -1249,9 +1256,11 @@
                   "PUT /api/mcp/client/{id}",
                   "DELETE /api/mcp/client/{id}",
                   "POST /api/mcp/client/{id}/reconnect",
+                  "POST /api/mcp/client/{id}/refresh-tools",
                   "POST /api/mcp/client/{id}/complete-oauth",
                   "POST /api/mcp/client/{id}/initiate-verification",
                   "POST /api/mcp/client/{id}/reauthorize",
+                  "POST /api/mcp/client/{id}/reregister",
                   "POST /api/mcp/client/{id}/verify-headers",
                   "POST /api/mcp/client/{id}/verify-exchange",
                   "GET /api/mcp/sessions",
@@ -1263,7 +1272,20 @@
                 ]
               },
               {
-                "group": "MCP Tool Groups",
+                "group": "Virtual MCPs",
+                "expanded": false,
+                "pages": [
+                  "GET /api/mcp/virtual-mcps",
+                  "POST /api/mcp/virtual-mcps",
+                  "GET /api/mcp/virtual-mcps/{id}",
+                  "PUT /api/mcp/virtual-mcps/{id}",
+                  "DELETE /api/mcp/virtual-mcps/{id}",
+                  "POST /api/mcp/virtual-mcps/{id}/virtual-keys/{vkId}",
+                  "DELETE /api/mcp/virtual-mcps/{id}/virtual-keys/{vkId}"
+                ]
+              },
+              {
+                "group": "MCP Tool Groups (deprecated)",
                 "expanded": false,
                 "pages": [
                   "GET /api/mcp/tool-groups",
@@ -1445,6 +1467,22 @@
                 "pages": [
                   "GET /api/notifications",
                   "POST /api/notifications"
+                ]
+              },
+              {
+                "group": "Warp",
+                "expanded": false,
+                "pages": [
+                  "GET /api/warp/config",
+                  "PUT /api/warp/config",
+                  "POST /api/warp/log-index/backfill",
+                  "GET /api/warp/log-index/backfill/status",
+                  "POST /api/warp/log-index/backfill/cancel",
+                  "POST /api/warp/chat",
+                  "GET /api/warp/log-index/status",
+                  "GET /api/warp/conversations",
+                  "GET /api/warp/conversations/{id}",
+                  "DELETE /api/warp/conversations/{id}"
                 ]
               }
             ]
@@ -1857,6 +1895,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.3.0",
               "changelogs/v2.2.6",
               "changelogs/v2.2.5",
               {
@@ -2088,6 +2127,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.3.0",
               "changelogs/ent-v2.2.6",
               "changelogs/ent-v2.2.5",
               {
@@ -2193,6 +2233,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.9.3",
               "changelogs/edge-v0.9.2",
               {
                 "group": "September 2026",
@@ -2248,6 +2289,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.44",
               "changelogs/helm-v2.1.43",
               "changelogs/helm-v2.1.42",
               "changelogs/helm-v2.1.41",
@@ -2350,6 +2392,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/features/governance/complexity-router",
+      "destination": "/features/complexity-router"
+    },
     {
       "source": "/integrations/guardrails/lakera",
       "destination": "/integrations/guardrails/checkpoint"

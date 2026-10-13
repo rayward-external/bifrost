@@ -19,8 +19,9 @@ const collection = JSON.parse(
 const guardsCollection = JSON.parse(
   readFileSync(join(here, "bifrost-v1-request-guards.postman_collection.json"), "utf8"),
 );
-const rateLimitCollection = JSON.parse(
-  readFileSync(join(here, "bifrost-v1-rate-limit.postman_collection.json"), "utf8"),
+
+const routingWiring = JSON.parse(
+  readFileSync(join(here, "bifrost-routing-wiring.postman_collection.json"), "utf8"),
 );
 
 // Locate a request by "Folder / Request Name" and return one of its scripts.
@@ -49,11 +50,6 @@ function scriptFor(path, listen, source = collection) {
 // Same lookup inside the request-guards collection.
 function guardsScriptFor(path, listen) {
   return scriptFor(path, listen, guardsCollection);
-}
-
-// Same lookup inside the rate-limit collection.
-function rateLimitScriptFor(path, listen) {
-  return scriptFor(path, listen, rateLimitCollection);
 }
 
 // A no-op chai-style chain, so pm.expect(...) assertions neither throw nor pass
@@ -295,6 +291,71 @@ test("Get Proxy Config survives a non-JSON body without a script error", () => {
     variables: { proxy_attempted_url: "http://127.0.0.1:20001" },
   });
   assert.ok(ctx.state.tests.length > 0, "the script must reach its named assertions");
+});
+
+const disableProxyPrerequest = scriptFor("Proxy / Teardown - Disable Proxy Config", "prerequest");
+
+test("proxy teardown is skipped in the unauthenticated pass, which stored nothing", () => {
+  const ctx = run(disableProxyPrerequest, {});
+  assert.strictEqual(ctx.state.skipped, true, "expected skipRequest()");
+});
+
+test("proxy teardown runs in the authenticated pass and disables the proxy for every surface", () => {
+  for (const variables of [{ admin_auth_header: "Bearer x" }, { setup_token: "t" }]) {
+    const ctx = run(disableProxyPrerequest, { variables });
+    assert.strictEqual(ctx.state.skipped, false, `unexpected skipRequest() for ${JSON.stringify(variables)}`);
+  }
+  const proxyFolder = collection.item.find((f) => f.name === "Proxy");
+  const teardown = proxyFolder.item.find((i) => i.name === "Teardown - Disable Proxy Config");
+  assert.strictEqual(proxyFolder.item.at(-1), teardown, "teardown must be the folder's last request");
+  const body = JSON.parse(teardown.request.body.raw);
+  assert.strictEqual(body.enabled, false);
+  assert.strictEqual(body.enable_for_inference, false);
+  assert.strictEqual(body.enable_for_api, false);
+});
+
+// ── Governance - VK Allow All Providers / per-provider catalog counts ─────────
+function modelsBody(provider, n) {
+  const models = Array.from({ length: n }, (_, i) => ({ name: `${provider}-m${i}`, provider }));
+  return JSON.stringify({ models, total: n });
+}
+
+test("allow-all baselines store each provider's filtered count, not a share of one capped page", () => {
+  for (const provider of ["anthropic", "openai"]) {
+    const src = scriptFor(`Governance - VK Allow All Providers / Baseline - ${provider} catalog size with no VK`, "test");
+    const ctx = run(src, { responseBody: modelsBody(provider, 26) });
+    assert.strictEqual(ctx.vars[`vkall_base_${provider}`], "26");
+  }
+});
+
+test("allow-all baselines and VK checks survive a non-JSON body without a script error", () => {
+  for (const name of [
+    "Baseline - anthropic catalog size with no VK",
+    "Baseline - openai catalog size with no VK",
+    "/api/models/details - unnamed provider is granted in full",
+    "/api/models/details - overridden provider stays narrowed",
+  ]) {
+    const ctx = run(scriptFor(`Governance - VK Allow All Providers / ${name}`, "test"), {
+      responseBody: SPA_FALLBACK,
+      variables: { vkall_base_anthropic: "26", vkall_base_openai: "163" },
+    });
+    assert.ok(ctx.state.tests.length > 0, `${name} must reach its named assertions`);
+  }
+});
+
+test("allow-all VK checks query one provider each", () => {
+  const folder = collection.item.find((f) => f.name === "Governance - VK Allow All Providers");
+  for (const [name, provider] of [
+    ["Baseline - anthropic catalog size with no VK", "anthropic"],
+    ["Baseline - openai catalog size with no VK", "openai"],
+    ["/api/models/details - unnamed provider is granted in full", "anthropic"],
+    ["/api/models/details - overridden provider stays narrowed", "openai"],
+  ]) {
+    const item = folder.item.find((i) => i.name === name);
+    assert.ok(item, `request not found: ${name}`);
+    const q = Object.fromEntries(item.request.url.query.map((p) => [p.key, p.value]));
+    assert.strictEqual(q.provider, provider, `${name} must filter by provider`);
+  }
 });
 
 // ── MCP Clients / Add MCP Client and its dependents ───────────────────────────
@@ -674,6 +735,7 @@ test("the two cache probes are allowed a 405", () => {
   );
 });
 
+
 // ── Provider Secret Redaction ────────────────────────────────────────────────
 const redactionFolder = collection.item.find((item) => item.name === "Provider Secret Redaction");
 assert.ok(redactionFolder, "provider secret redaction coverage is missing");
@@ -696,6 +758,10 @@ const standardProviders = [...standardBlock.matchAll(/^\s*(\w+),/gm)].map((m) =>
 const redactionRef = "env.BIFROST_SECRET_REDACTION_CANARY";
 const redactionCanary = "synthetic-secretvar-harness-canary-0123456789";
 const redactionMask = "synt" + "*".repeat(24) + "6789";
+// Key server URLs are validated as http(s) URLs once resolved, so they use a URL canary.
+const redactionUrlRef = "env.BIFROST_SECRET_REDACTION_URL_CANARY";
+const redactionUrlMask = "http" + "*".repeat(24) + "6789";
+const redactionUrlFields = new Set(["OllamaKeyConfig.url", "SGLKeyConfig.url", "VLLMKeyConfig.url"]);
 
 test("redaction folder authenticates the initial request as well as callback requests", () => {
   let header;
@@ -735,7 +801,10 @@ test("redaction matrix covers every provider-specific SecretVar field", () => {
     if (!fields.length) continue; // Replicate has no secret-bearing key config.
     const fixture = redactionFixtures.find((f) => f.key[property]);
     assert.ok(fixture, `no fixture covers ${type}`);
-    for (const field of fields) assert.strictEqual(fixture.key[property][field], redactionRef, `${type}.${field}`);
+    for (const field of fields) {
+      const ref = redactionUrlFields.has(`${type}.${field}`) ? redactionUrlRef : redactionRef;
+      assert.strictEqual(fixture.key[property][field], ref, `${type}.${field}`);
+    }
     if (structBody(type).includes("*BedrockEndpoints")) {
       for (const field of secretFields("BedrockEndpoints")) {
         assert.strictEqual(fixture.key[property].endpoints[field], redactionRef, `${type}.endpoints.${field}`);
@@ -771,6 +840,9 @@ function simulateRedaction(fixture, mode = "masked", existing = false, auth = fa
   function wire(value) {
     if (value === redactionRef || (value && value.ref === redactionRef)) {
       return { ref: redactionRef, type: "env", value: redactionMask };
+    }
+    if (value === redactionUrlRef || (value && value.ref === redactionUrlRef)) {
+      return { ref: redactionUrlRef, type: "env", value: redactionUrlMask };
     }
     if (Array.isArray(value)) return value.map(wire);
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, val]) => [key, wire(val)]));
@@ -866,7 +938,6 @@ for (const mode of ["leaked", "unset", "missing", "missing-ref", "http-error", "
     assert.ok(state.failures.length > 0, `${mode} was falsely accepted`);
   });
 }
-
 // ── Request guards - restore steps for a stored rejected value ───────────────
 // The guards assert that a refused proxy change or catalog URL was not persisted. If a
 // guard regresses and the value is stored, the check fails loudly and a skip-gated PUT
@@ -955,54 +1026,93 @@ test("proxy restore skips unless a leak was flagged and a raw snapshot exists", 
   assert.strictEqual(live.pm.request.body.raw, proxyBefore, "the earlier config is resent byte for byte");
 });
 
-// ── Rate limit - Model config spelling: skip guards and the sibling check ─────
-// The folder's counter-dependent assertions must be skip-guarded on priming success like
-// the budget folder's, the dated-alias case must only run when the alias really aliases
-// the configured model, and the sibling check must not accept a governance refusal.
-const MS = "Model config spelling / ";
-const msSetupPre = rateLimitScriptFor(MS + "Setup - Create VK for model config spelling", "prerequest");
-const msPrimeTest = rateLimitScriptFor(MS + "Model config request 1 with the configured spelling succeeds", "test");
-const msUsagePre = rateLimitScriptFor(MS + "Model config usage is recorded", "prerequest");
-const msUsageTest = rateLimitScriptFor(MS + "Model config usage is recorded", "test");
-const msUpperPre = rateLimitScriptFor(MS + "Prefixed upper-case spelling is blocked with 402 budget_exceeded", "prerequest");
-const msAliasPre = rateLimitScriptFor(MS + "Dated alias spelling is blocked with 402 budget_exceeded", "prerequest");
-const msSiblingTest = rateLimitScriptFor(MS + "Sibling model is not blocked by the model config budget", "test");
+// requestsIn lists the requests of the routing-wiring scenario folder whose name starts with title.
+function requestsIn(title) {
+  const folder = routingWiring.item.find((item) => item.name.startsWith(title));
+  assert.ok(folder, `no routing-wiring scenario named ${title}`);
+  return folder.item.filter((item) => !item.item);
+}
 
-test("model config setup ties the dated-alias case to the configured model", () => {
-  const defaults = run(msSetupPre, { variables: { chat_model: "gpt-4o", chat_model_alias: "gpt-4o-2024-08-06" } });
-  assert.strictEqual(defaults.vars.ms_alias_ok, "1", "the default pair is an alias of the configured model");
-  const overridden = run(msSetupPre, { variables: { chat_model: "claude-3-5-sonnet-latest", chat_model_alias: "gpt-4o-2024-08-06" } });
-  assert.strictEqual(overridden.vars.ms_alias_ok, "", "a model override without a matching alias disables the alias case");
-  assert.strictEqual(overridden.vars.ms_priming_ok, "", "priming and usage flags start cleared");
-  assert.strictEqual(overridden.vars.ms_usage_ok, "");
+// Each key's alias target is checked on a request pinned to that key: an unpinned request picks its
+// key at random, so a check that needs both keys to serve fails whenever every sample lands on one.
+test("routing-wiring: the alias-collision case checks each key's alias target on a pinned request", () => {
+  const checks = requestsIn("An alias defined on two keys").filter((item) =>
+    (item.event || []).some((e) => e.script.exec.join("\n").includes("resolved_key_alias")),
+  );
+  assert.ok(checks.length > 0, "no request checks the resolved alias");
+  const pinned = new Set();
+  for (const item of checks) {
+    const pin = (item.request.header || []).find((h) => h.key === "x-bf-api-key-id");
+    assert.ok(pin, `${item.name} checks the resolved alias on an unpinned request`);
+    pinned.add(pin.value);
+  }
+  assert.deepStrictEqual([...pinned].sort(), ["k1-{{run_id}}", "k2-{{run_id}}"]);
 });
 
-test("model config priming records success only on a 2xx", () => {
-  assert.strictEqual(run(msPrimeTest, { responseBody: "{}", responseCode: 200 }).vars.ms_priming_ok, "1");
-  const down = run(msPrimeTest, { responseBody: SPA_FALLBACK, responseCode: 502 });
-  assert.strictEqual(down.vars.ms_priming_ok, "");
-  assert.ok(down.state.tests.every((x) => x.passed), "a failed priming is reported as skipped, not failed");
+// With two equal keys, n samples all land on one key one run in 2^(n-1): 8 samples fail one run in
+// 128, 24 about one in eight million.
+test("routing-wiring: the weighted key split takes enough samples that a fair split shows both keys", () => {
+  const samples = requestsIn("Both keys serve under weighted key selection").filter((item) => / sample \d+\/\d+ /.test(item.name));
+  assert.ok(samples.length >= 24, `only ${samples.length} samples`);
 });
 
-test("model config usage poll and 402 checks skip without priming or recorded usage", () => {
-  assert.strictEqual(run(msUsagePre, { variables: { ms_priming_ok: "" } }).state.skipped, true);
-  assert.strictEqual(run(msUsagePre, { variables: { ms_priming_ok: "1", ms_poll_retry: "0" } }).state.skipped, false);
-  const skipped = run(msUsageTest, { responseBody: "{}", responseCode: 200, variables: { ms_priming_ok: "" } });
-  assert.ok(skipped.state.tests.every((x) => x.passed), "the usage poll reports skipped when priming failed");
-  assert.strictEqual(run(msUpperPre, { variables: { ms_usage_ok: "" } }).state.skipped, true);
-  assert.strictEqual(run(msUpperPre, { variables: { ms_usage_ok: "1" } }).state.skipped, false);
-  assert.strictEqual(run(msAliasPre, { variables: { ms_usage_ok: "1", ms_alias_ok: "" } }).state.skipped, true, "alias case skips when the alias is not tied to the model");
-  assert.strictEqual(run(msAliasPre, { variables: { ms_usage_ok: "", ms_alias_ok: "1" } }).state.skipped, true, "alias case skips without recorded usage");
-  assert.strictEqual(run(msAliasPre, { variables: { ms_usage_ok: "1", ms_alias_ok: "1" } }).state.skipped, false);
+// routingWiringRequests lists every request of the routing-wiring collection, in order.
+function routingWiringRequests() {
+  const out = [];
+  (function walk(items) {
+    for (const item of items) {
+      if (item.item) walk(item.item);
+      else out.push(item);
+    }
+  })(routingWiring.item);
+  return out;
+}
+
+// listenScript returns one of a request's scripts as source text.
+function listenScript(item, listen) {
+  const event = (item.event || []).find((e) => e.listen === listen);
+  return event ? event.script.exec.join("\n") : "";
+}
+
+// A virtual key update's provider configs are written as object literals inside the one
+// JSON.stringify that builds the body, never built up and changed field by field, so the payload's
+// field order is fixed (the repository's rule for E2E payloads).
+test("routing-wiring: a virtual key update builds its provider configs as literals", () => {
+  const updates = routingWiringRequests().filter((item) => listenScript(item, "prerequest").includes("provider_configs"));
+  assert.ok(updates.length > 0, "no virtual key update found");
+  for (const item of updates) {
+    const src = listenScript(item, "prerequest");
+    assert.ok(!/\bcfg\.\w+\s*=[^=]/.test(src) && !/\.push\(/.test(src), `${item.name} builds its payload by mutation:\n${src}`);
+    let body = null;
+    const pm = {
+      collectionVariables: { get: () => "{}" },
+      variables: { get: () => "run", replaceIn: (v) => v },
+      request: { body: { update: (raw) => { body = raw; } } },
+    };
+    new Function("pm", src)(pm);
+    const configs = JSON.parse(body).provider_configs;
+    assert.ok(Array.isArray(configs) && configs.length > 0, `${item.name} sent no provider configs: ${body}`);
+    for (const cfg of configs) {
+      const order = ["provider", "allowed_models", "key_ids", "id", "weight"];
+      const keys = Object.keys(cfg);
+      assert.deepStrictEqual(keys, order.filter((k) => keys.includes(k)), `${item.name} config fields out of order: ${JSON.stringify(cfg)}`);
+    }
+  }
 });
 
-test("sibling check treats a governance refusal as a failure, not only budget_exceeded", () => {
-  const blocked = run(msSiblingTest, { responseBody: JSON.stringify({ error: { type: "model_blocked", message: "model not allowed" } }), responseCode: 403 });
-  assert.strictEqual(blocked.vars.ms_sibling_refused, "1", "a 403 model_blocked is a governance refusal");
-  const provider = run(msSiblingTest, { responseBody: JSON.stringify({ error: { message: "upstream unavailable" } }), responseCode: 502 });
-  assert.strictEqual(provider.vars.ms_sibling_refused, "", "a provider-side error is not a governance refusal");
-  const ok = run(msSiblingTest, { responseBody: JSON.stringify({ choices: [] }), responseCode: 200 });
-  assert.strictEqual(ok.vars.ms_sibling_refused, "");
+// Every entry of a trail check's expectAbsent is resolved like its expectSubstrings, so an entry
+// naming the run's resources ({{run_id}}) is checked against what the trail really says.
+test("routing-wiring: a trail check resolves run variables in the lines it expects absent", () => {
+  const check = routingWiringRequests().find((item) => /var absent = \[/.test(listenScript(item, "test")));
+  assert.ok(check, "no trail check with expectAbsent found");
+  let src = listenScript(check, "test");
+  const body = src.slice(src.indexOf("function assertNow() {") + "function assertNow() {".length, src.indexOf("\n}\nvar ok = true"));
+  const probe = body.replace(/var expected = \[[^\]]*\]/, "var expected = []").replace(/var absent = \[[^\]]*\]/, 'var absent = ["foo-{{run_id}}"]');
+  const pm = {
+    response: { code: 200, json: () => ({ routing_engine_logs: "picked foo-run7 for the request" }) },
+    variables: { replaceIn: (v) => v.split("{{run_id}}").join("run7") },
+  };
+  assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

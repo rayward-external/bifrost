@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"net/url"
 	"os"
 	"os/exec"
@@ -63,12 +64,37 @@ const maxSkillGitRepoSize = 500 * 1024 * 1024 // 500 MB
 
 // skillURLClient is a dedicated HTTP client for fetching URL-sourced skill content.
 // Uses an SSRF-safe transport that blocks connections to non-public IPs, so an
-// admin-configured source_url cannot point at internal infrastructure.
+// admin-configured source_url cannot point at internal infrastructure. Once the
+// server installs its HTTP client factory (SetSkillFetchHTTPClientFactory), fetches
+// honour the global proxy for API traffic under the same SSRF policy.
 var skillURLClient = &http.Client{
-	Timeout: 15 * time.Second,
-	Transport: &http.Transport{
-		DialContext: network.SSRFSafeDialContext(10 * time.Second),
-	},
+	Timeout:   15 * time.Second,
+	Transport: skillFetchTransport{},
+}
+
+// skillURLPolicy is the SSRF policy for skill fetches, direct or proxied.
+var skillURLPolicy = network.SSRFPolicyWithDialTimeout(10*time.Second, nil)
+
+// skillDirectTransport serves skill fetches before a factory is installed.
+var skillDirectTransport = &http.Transport{DialContext: network.SSRFSafeDialContext(10 * time.Second)}
+
+// skillHTTPClients is the server's HTTP client factory, once installed.
+var skillHTTPClients atomic.Pointer[network.HTTPClientFactory]
+
+// SetSkillFetchHTTPClientFactory routes URL-sourced skill fetches through factory, so
+// they honour the global proxy for API traffic. The server calls it at startup.
+func SetSkillFetchHTTPClientFactory(factory *network.HTTPClientFactory) {
+	skillHTTPClients.Store(factory)
+}
+
+// skillFetchTransport picks the factory's policy transport when one is installed.
+type skillFetchTransport struct{}
+
+func (skillFetchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if factory := skillHTTPClients.Load(); factory != nil {
+		return factory.PolicyTransport(network.ClientPurposeAPI, skillURLPolicy).RoundTrip(req)
+	}
+	return skillDirectTransport.RoundTrip(req)
 }
 
 // fetchURLSafe fetches content from a URL with SSRF protection, timeout, and size cap.
@@ -572,11 +598,14 @@ func (h *SkillsServingHandler) servePluginGit(harness string) fasthttp.RequestHa
 		repoCtx, cancel := skillsServingWorkContext()
 		defer cancel()
 
-		currentVersion := func() (string, bool) { return h.corpusVersion(ctx, repoCtx) }
+		version, ok := h.corpusVersion(ctx, repoCtx)
+		if !ok {
+			return
+		}
 
 		// Handle the bundled "all skills" plugin.
 		if rawName == allSkillsPluginName {
-			h.serveGitRepo(ctx, repoBase, repoBase, "all-skills", currentVersion, func() (*GitRepoSpec, error) {
+			h.serveGitRepo(ctx, repoBase, repoBase, version, "all-skills", func() (*GitRepoSpec, error) {
 				return h.assembleAllSkillsRepoSpec(repoCtx, harness)
 			})
 			return
@@ -584,7 +613,7 @@ func (h *SkillsServingHandler) servePluginGit(harness string) fasthttp.RequestHa
 
 		// Strip the "bifrost-" prefix to look up the actual skill name.
 		skillName := strings.TrimPrefix(rawName, pluginNamePrefix)
-		h.serveGitRepo(ctx, repoBase, repoBase, skillName, currentVersion, func() (*GitRepoSpec, error) {
+		h.serveGitRepo(ctx, repoBase, repoBase, version, skillName, func() (*GitRepoSpec, error) {
 			skill, err := h.store.GetSkillByName(repoCtx, skillName)
 			if err != nil {
 				return nil, err
@@ -643,10 +672,13 @@ func (h *SkillsServingHandler) codexMarketplaceGit() fasthttp.RequestHandler {
 func (h *SkillsServingHandler) serveMarketplaceGitRepo(ctx *fasthttp.RequestCtx, spec *GitRepoSpec, repoBase string, marketplaceJSON []byte) {
 	workCtx, cancel := skillsServingWorkContext()
 	defer cancel()
+	version, ok := h.corpusVersion(ctx, workCtx)
+	if !ok {
+		return
+	}
 	digest := sha256.Sum256(marketplaceJSON)
 	cacheKey := repoBase + "#" + hex.EncodeToString(digest[:])
-	currentVersion := func() (string, bool) { return h.corpusVersion(ctx, workCtx) }
-	h.serveGitRepo(ctx, repoBase, cacheKey, spec.Label, currentVersion, func() (*GitRepoSpec, error) { return spec, nil })
+	h.serveGitRepo(ctx, repoBase, cacheKey, version, spec.Label, func() (*GitRepoSpec, error) { return spec, nil })
 }
 
 // skillsCorpusServeConcurrency caps how many corpus-serving requests (git
@@ -726,16 +758,11 @@ func (c *skillsGitRepoCache) acquire(key, version string, build func() (string, 
 		}
 		c.version = version
 	}
-	// Expiry is swept across every key, not only the one requested: the marketplace
-	// key embeds the request host, so a corpus version can hold an entry per distinct
-	// Host value, and an entry requested once would otherwise linger (with its temp
-	// directory) until the version changes or the process exits.
-	for k, entry := range c.entries {
-		if entry.isBuilt() && time.Since(entry.builtAt) >= skillsGitRepoCacheTTL {
-			c.dropLocked(k, entry)
-		}
-	}
 	entry := c.entries[key]
+	if entry != nil && entry.isBuilt() && time.Since(entry.builtAt) >= skillsGitRepoCacheTTL {
+		c.dropLocked(key, entry)
+		entry = nil
+	}
 	if entry == nil {
 		entry = &skillsGitRepoCacheEntry{ready: make(chan struct{})}
 		c.entries[key] = entry
@@ -846,10 +873,9 @@ func (c *skillsGitRepoCache) purge() {
 
 // serveGitRepo serves a git repository via direct git upload-pack calls
 // (inspired by go-git-http pattern; no CGI layer). The bare repo comes from the
-// cache keyed by cacheKey and fingerprinted by the version currentVersion
-// reports; assemble runs only on a miss. A configstore.ErrNotFound from
-// assemble is a 404.
-func (h *SkillsServingHandler) serveGitRepo(ctx *fasthttp.RequestCtx, repoBase, cacheKey, label string, currentVersion func() (string, bool), assemble func() (*GitRepoSpec, error)) {
+// cache keyed by cacheKey and fingerprinted by version; assemble runs only on a
+// miss. A configstore.ErrNotFound from assemble is a 404.
+func (h *SkillsServingHandler) serveGitRepo(ctx *fasthttp.RequestCtx, repoBase, cacheKey, version, label string, assemble func() (*GitRepoSpec, error)) {
 	releaseSlot, ok := acquireSkillsCorpusServeSlot(ctx)
 	if !ok {
 		return
@@ -867,20 +893,8 @@ func (h *SkillsServingHandler) serveGitRepo(ctx *fasthttp.RequestCtx, repoBase, 
 		}
 		return exportBareRepo(storage)
 	}
-	version, ok := currentVersion()
-	if !ok {
-		return // error already sent
-	}
 	repoDir, releaseRepo, err := h.gitRepos.acquire(cacheKey, version, buildRepo)
 	if errors.Is(err, errSkillsGitRepoDropped) {
-		// Refetch the version rather than retrying with the one captured above: that is
-		// exactly what changed underneath this request and dropped its build, so
-		// retrying with the stale value would again mismatch the cache's new version,
-		// wiping out whatever concurrent requests already rebuilt under it.
-		version, ok = currentVersion()
-		if !ok {
-			return // error already sent
-		}
 		repoDir, releaseRepo, err = h.gitRepos.acquire(cacheKey, version, buildRepo)
 	}
 	if err != nil {
@@ -1611,26 +1625,11 @@ func buildSkillFilePath(skillName string, file *tables.TableSkillFile) string {
 	return path.Join(skillName, file.Path)
 }
 
-// skillsServingWorkTimeout bounds store, object-store and outbound HTTP work started while
-// serving a skills request.
-const skillsServingWorkTimeout = 30 * time.Second
-
 // skillsServingWorkContext returns the context to hand to the config store, the object store
-// and outbound HTTP clients while serving a skills request.
-//
-// Never pass the *fasthttp.RequestCtx itself. Its Done() returns a server-wide channel
-// (fasthttp.Server.done), closed only on server shutdown, not per request (fasthttp's own
-// documented tradeoff, since allocating a channel per request is expensive). Whenever
-// ctx.Done() != nil, database/sql and net/http spawn an internal cancellation-watcher
-// goroutine that keeps reading RequestCtx.s.done after the handler returns, while
-// Server.ShutdownWithContext writes s.done = nil once every connection has closed. That is an
-// unsynchronized write against a live reader: the data race seen under -race in
-// TestClaudeMarketplaceGitRepoContainsMarketplaceAndCloneablePlugin.
-//
-// Deriving from context.Background() gives up nothing, because a RequestCtx carries no
-// per-request cancellation to propagate in the first place.
+// and outbound HTTP clients while serving a skills request. Background-rooted because these
+// paths read no request values; see RequestWorkContext for why the RequestCtx is never used.
 func skillsServingWorkContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), skillsServingWorkTimeout)
+	return RequestWorkContext(context.Background(), RequestWorkTimeout)
 }
 
 // lookupSkillByPathParam extracts the skill-name path parameter and fetches the skill.

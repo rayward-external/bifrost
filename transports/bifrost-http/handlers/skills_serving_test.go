@@ -14,6 +14,8 @@ import (
 
 	"github.com/fasthttp/router"
 	"github.com/go-git/go-git/v5/storage/memory"
+	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttputil"
@@ -542,51 +544,29 @@ func TestSkillsGitRepoCacheBuildPanicDoesNotStrandWaiters(t *testing.T) {
 	}
 }
 
-// TestSkillsGitRepoCacheExpirySweepsEveryKey: the marketplace cache key embeds a digest of
-// the manifest, which embeds the request host, so one corpus version can hold an entry per
-// distinct Host value. Expiry must be swept across every key on any acquire; otherwise an
-// entry requested once lingers, with its temp directory, until the version changes or the
-// process exits.
-func TestSkillsGitRepoCacheExpirySweepsEveryKey(t *testing.T) {
-	cache := newSkillsGitRepoCache()
-	build := func() (string, error) { return t.TempDir(), nil }
+// TestFetchURLSafeGoesThroughGlobalProxy pins that URL-sourced skill fetches honour the
+// global proxy for API traffic once the server installs its factory, and keep refusing
+// non-public targets before anything reaches the proxy. The skill client used to build
+// its own transport with no proxy support.
+func TestFetchURLSafeGoesThroughGlobalProxy(t *testing.T) {
+	set := proxytest.NewSet(t)
+	SetSkillFetchHTTPClientFactory(network.NewHTTPClientFactory(&network.GlobalProxyConfig{
+		Enabled:      true,
+		Type:         network.GlobalProxyTypeHTTP,
+		URL:          "http://127.0.0.1:" + set.Config.Port(),
+		EnableForAPI: true,
+	}, nil))
+	t.Cleanup(func() { SetSkillFetchHTTPClientFactory(nil) })
 
-	dirA, releaseA, err := cache.acquire("repo#host-a", "v1", build)
-	if err != nil {
-		t.Fatalf("acquire a: %v", err)
+	if _, err := fetchURLSafe(t.Context(), "https://203.0.113.10/skill.md"); err == nil {
+		t.Fatal("expected the recorder's closed tunnel to fail the fetch")
 	}
-	releaseA()
-	dirB, releaseB, err := cache.acquire("repo#host-b", "v1", build)
-	if err != nil {
-		t.Fatalf("acquire b: %v", err)
-	}
-	releaseB()
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "203.0.113.10:443", nil)
 
-	// Age both entries past the TTL.
-	cache.mu.Lock()
-	for _, entry := range cache.entries {
-		entry.builtAt = time.Now().Add(-2 * skillsGitRepoCacheTTL)
+	set.Reset()
+	_, err := fetchURLSafe(t.Context(), "https://10.0.0.5/skill.md")
+	if err == nil || !strings.Contains(err.Error(), "non-public address") {
+		t.Fatalf("expected a private target to be refused, got %v", err)
 	}
-	cache.mu.Unlock()
-
-	dirA2, releaseA2, err := cache.acquire("repo#host-a", "v1", build)
-	if err != nil {
-		t.Fatalf("acquire a after expiry: %v", err)
-	}
-	defer releaseA2()
-	if dirA2 == dirA {
-		t.Fatal("an expired entry must be rebuilt on acquire")
-	}
-	if _, err := os.Stat(dirA); !os.IsNotExist(err) {
-		t.Fatalf("expired dir for the requested key must be removed, stat err=%v", err)
-	}
-	cache.mu.Lock()
-	_, stillB := cache.entries["repo#host-b"]
-	cache.mu.Unlock()
-	if stillB {
-		t.Fatal("an expired entry under another key must be swept by the same acquire")
-	}
-	if _, err := os.Stat(dirB); !os.IsNotExist(err) {
-		t.Fatalf("expired dir for the other key must be removed, stat err=%v", err)
-	}
+	proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
 }

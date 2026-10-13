@@ -73,12 +73,12 @@ func TestShouldTryFallbacks_InvalidEncryptedContentDisablesFallbacks(t *testing.
 
 	encryptedContentErr := createBifrostError("encrypted content could not be decrypted or parsed", Ptr(400), Ptr("invalid_request_error"), false)
 	encryptedContentErr.Error.Code = Ptr("invalid_encrypted_content")
-	if bifrost.shouldTryFallbacks(req, encryptedContentErr) {
+	if bifrost.shouldTryFallbacks(nil, req, encryptedContentErr) {
 		t.Fatal("invalid_encrypted_content must not try fallbacks across Azure keys")
 	}
 
 	ordinaryBadRequest := createBifrostError("ordinary provider bad request", Ptr(400), Ptr("invalid_request_error"), false)
-	if !bifrost.shouldTryFallbacks(req, ordinaryBadRequest) {
+	if !bifrost.shouldTryFallbacks(nil, req, ordinaryBadRequest) {
 		t.Fatal("ordinary provider errors with configured fallbacks should retain existing fallback behavior")
 	}
 }
@@ -98,7 +98,7 @@ func TestShouldTryFallbacks_CompactionInvalidEncryptedContentDisablesFallbacks(t
 
 	encryptedContentErr := createBifrostError("encrypted content could not be decrypted or parsed", Ptr(400), Ptr("invalid_request_error"), false)
 	encryptedContentErr.Error.Code = Ptr("invalid_encrypted_content")
-	if bifrost.shouldTryFallbacks(req, encryptedContentErr) {
+	if bifrost.shouldTryFallbacks(nil, req, encryptedContentErr) {
 		t.Fatal("compaction invalid_encrypted_content must not try fallbacks across Azure keys")
 	}
 }

@@ -8,6 +8,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func newTestCatalog(modelPool map[schemas.ModelProvider][]string, baseModelIndex map[string]string) *ModelCatalog {
+	mc := NewTestCatalog(baseModelIndex)
+	for provider, models := range modelPool {
+		mc.UpsertLive(provider, "", false, models)
+	}
+	return mc
+}
+
 // TestRefineModelForProvider_ReplicateRefinesOpenAIModel verifies that
 // Replicate can recover nested provider slugs for provider-pinned OpenAI-family models.
 func TestRefineModelForProvider_ReplicateRefinesOpenAIModel(t *testing.T) {

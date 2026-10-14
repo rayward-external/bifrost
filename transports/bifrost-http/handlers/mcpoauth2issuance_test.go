@@ -9,9 +9,11 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -136,6 +138,34 @@ func TestHandleRegister_DCR(t *testing.T) {
 		assert.Equal(t, "none", resp["token_endpoint_auth_method"])
 		assert.Equal(t, "mcp", resp["scope"])
 		assert.Equal(t, []any{"authorization_code"}, resp["grant_types"])
+	})
+
+	// RFC 7591 §2 puts no bound on client_name or scope; both were varchar(255),
+	// which Postgres enforces, so a long value failed registration with an opaque
+	// server_error. They must be stored and echoed verbatim.
+	t.Run("long client_name and scope are accepted and stored verbatim", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		longName := strings.Repeat("n", 1024)
+		longScope := longScopeValue()
+		body, err := json.Marshal(map[string]any{
+			"client_name":   longName,
+			"redirect_uris": []string{"http://127.0.0.1:1234/cb"},
+			"scope":         longScope,
+		})
+		require.NoError(t, err)
+		ctx := formPostCtx("")
+		ctx.Request.SetBody(body)
+		ctx.Request.Header.SetContentType("application/json")
+
+		h.handleRegister(ctx)
+		require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		assert.Equal(t, longScope, resp["scope"])
+		stored, err := store.GetOAuth2ClientByClientID(context.Background(), resp["client_id"].(string))
+		require.NoError(t, err)
+		assert.Equal(t, longName, stored.ClientName)
+		assert.Equal(t, longScope, stored.Scope)
 	})
 
 	t.Run("missing redirect_uris is rejected", func(t *testing.T) {
@@ -284,6 +314,74 @@ func TestHandleAuthorize(t *testing.T) {
 		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
 		assert.Contains(t, string(ctx.Response.Header.Peek("Location")), "/oauth/consent?flow=")
 	})
+
+	// RFC 6749 §4.1.1 puts no bound on state, and platforms pack connector
+	// context into it (620 chars in the reported case). The column used to be
+	// varchar(512), which Postgres enforces, turning the request into an opaque
+	// server_error. It must reach consent with the state stored verbatim.
+	t.Run("state longer than 512 chars reaches consent and is stored verbatim", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		cid := seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		v := base(cid, "http://127.0.0.1/cb")
+		longState := strings.Repeat("s", 620)
+		v.Set("state", longState)
+		ctx := getCtx("/oauth2/authorize?" + v.Encode())
+
+		h.handleAuthorize(ctx)
+		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
+		loc, err := url.Parse(string(ctx.Response.Header.Peek("Location")))
+		require.NoError(t, err)
+		require.Contains(t, loc.Path, "/oauth/consent")
+		flowID := loc.Query().Get("flow")
+		require.NotEmpty(t, flowID)
+
+		stored, err := store.GetOAuth2AuthorizeRequestByID(context.Background(), flowID)
+		require.NoError(t, err)
+		require.NotNil(t, stored)
+		assert.Equal(t, longState, stored.State)
+	})
+
+	// RFC 6749 §3.3 puts no bound on scope either. It is copied from the
+	// registration into the request and later the tokens, so a long registered
+	// scope must be requestable in full.
+	t.Run("long scope within the registered scope reaches consent and is stored verbatim", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		longScope := longScopeValue()
+		client := &configtables.TableOAuth2Client{
+			ID:           "client-row-long",
+			ClientID:     "client-long",
+			ClientName:   "Long Scope Client",
+			RedirectURIs: []string{"http://127.0.0.1/cb"},
+			GrantTypes:   []string{"authorization_code"},
+			Scope:        longScope,
+			CreatedAt:    time.Now(),
+		}
+		require.NoError(t, store.CreateOAuth2Client(context.Background(), client))
+		v := base(client.ClientID, "http://127.0.0.1/cb")
+		v.Set("scope", longScope)
+		ctx := getCtx("/oauth2/authorize?" + v.Encode())
+
+		h.handleAuthorize(ctx)
+		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
+		loc, err := url.Parse(string(ctx.Response.Header.Peek("Location")))
+		require.NoError(t, err)
+		require.Contains(t, loc.Path, "/oauth/consent", loc.String())
+
+		stored, err := store.GetOAuth2AuthorizeRequestByID(context.Background(), loc.Query().Get("flow"))
+		require.NoError(t, err)
+		require.NotNil(t, stored)
+		assert.Equal(t, longScope, stored.Scope)
+	})
+}
+
+// longScopeValue returns a well-formed space-separated scope far past the old
+// varchar(255) bound, with unique tokens so the subset check sees no duplicates.
+func longScopeValue() string {
+	parts := []string{"mcp"}
+	for i := 0; i < 200; i++ {
+		parts = append(parts, fmt.Sprintf("read:%d", i))
+	}
+	return strings.Join(parts, " ")
 }
 
 func TestHandleToken_AuthorizationCode(t *testing.T) {
@@ -848,4 +946,114 @@ func TestHandleAuthorize_RejectsOversizeParameters(t *testing.T) {
 	var resp map[string]string
 	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
 	assert.Equal(t, "invalid_request", resp["error"])
+}
+
+func TestHandleRegister_RedirectPolicy(t *testing.T) {
+	for _, uri := range []string{"https://unlisted.example/cb", "https:///callback", "https:callback", "http://127.0.0.1/cb#fragment", "http://127.0.0.1/cb#", "http://name@127.0.0.1/cb", "javascript:alert(1)"} {
+		t.Run(uri, func(t *testing.T) {
+			h, _, _ := newIssuanceHandler(t)
+			body, err := json.Marshal(map[string]any{"redirect_uris": []string{uri}})
+			require.NoError(t, err)
+			ctx := formPostCtx("")
+			ctx.Request.SetBody(body)
+			h.handleRegister(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Contains(t, string(ctx.Response.Body()), "invalid_redirect_uri")
+		})
+	}
+}
+
+func TestHandleRegister_ApprovedRemoteCallback(t *testing.T) {
+	h, _, cfg := newIssuanceHandler(t)
+	cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = []string{"https://app.example/cb"}
+	for _, tc := range []struct {
+		uri    string
+		status int
+	}{
+		{"https://app.example/cb", 201}, {"https://app.example/other", 400}, {"https://app.example/cb?next=https://other.example", 400},
+		{"http://127.0.0.1:1234/cb", 201}, {"cursor://anysphere.cursor-mcp/oauth/callback", 201},
+	} {
+		body, err := schemas.MarshalSorted(map[string]any{"redirect_uris": []string{tc.uri}})
+		require.NoError(t, err)
+		ctx := formPostCtx("")
+		ctx.Request.SetBody(body)
+		h.handleRegister(ctx)
+		require.Equal(t, tc.status, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+}
+
+func TestHandleAuthorize_RechecksCallbackPolicy(t *testing.T) {
+	h, store, _ := newIssuanceHandler(t)
+	cid := seedClient(t, store, []string{"https://unlisted.example/cb"})
+	ctx := getCtx("/oauth2/authorize?" + url.Values{"client_id": {cid}, "redirect_uri": {"https://unlisted.example/cb"}, "response_type": {"code"}, "code_challenge": {pkceChallenge("verifier")}, "code_challenge_method": {"S256"}}.Encode())
+	h.handleAuthorize(ctx)
+	require.Equal(t, 400, ctx.Response.StatusCode())
+	require.Empty(t, ctx.Response.Header.Peek("Location"))
+}
+
+func TestUpdateConfig_RedirectPolicyRequiresAdmin(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	h := &ConfigHandler{store: cfg}
+	ctx := putConfigCtx(`{"client_config":{"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["https://new.example/cb"]}}}`)
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updateConfig(ctx)
+	require.Equal(t, 403, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Empty(t, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs)
+}
+
+// TestUpdateConfig_ConcurrentSavesAreSerialized runs under -race: overlapping saves
+// must not snapshot the live config while another save publishes it.
+func TestUpdateConfig_ConcurrentSavesAreSerialized(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var failures []string
+	for _, uri := range []string{"https://a.example/cb", "https://b.example/cb"} {
+		wg.Add(1)
+		go func(uri string) {
+			defer wg.Done()
+			for i := 0; i < 10; i++ {
+				ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["` + uri + `"]}}}`)
+				h.updateConfig(ctx)
+				if ctx.Response.StatusCode() != fasthttp.StatusOK {
+					mu.Lock()
+					failures = append(failures, string(ctx.Response.Body()))
+					mu.Unlock()
+				}
+			}
+		}(uri)
+	}
+	wg.Wait()
+	require.Empty(t, failures, "overlapping saves must each succeed")
+}
+
+// TestUpdateConfig_RedirectPolicyPublishRacesNoReader runs under -race: an
+// authenticated save publishes a new allowlist while an OAuth flow step reads it.
+func TestUpdateConfig_RedirectPolicyPublishRacesNoReader(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				oauth2RedirectAllowed(cfg, "https://new.example/cb")
+			}
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["https://new.example/cb"]}}}`)
+		h.updateConfig(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	close(stop)
+	<-done
+	require.True(t, oauth2RedirectAllowed(cfg, "https://new.example/cb"))
 }

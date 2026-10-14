@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -18,26 +20,94 @@ type PassthroughRouter struct {
 	*GenericRouter
 }
 
+var genAIInferencePath = regexp.MustCompile(`^/(projects/[^/]+/locations/[^/]+/publishers/[^/]+/)?(models|tunedModels)/[^/:]+:(generateContent|streamGenerateContent|countTokens|embedContent|batchEmbedContents|predict|rawPredict|streamRawPredict)$`)
+
+// genAIInteractionsPath admits only interaction creation; get/cancel/delete address stored interactions.
+var genAIInteractionsPath = regexp.MustCompile(`^/(projects/[^/]+/locations/[^/]+/)?interactions$`)
+
+var apiVersionSegment = regexp.MustCompile(`^v\d+((alpha|beta)\d*)?$`)
+
+// passthroughQueryStreams reports a GET that asks for SSE in its query, such as resuming an interaction with ?stream=true.
+func passthroughQueryStreams(method, rawQuery string) bool {
+	if method != fasthttp.MethodGet {
+		return false
+	}
+	q, err := url.ParseQuery(rawQuery)
+	return err == nil && strings.EqualFold(q.Get("stream"), "true")
+}
+
+// passthroughInferenceRoute limits HTTP passthrough to inference operations.
+// A provider key grants more capabilities than an inference credential; raw
+// forwarding must not expose the provider's object or account management APIs.
+func passthroughInferenceRoute(cfg *PassthroughConfig, method, path string) bool {
+	if method != fasthttp.MethodPost || strings.ContainsAny(path, "%?#\\") {
+		return false
+	}
+	for _, segment := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	if cfg.UpstreamURL != "" {
+		return cfg.UpstreamURL == "https://chatgpt.com" && path == "/backend-api/codex/responses"
+	}
+	switch cfg.Provider {
+	case schemas.OpenAI:
+		return openAIInferencePath(strings.TrimPrefix(path, "/v1"))
+	case schemas.Anthropic:
+		return path == "/v1/messages" || path == "/v1/messages/count_tokens" || path == "/v1/complete"
+	case schemas.Azure:
+		if strings.HasPrefix(path, "/openai/v1/") {
+			return openAIInferencePath(strings.TrimPrefix(path, "/openai/v1"))
+		}
+		parts := strings.SplitN(path, "/", 5)
+		return len(parts) == 5 && parts[1] == "openai" && parts[2] == "deployments" && parts[3] != "" && openAIInferencePath("/"+parts[4])
+	case schemas.Gemini, schemas.Vertex:
+		return genAIInferencePath.MatchString(path) || genAIInteractionsPath.MatchString(path)
+	case schemas.Runware:
+		return path == "/v1"
+	case schemas.Bedrock:
+		return bedrock.IsPassthroughRoute(method, path)
+	default:
+		return false
+	}
+}
+
+func openAIInferencePath(path string) bool {
+	switch path {
+	case "/chat/completions", "/completions", "/responses", "/embeddings", "/moderations",
+		"/audio/speech", "/audio/transcriptions", "/audio/translations",
+		"/images/generations", "/images/edits", "/images/variations":
+		return true
+	}
+	return false
+}
+
 // stripPassthroughPrefix removes the first configured prefix that matches path at a segment
 // boundary and returns the remainder as a rooted path. A prefix only matches when it ends the
 // path or is followed by "/", so "/genai_passthrough/v1" never matches
 // "/genai_passthrough/v1@host/x" or "/genai_passthrough/v1beta1foo/x"; the shorter
 // "/genai_passthrough" prefix is tried in turn. ok is false when nothing matches, which the
-// router treats as no route rather than forwarding an unanchored remainder.
-func stripPassthroughPrefix(path string, prefixes []string) (string, bool) {
+// router treats as no route rather than forwarding an unanchored remainder. The second result
+// is the version segment the matched prefix ends with ("v1beta1"), empty when it ends with none.
+func stripPassthroughPrefix(path string, prefixes []string) (string, string, bool) {
 	for _, prefix := range prefixes {
 		rest, found := strings.CutPrefix(path, prefix)
 		if !found {
 			continue
 		}
+		apiVersion := prefix[strings.LastIndexByte(prefix, '/')+1:]
+		if !apiVersionSegment.MatchString(apiVersion) {
+			apiVersion = ""
+		}
 		if rest == "" {
-			return "/", true
+			return "/", apiVersion, true
 		}
 		if strings.HasPrefix(rest, "/") {
-			return rest, true
+			return rest, apiVersion, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // validatePassthroughPath rejects passthrough remainders that could change how the upstream
@@ -149,6 +219,21 @@ func NewAzurePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handler
 		StripPrefix: []string{
 			"/azure_passthrough",
 		},
+	})
+}
+
+// NewBedrockPassthroughRouter creates a passthrough router for /bedrock_passthrough. Unlike the
+// other passthrough routers it is not a general proxy: the Bedrock provider forwards only
+// InvokeAgent, knowledge-base Retrieve and ApplyGuardrail, the operations Bifrost has no native
+// route for, and refuses every other path with a 400 before any request is built.
+func NewBedrockPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider: schemas.Bedrock,
+		StripPrefix: []string{
+			"/bedrock_passthrough",
+		},
+		// InvokeAgent answers with an event stream; nothing in its path or body says so.
+		StreamingPath: bedrock.IsPassthroughStreamPath,
 	})
 }
 

@@ -35,6 +35,10 @@ var unwrappedStreamSites = map[string]string{
 	// Content-Length from the upstream value when one is known, and any rewrite
 	// would leave that length describing a body that no longer exists.
 	"lib/lib.go": "verbatim upstream passthrough with a declared Content-Length; carries no extra_fields",
+	// serveLiveContent streams a stored session recording (raw audio/video bytes,
+	// Content-Type set from the provider) verbatim to the caller. It is a media
+	// download, not a JSON/SSE response, so there are no extra_fields to scrub.
+	"handlers/livecontrol.go": "raw recording media passthrough; carries no extra_fields",
 }
 
 func TestEveryResponseStreamIsWrappedForExternalAudience(t *testing.T) {

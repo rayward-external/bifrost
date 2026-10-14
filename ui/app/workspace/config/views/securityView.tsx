@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,25 +17,12 @@ import { authProofOfControlSchema, SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { formatCooldown } from "@/lib/utils/duration";
 import { getApiBaseUrl } from "@/lib/utils/port";
-import { validateOrigins } from "@/lib/utils/validation";
+import { getPasswordPolicyFailures, validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-
-const PASSWORD_REQUIREMENTS = [
-	{ label: "at least 12 characters", test: (password: string) => password.length >= 12 },
-	{ label: "one uppercase letter", test: (password: string) => /[A-Z]/.test(password) },
-	{ label: "one lowercase letter", test: (password: string) => /[a-z]/.test(password) },
-	{ label: "one number", test: (password: string) => /\d/.test(password) },
-	{ label: "one special character", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
-];
-
-const getPasswordPolicyFailures = (password?: string) => {
-	if (!password) return [];
-	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.label);
-};
 
 // Go duration string: one or more <number><unit> segments, e.g. "5m", "1h30m".
 const COOLDOWN_PATTERN = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
@@ -48,6 +36,7 @@ export default function SecurityView() {
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
 	const showPasswordSection = !IS_ENTERPRISE || (!authTypeLoading && !authTypeError && authType?.type !== "sso");
 	const passwordInputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
+	const passwordUnchangedRef = useRef(true);
 	const inferenceAuthTouchedRef = useRef(false);
 
 	const [localValues, setLocalValues] = useState<{
@@ -115,6 +104,7 @@ export default function SecurityView() {
 			});
 		}
 		if (bifrostConfig?.auth_config) {
+			passwordUnchangedRef.current = true;
 			setAuthConfig(bifrostConfig.auth_config);
 		}
 	}, [config, bifrostConfig]);
@@ -155,6 +145,9 @@ export default function SecurityView() {
 
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
+		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
+		const enforceVKObjectOwnershipChanged =
+			(localConfig.enforce_vk_object_ownership ?? true) !== (config.enforce_vk_object_ownership ?? true);
 		const dualCredentialConflictBehaviorChanged =
 			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
 		const vkRotationCooldownChanged = formatCooldown(localConfig.vk_rotation_cooldown) !== formatCooldown(config.vk_rotation_cooldown);
@@ -167,6 +160,8 @@ export default function SecurityView() {
 			authChanged ||
 			enforceAuthOnInferenceChanged ||
 			allowDirectKeysChanged ||
+			deleteExpiredVirtualKeysChanged ||
+			enforceVKObjectOwnershipChanged ||
 			dualCredentialConflictBehaviorChanged ||
 			vkRotationCooldownChanged
 		);
@@ -244,7 +239,8 @@ export default function SecurityView() {
 
 	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: SecretVar) => {
 		if (field === "admin_password") {
-			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value) : [];
+			passwordUnchangedRef.current = false;
+			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value, false) : [];
 			setPasswordError(passwordPolicyFailures.length > 0 ? `Password must include ${passwordPolicyFailures.join(", ")}.` : "");
 		}
 		setAuthConfig((prev) => ({ ...prev, [field]: value }));
@@ -267,14 +263,9 @@ export default function SecurityView() {
 			}
 			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.ref;
 			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.ref;
-			const passwordChanged = authConfig.admin_password?.value !== bifrostConfig?.auth_config?.admin_password?.value;
 			const passwordPolicyFailures =
-				showPasswordSection &&
-				authConfig.is_enabled &&
-				!authConfig.admin_password?.ref &&
-				authConfig.admin_password?.value &&
-				passwordChanged
-					? getPasswordPolicyFailures(authConfig.admin_password.value)
+				showPasswordSection && authConfig.is_enabled && !authConfig.admin_password?.ref && authConfig.admin_password?.value
+					? getPasswordPolicyFailures(authConfig.admin_password.value, passwordUnchangedRef.current)
 					: [];
 
 			if (passwordPolicyFailures.length > 0) {
@@ -347,17 +338,14 @@ export default function SecurityView() {
 		updateCoreConfig,
 		isFirstTimeSetup,
 		setupToken,
-		authorizedBySetupToken,
 		currentPassword,
 		requiresProofOfControl,
+		authorizedBySetupToken,
 	]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
-			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Security Settings</h2>
-				<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
-			</div>
+			<PageTitle title="Security Settings">Configure security and access control settings.</PageTitle>
 
 			<div className="space-y-4">
 				{/* Password Protect the Dashboard */}
@@ -584,7 +572,7 @@ export default function SecurityView() {
 							<SelectTrigger
 								id="dual-credential-conflict-behavior"
 								data-testid="dual-credential-conflict-behavior-select"
-								className="w-[180px]"
+								className="w-full sm:w-[180px]"
 							>
 								<SelectValue />
 							</SelectTrigger>
@@ -634,6 +622,45 @@ export default function SecurityView() {
 						placeholder="5m"
 						value={localValues.vk_rotation_cooldown}
 						onChange={(e) => handleVkRotationCooldownChange(e.target.value)}
+					/>
+				</div>
+				{/* Delete Expired Virtual Keys */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="delete-expired-virtual-keys" className="text-sm font-medium">
+							Delete Expired Virtual Keys
+						</label>
+						<p className="text-muted-foreground text-sm">
+							When enabled, a daily cleanup job deletes every virtual key whose expiry has passed and posts a notification listing the
+							removed keys. Each key can override this from its <b>Delete after expire</b> switch: a key set to off is kept, and a key set
+							to on is deleted even while this is disabled.
+						</p>
+					</div>
+					<Switch
+						id="delete-expired-virtual-keys"
+						data-testid="security-delete-expired-virtual-keys-switch"
+						checked={localConfig.delete_expired_virtual_keys}
+						onCheckedChange={(checked) => handleConfigChange("delete_expired_virtual_keys", checked)}
+					/>
+				</div>
+				{/* Restrict Provider Objects to the Creating Virtual Key */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="enforce-vk-object-ownership" className="text-sm font-medium">
+							Restrict Provider Objects to the Creating Virtual Key
+						</label>
+						<p className="text-muted-foreground text-sm">
+							When enabled, files, batches, videos, containers, cached contents and live sessions created with a virtual key can only be
+							read, listed or deleted with that same key. Other virtual keys get a not-found error and do not see them in lists. Requests
+							without a virtual key are not affected. The creating key is recorded even while this is disabled, so enabling it again also
+							covers objects created in the meantime, except any whose creating key could not be recorded.
+						</p>
+					</div>
+					<Switch
+						id="enforce-vk-object-ownership"
+						data-testid="security-enforce-vk-object-ownership-switch"
+						checked={localConfig.enforce_vk_object_ownership ?? true}
+						onCheckedChange={(checked) => handleConfigChange("enforce_vk_object_ownership", checked)}
 					/>
 				</div>
 				{/* Allowed Origins */}

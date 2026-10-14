@@ -80,20 +80,22 @@ cd framework
 go build ./...
 echo "✅ Framework build validation successful"
 
-# Run framework tests with coverage. PRIMARY FLAKE GUARD — retry ONCE on failure.
-# The post-merge main run reds ~4/30 times on transient races that pass on a clean
-# rerun: TestSubmitJob_OperationFailure_PreservesContext (framework/logstore, an
-# in-memory-sqlite test with 2s completion-poll deadlines that lose on a loaded
-# runner) and cross-package postgres races (configstore + logstore package
-# binaries run in parallel against the same localhost:5432 and DROP/CREATE shared
-# tables). Each GitHub failure emails the operator the instant the run reds, and a
-# later rerun-to-green does NOT unsend it — so the run must not red on a flake in
-# the first place. Retry-once keeps a flake green while a REAL regression fails
-# BOTH attempts and correctly reds the run: this hides flakes, never bugs.
+# Run framework tests with coverage. configstore and logstore each run close to
+# Go's default 10m package timeout under -race, so raise it explicitly.
+# PRIMARY FLAKE GUARD — retry ONCE on failure. The post-merge main run reds ~4/30
+# times on transient races that pass on a clean rerun: TestSubmitJob_OperationFailure_PreservesContext
+# (framework/logstore, an in-memory-sqlite test with 2s completion-poll deadlines
+# that lose on a loaded runner) and cross-package postgres races (configstore +
+# logstore package binaries run in parallel against the same localhost:5432 and
+# DROP/CREATE shared tables). Each GitHub failure emails the operator the instant
+# the run reds, and a later rerun-to-green does NOT unsend it — so the run must
+# not red on a flake in the first place. Retry-once keeps a flake green while a
+# REAL regression fails BOTH attempts and correctly reds the run: this hides
+# flakes, never bugs.
 echo "🧪 Running framework tests with coverage..."
-if ! go test --race -coverprofile=coverage.txt -coverpkg=./... ./...; then
+if ! go test --race -timeout 30m -coverprofile=coverage.txt -coverpkg=./... ./...; then
   echo "⚠️ Framework tests failed once; retrying once (flake guard)..."
-  go test --race -coverprofile=coverage.txt -coverpkg=./... ./...
+  go test --race -timeout 30m -coverprofile=coverage.txt -coverpkg=./... ./...
 fi
 
 # Upload coverage to Codecov

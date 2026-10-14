@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -6251,4 +6252,47 @@ func TestCalculateCost_QueuedVideoIsNotBilledAtSubmission(t *testing.T) {
 	terminal := newResp(schemas.VideoStatusCompleted)
 	terminal.VideoGenerationResponse.Videos = []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}}
 	assert.InDelta(t, 5.60, s.CalculateCost(terminal, nil), 1e-9)
+}
+
+// Providers that report reasoning additively (completion_tokens excludes it) are
+// normalized at the provider boundary so reasoning tokens are priced at the
+// output rate; this pins the cost end of that contract.
+func TestComputeTextCost_AdditiveReasoningUsageNormalizedAtProvider(t *testing.T) {
+	const inRate, outRate = 0.000002, 0.00001
+	p := chatPricing(inRate, outRate)
+	mk := func() *schemas.BifrostLLMUsage {
+		return &schemas.BifrostLLMUsage{
+			PromptTokens: 11, CompletionTokens: 368, TotalTokens: 3908,
+			CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ReasoningTokens: 3529},
+		}
+	}
+
+	raw := mk()
+	before := computeTextCostTotal(&p, raw, serviceTier{})
+	wantBefore := 11*inRate + 368*outRate
+	if diff := before - wantBefore; diff > 1e-12 || diff < -1e-12 {
+		t.Fatalf("un-normalized cost = %v, want %v", before, wantBefore)
+	}
+
+	norm := mk()
+	azure.NormalizeAdditiveReasoningChatUsage(norm)
+	after := computeTextCostTotal(&p, norm, serviceTier{})
+	wantAfter := 11*inRate + (368+3529)*outRate
+	if diff := after - wantAfter; diff > 1e-12 || diff < -1e-12 {
+		t.Fatalf("normalized cost = %v, want %v", after, wantAfter)
+	}
+	if got, want := after-before, 3529*outRate; got-want > 1e-12 || want-got > 1e-12 {
+		t.Errorf("cost delta = %v, want reasoning x output rate = %v", got, want)
+	}
+
+	// OpenAI-convention usage is priced identically before and after.
+	oa := &schemas.BifrostLLMUsage{
+		PromptTokens: 11, CompletionTokens: 3897, TotalTokens: 3908,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ReasoningTokens: 3529},
+	}
+	oaBefore := computeTextCostTotal(&p, oa, serviceTier{})
+	azure.NormalizeAdditiveReasoningChatUsage(oa)
+	if oaAfter := computeTextCostTotal(&p, oa, serviceTier{}); oaAfter != oaBefore {
+		t.Errorf("openai-convention cost changed: %v -> %v", oaBefore, oaAfter)
+	}
 }

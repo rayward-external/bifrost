@@ -63,6 +63,8 @@ jobs:
       TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
       DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
       GITHUB_COPILOT_INSTALLATION_ID: ${{ secrets.GITHUB_COPILOT_INSTALLATION_ID }}
       GITHUB_COPILOT_REPOSITORY_ID: ${{ secrets.GITHUB_COPILOT_REPOSITORY_ID }}
@@ -98,6 +100,7 @@ jobs:
             aiplatform.googleapis.com:443
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -132,6 +135,7 @@ jobs:
             getbifrost.ai:443
             github.com:443
             huggingface.co:443
+            iamcredentials.googleapis.com:443
             iojs.org:443
             learn.microsoft.com:443
             login.microsoftonline.com:443
@@ -147,6 +151,7 @@ jobs:
             releases.astral.sh:443
             router.huggingface.co:443
             storage.googleapis.com:443
+            sts.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
             www.berkshirehathaway.com:443

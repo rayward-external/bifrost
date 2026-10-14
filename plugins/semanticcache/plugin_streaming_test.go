@@ -454,7 +454,7 @@ func TestFailStreamAccumulatorDropsStream(t *testing.T) {
 		t.Fatal("second failure must report false")
 	}
 
-	chunk := &StreamChunk{Timestamp: time.Now(), Response: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}}
+	chunk := &StreamChunk{Timestamp: time.Now(), Serialized: `{"choices":[]}`}
 	if err := plugin.addStreamChunk(requestID, chunk); err != nil {
 		t.Fatalf("adding a chunk to a failed stream must not error: %v", err)
 	}

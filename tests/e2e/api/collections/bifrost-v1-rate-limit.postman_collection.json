@@ -123,22 +123,6 @@
     {
       "key": "ms_poll_retry",
       "value": ""
-    },
-    {
-      "key": "ms_priming_ok",
-      "value": ""
-    },
-    {
-      "key": "ms_usage_ok",
-      "value": ""
-    },
-    {
-      "key": "ms_alias_ok",
-      "value": ""
-    },
-    {
-      "key": "ms_sibling_refused",
-      "value": ""
     }
   ],
   "item": [
@@ -1271,7 +1255,7 @@
     },
     {
       "name": "Model config spelling",
-      "description": "A provider-scoped model config on (chat_model, provider) with a budget that one completion exhausts. Request 1 with the configured spelling succeeds and accrues cost; the same prompt spelled '<provider>/<MODEL>' and as the dated alias is then refused with 402 budget_exceeded, so every spelling of the model is charged to the one budget. A sibling model is not refused by it. The VK's allowlist names the models explicitly (named entries match case-insensitively): a '*' allowlist is matched through the case-sensitive model catalog, so the upper-case spelling would be refused as model_blocked by the VK gate before the budget is consulted. Teardown deletes the model config and the VK whatever the outcome. Counter-dependent assertions are skip-guarded on priming success and on recorded usage, like the budget folder's, so the suite stays green when no provider or pricing is available; the dated-alias case runs only when chat_model_alias is an alias of chat_model (a runner overriding chat_model alone skips it); the sibling check fails on any governance refusal (402 or 403), not only on budget_exceeded.",
+      "description": "A provider-scoped model config on (chat_model, provider) with a budget that one completion exhausts. Request 1 with the configured spelling succeeds and accrues cost; the same prompt spelled '<provider>/<MODEL>' and as the dated alias is then refused with 402 budget_exceeded, so every spelling of the model is charged to the one budget. A sibling model is not refused by it. The VK's allowlist names the models explicitly (named entries match case-insensitively): a '*' allowlist is matched through the case-sensitive model catalog, so the upper-case spelling would be refused as model_blocked by the VK gate before the budget is consulted. Teardown deletes the model config and the VK whatever the outcome.",
       "item": [
         {
           "name": "Setup - Create VK for model config spelling",
@@ -1288,14 +1272,6 @@
                   "var model = pm.variables.get('chat_model') || 'gpt-4o';",
                   "var alias = pm.variables.get('chat_model_alias') || 'gpt-4o-2024-08-06';",
                   "var sibling = pm.variables.get('chat_model_sibling') || 'gpt-4o-mini';",
-                  "// The dated-alias case only proves anything when the alias really is an alias of the",
-                  "// configured model. A runner that overrides chat_model but leaves chat_model_alias at its",
-                  "// default would send an alias of another model, so the case is skipped unless the alias",
-                  "// starts with the configured model name (gpt-4o -> gpt-4o-2024-08-06).",
-                  "pm.collectionVariables.set('ms_alias_ok', alias.toLowerCase().indexOf(model.toLowerCase()) === 0 ? '1' : '');",
-                  "pm.collectionVariables.set('ms_priming_ok', '');",
-                  "pm.collectionVariables.set('ms_usage_ok', '');",
-                  "pm.collectionVariables.set('ms_sibling_refused', '');",
                   "// No budget of its own: the only budget this VK can hit is the model config's.",
                   "// The allowlist names the models sent below. A '*' allowlist is resolved",
                   "// through the model catalog, which is case-sensitive, so the upper-case",
@@ -1438,17 +1414,9 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.collectionVariables.set('ms_poll_retry', '0');",
-                  "var code = pm.response.code;",
-                  "if (code >= 200 && code < 300) {",
-                  "  pm.collectionVariables.set('ms_priming_ok', '1');",
-                  "  // Usage is zero, so the model config's budget admits this one request.",
-                  "  pm.test('Request 1 is not refused by a budget', function() { pm.expect(pm.response.text()).to.not.include('budget_exceeded'); });",
-                  "} else {",
-                  "  pm.collectionVariables.set('ms_priming_ok', '');",
-                  "  // Counters only move on usage-bearing responses, so without a working",
-                  "  // provider the downstream budget assertions are skipped, not failed.",
-                  "  pm.test('Skipped: provider unavailable for priming (status ' + code + ')', function() { pm.expect(true).to.be.true; });",
-                  "}"
+                  "// Usage is zero, so the model config's budget admits this one request.",
+                  "pm.test('Request 1 returns 200', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('Request 1 is not refused by a budget', function() { pm.expect(pm.response.text()).to.not.include('budget_exceeded'); });"
                 ]
               }
             }
@@ -1490,8 +1458,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var ok = pm.collectionVariables.get('ms_priming_ok');",
-                  "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
                   "var retry = Number(pm.collectionVariables.get('ms_poll_retry') || 0);",
                   "if (retry > 0) {",
                   "  // Post-response usage tracking is async (a goroutine bumps the in-memory",
@@ -1508,8 +1474,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var ok = pm.collectionVariables.get('ms_priming_ok');",
-                  "if (!ok) { pm.test('Skipped: provider unavailable', function() { pm.expect(true).to.be.true; }); return; }",
                   "var code = pm.response.code;",
                   "pm.test('List model configs from memory returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
                   "if (code !== 200) { return; }",
@@ -1528,15 +1492,7 @@
                   "  if (typeof pm.execution !== 'undefined' && pm.execution.setNextRequest) { pm.execution.setNextRequest(pm.info.requestName); } else { postman.setNextRequest(pm.info.requestName); }",
                   "  return;",
                   "}",
-                  "if (usage > 0) {",
-                  "  pm.collectionVariables.set('ms_usage_ok', '1');",
-                  "  pm.test('Model config budget current_usage accrued cost', function() { pm.expect(usage, 'after ' + retry + ' polls, budgets: ' + JSON.stringify(budgets)).to.be.above(0); });",
-                  "} else {",
-                  "  pm.collectionVariables.set('ms_usage_ok', '');",
-                  "  // Cost stays zero when the environment has no pricing data for the",
-                  "  // model; the 402 assertions are skipped rather than failed.",
-                  "  pm.test('Skipped: no cost recorded (pricing unavailable)', function() { pm.expect(true).to.be.true; });",
-                  "}"
+                  "pm.test('Model config budget current_usage accrued cost', function() { pm.expect(usage, 'after ' + retry + ' polls, budgets: ' + JSON.stringify(budgets)).to.be.above(0); });"
                 ]
               }
             }
@@ -1583,8 +1539,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var ok = pm.collectionVariables.get('ms_usage_ok');",
-                  "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
                   "var provider = pm.variables.get('provider') || 'openai';",
                   "var model = pm.variables.get('chat_model') || 'gpt-4o';",
                   "// Same prompt as request 1, model spelled '<provider>/<MODEL>'.",
@@ -1597,7 +1551,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if (!pm.collectionVariables.get('ms_usage_ok')) { pm.test('Skipped: no cost recorded', function() { pm.expect(true).to.be.true; }); return; }",
                   "pm.test('Request is refused with 402', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(402); });",
                   "pm.test('Rejection is budget_exceeded', function() {",
                   "  pm.expect(pm.response.text()).to.include('budget_exceeded');",
@@ -1640,22 +1593,10 @@
           "name": "Dated alias spelling is blocked with 402 budget_exceeded",
           "event": [
             {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var ok = pm.collectionVariables.get('ms_usage_ok') && pm.collectionVariables.get('ms_alias_ok');",
-                  "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
-                ]
-              }
-            },
-            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if (!pm.collectionVariables.get('ms_usage_ok')) { pm.test('Skipped: no cost recorded', function() { pm.expect(true).to.be.true; }); return; }",
-                  "if (!pm.collectionVariables.get('ms_alias_ok')) { pm.test('Skipped: chat_model_alias is not an alias of chat_model', function() { pm.expect(true).to.be.true; }); return; }",
                   "pm.test('Request is refused with 402', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(402); });",
                   "pm.test('Rejection is budget_exceeded', function() {",
                   "  pm.expect(pm.response.text()).to.include('budget_exceeded');",
@@ -1704,14 +1645,9 @@
                 "exec": [
                   "// The budget is scoped to the configured model; a sibling model must not",
                   "// resolve to it. The provider's own answer (200 or a provider-side error)",
-                  "// is not under test here, only that governance did not refuse it. A 403",
-                  "// model_blocked from the VK gate would also hide the budget from view, so",
-                  "// any governance refusal fails this check, not only budget_exceeded.",
-                  "var code = pm.response.code;",
-                  "var text = pm.response.text() || '';",
-                  "var refused = code === 402 || code === 403 || text.indexOf('budget_exceeded') !== -1 || text.indexOf('model_blocked') !== -1;",
-                  "pm.collectionVariables.set('ms_sibling_refused', refused ? '1' : '');",
-                  "pm.test('Sibling model is not refused by governance (402/403, budget_exceeded, model_blocked)', function() { pm.expect(refused, 'status ' + code + ' body: ' + text).to.equal(false); });"
+                  "// is not under test here, only that governance did not refuse it.",
+                  "pm.test('Sibling model is not refused with 402', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.not.equal(402); });",
+                  "pm.test('Sibling model is not refused as budget_exceeded', function() { pm.expect(pm.response.text()).to.not.include('budget_exceeded'); });"
                 ]
               }
             }

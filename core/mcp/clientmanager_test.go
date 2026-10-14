@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -357,6 +358,7 @@ func TestSetClientTools_ReplacesStaleTools(t *testing.T) {
 	m.SetClientTools(config.ID,
 		map[string]schemas.ChatTool{"replace-tools-client-kept": {}},
 		map[string]string{"replace-tools-client-kept": "kept"},
+		"",
 	)
 
 	m.mu.RLock()
@@ -1019,6 +1021,65 @@ func TestMCPProxySelectorRequirePublicTargetRefusesPrivateLiteral(t *testing.T) 
 	require.Equal(t, proxyURL, got)
 }
 
+// SetClientTools carries the instructions from the same handshake that found the tools,
+// and records them on the config so a per-call client can restore them after a restart.
+func TestSetClientToolsRecordsInstructionsForRestart(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "per-call", Name: "per-call", ToolsToExecute: []string{"*"}}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
+	m.mu.Unlock()
+
+	m.SetClientTools(config.ID, map[string]schemas.ChatTool{"t": {Type: "function"}}, map[string]string{"t": "t"}, "Use me carefully.")
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	assert.Equal(t, "Use me carefully.", m.clientMap[config.ID].ServerInstructions)
+	assert.Equal(t, "Use me carefully.", m.clientMap[config.ID].ExecutionConfig.DiscoveredInstructions)
+}
+
+// Instructions ride the change hash, so a server that rewrote only its instructions still
+// counts as a change. Without this the callback never fires and the new text is never
+// persisted or re-served.
+func TestInstructionsOnlyChangeStillFiresToolsChangeCallback(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
+	m.mu.Unlock()
+
+	var seen []string
+	m.SetToolsChangeCallback(func(_, _ string, _ map[string]schemas.ChatTool, _ map[string]string, instructions string) {
+		seen = append(seen, instructions)
+	})
+
+	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
+	mapping := map[string]string{"echo": "echo"}
+	m.SetClientTools(config.ID, tools, mapping, "v1")
+	m.SetClientTools(config.ID, map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "echo"}, "v2")
+
+	assert.Equal(t, []string{"v1", "v2"}, seen)
+}
+
+// A tools-only refresh (tools/list over a live connection) learns nothing about
+// instructions and must not clear the installed value.
+func TestWriteBackDiscoveredToolsKeepsInstructionsWhenNotRediscovered(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name: config.Name, ExecutionConfig: config,
+		ToolMap: map[string]schemas.ChatTool{}, ServerInstructions: "keep me",
+	}
+	m.mu.Unlock()
+
+	require.True(t, m.writeBackDiscoveredTools(config.ID, 0, map[string]schemas.ChatTool{"a": {Type: "function"}}, map[string]string{"a": "a"}, nil))
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	assert.Equal(t, "keep me", m.clientMap[config.ID].ServerInstructions)
+}
+
 // stubResolver answers every lookup with a fixed IP set or error.
 type stubResolver struct {
 	ips []net.IP
@@ -1148,4 +1209,34 @@ func TestBuildTLSHTTPClientRequirePublicTargetProxyClassificationIsPerRequest(t 
 	}
 	require.Error(t, err, "a direct request to the proxy's own address is a loopback destination and must be refused")
 	require.Contains(t, err.Error(), "blocked connection to non-public address")
+}
+
+// TestBuildTLSHTTPClientUsesGlobalProxy pins that MCP client transports honour the
+// global proxy when it is enabled for API traffic, while the destination guard still
+// refuses instance metadata without anything reaching the proxy. They used to follow
+// only HTTP_PROXY / HTTPS_PROXY.
+func TestBuildTLSHTTPClientUsesGlobalProxy(t *testing.T) {
+	set := proxytest.NewSet(t)
+	network.SetDefaultHTTPClientFactory(network.NewHTTPClientFactory(&network.GlobalProxyConfig{
+		Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://127.0.0.1:" + set.Config.Port(), EnableForAPI: true,
+	}, nil))
+	t.Cleanup(func() { network.SetDefaultHTTPClientFactory(nil) })
+
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{Name: "proxied"})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://mcp.bifrost.test/sse", nil)
+	if resp, err := httpClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "mcp.bifrost.test:443", nil)
+
+	// MCP allows private networks (local MCP servers) but never instance metadata.
+	set.Reset()
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "https://169.254.169.254/sse", nil)
+	_, err = httpClient.Do(req)
+	require.Error(t, err, "a metadata address must be refused")
+	proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
 }

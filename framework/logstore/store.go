@@ -267,6 +267,11 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 
 	// Optionally wrap with hybrid decorator for object storage offloading.
 	if config.ObjectStorage != nil {
+		sanitizer, sanErr := newPayloadSanitizer(config.ObjectStorageSanitize)
+		if sanErr != nil {
+			_ = inner.Close(ctx)
+			return nil, sanErr
+		}
 		objStore, objErr := objectstore.NewObjectStore(ctx, config.ObjectStorage, logger)
 		if objErr != nil {
 			_ = inner.Close(ctx)
@@ -277,7 +282,9 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 			_ = inner.Close(ctx)
 			return nil, fmt.Errorf("failed to ping object store: %w", err)
 		}
-		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields, config.ObjectStorageExcludeRequestTypes), nil
+		h := newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields, config.ObjectStorageExcludeRequestTypes)
+		h.sanitizer = sanitizer
+		return h, nil
 	}
 	return inner, nil
 }

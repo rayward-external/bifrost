@@ -72,6 +72,10 @@ type HybridLogStore struct {
 	excludedRequestTypes map[string]struct{}
 	// offloadErrorRawBodies: error_details is DB-resident only through databaseResidentPayloadFields, so its raw bodies are offloaded.
 	offloadErrorRawBodies bool
+	// sanitizer, when set, rewrites every payload just before Put (secret
+	// redaction, attachment stripping). A payload it cannot rewrite is dropped,
+	// never uploaded raw.
+	sanitizer *payloadSanitizer
 }
 
 type scopedDBLogStore interface {
@@ -209,6 +213,16 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 			return
 		}
 		work.payload = merged
+	}
+
+	if h.sanitizer != nil {
+		clean, err := h.sanitizer.Sanitize(work.payload)
+		if err != nil {
+			h.logger.Warn("objectstore: dropping upload for log %s: %v", work.logID, err)
+			h.droppedUploads.Add(1)
+			return
+		}
+		work.payload = clean
 	}
 
 	if err := h.objects.Put(ctx, work.key, work.payload, work.tags); err != nil {

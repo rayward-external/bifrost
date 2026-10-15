@@ -3718,6 +3718,33 @@
             "type": "string"
           }
         },
+        "object_storage_sanitize": {
+          "type": "object",
+          "description": "Rewrites every payload immediately before it is written to object storage: replaces matches of redact_patterns in any string value (including JSON-encoded payload fields) with placeholder, and optionally replaces inline base64 attachments with a size placeholder. Does not change what is sent upstream or what the database keeps. An invalid pattern fails startup; a payload that cannot be rewritten is dropped, never uploaded raw.",
+          "properties": {
+            "redact_patterns": {
+              "type": "array",
+              "description": "RE2 regular expressions; each match is replaced with placeholder.",
+              "items": {
+                "type": "string"
+              }
+            },
+            "placeholder": {
+              "type": "string",
+              "description": "Replacement for each redacted match. Defaults to [redacted-secret]."
+            },
+            "strip_attachments": {
+              "type": "boolean",
+              "description": "Replace inline base64 attachment data (data: URIs, {type: base64, data} sources, input_audio.data) with a size placeholder."
+            },
+            "attachment_min_chars": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Shortest base64 payload that is stripped. Defaults to 64."
+            }
+          },
+          "additionalProperties": false
+        },
         "retention_days": {
           "type": "integer",
           "minimum": 0,

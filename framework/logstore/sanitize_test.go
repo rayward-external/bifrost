@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -157,4 +158,52 @@ func TestLogStoreConfig_ParsesObjectStorageSanitize(t *testing.T) {
 	require.NotNil(t, cfg.ObjectStorageSanitize)
 	assert.Equal(t, []string{"x"}, cfg.ObjectStorageSanitize.RedactPatterns)
 	assert.True(t, cfg.ObjectStorageSanitize.StripAttachments)
+}
+
+func TestSanitize_Base64RawBodiesAreDecodedAndSanitized(t *testing.T) {
+	s := mustSanitizer(t, &ObjectStorageSanitizeConfig{RedactPatterns: []string{testSecretPattern}})
+	body := `{"messages":[{"role":"user","content":"key sk-abcdefghijklmnop"}]}`
+	payload, err := json.Marshal(map[string]string{
+		"raw_request":  base64.StdEncoding.EncodeToString([]byte(body)),
+		"raw_response": base64.StdEncoding.EncodeToString([]byte("plain text sk-abcdefghijklmnop")),
+	})
+	require.NoError(t, err)
+	out, err := s.Sanitize(payload)
+	require.NoError(t, err)
+	var got map[string]string
+	require.NoError(t, json.Unmarshal(out, &got))
+	req, err := base64.StdEncoding.DecodeString(got["raw_request"])
+	require.NoError(t, err, "the field stays base64")
+	assert.NotContains(t, string(req), "sk-abcdefghijklmnop")
+	assert.Contains(t, string(req), "[redacted-secret]")
+	resp, err := base64.StdEncoding.DecodeString(got["raw_response"])
+	require.NoError(t, err)
+	assert.Equal(t, "plain text [redacted-secret]", string(resp))
+}
+
+func TestSanitize_BinaryBase64RawBodiesAreOmitted(t *testing.T) {
+	s := mustSanitizer(t, &ObjectStorageSanitizeConfig{RedactPatterns: []string{testSecretPattern}})
+	payload, err := json.Marshal(map[string]string{"raw_request": base64.StdEncoding.EncodeToString([]byte{0xff, 0xfe, 0x00, 0x01})})
+	require.NoError(t, err)
+	out, err := s.Sanitize(payload)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "[binary body omitted: 4 bytes]")
+}
+
+func TestSanitize_JSONRawBodiesStillWork(t *testing.T) {
+	s := mustSanitizer(t, &ObjectStorageSanitizeConfig{RedactPatterns: []string{testSecretPattern}})
+	payload, err := json.Marshal(map[string]string{"raw_request": `{"k":"sk-abcdefghijklmnop"}`})
+	require.NoError(t, err)
+	out, err := s.Sanitize(payload)
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "sk-abcdefghijklmnop")
+}
+
+func TestSanitize_StripsGeminiInlineData(t *testing.T) {
+	s := mustSanitizer(t, &ObjectStorageSanitizeConfig{StripAttachments: true})
+	big := strings.Repeat("A", 300)
+	out, err := s.Sanitize([]byte(`{"parts":[{"inlineData":{"mimeType":"image/png","data":"` + big + `"}}]}`))
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), big)
+	assert.Contains(t, string(out), "[base64_data truncated: 300 chars]")
 }

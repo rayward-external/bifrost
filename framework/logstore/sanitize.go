@@ -2,10 +2,12 @@ package logstore
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // ObjectStorageSanitizeConfig rewrites every payload immediately before it is
@@ -109,7 +111,7 @@ func (s *payloadSanitizer) walk(v any, key string, depth int) any {
 			}
 		}
 		for k, child := range t {
-			if s.strip && key == "input_audio" && k == "data" {
+			if s.strip && (key == "input_audio" || key == "inlineData" || key == "inline_data") && k == "data" {
 				if d, ok := child.(string); ok && len(d) >= s.minChars {
 					t[k] = attachmentPlaceholder(len(d))
 					continue
@@ -135,6 +137,20 @@ func (s *payloadSanitizer) walk(v any, key string, depth int) any {
 // walked and re-encoded, keeping its encoding shape.
 func (s *payloadSanitizer) sanitizeString(str, key string, depth int) any {
 	trimmed := strings.TrimSpace(str)
+	// A2A/agent captures store raw_request/raw_response as base64 of the wire
+	// bytes (core/schemas/a2arawcapture.go), which no pattern can see into.
+	// Decode, sanitize the text, re-encode. A body that is not text cannot be
+	// checked, so it is omitted rather than stored blind.
+	if (key == "raw_request" || key == "raw_response") && trimmed != "" && trimmed[0] != '{' && trimmed[0] != '[' {
+		if decoded, err := base64.StdEncoding.DecodeString(trimmed); err == nil {
+			if !utf8.Valid(decoded) {
+				return fmt.Sprintf("[binary body omitted: %d bytes]", len(decoded))
+			}
+			if clean, ok := s.sanitizeString(string(decoded), key+".decoded", depth+1).(string); ok {
+				return base64.StdEncoding.EncodeToString([]byte(clean))
+			}
+		}
+	}
 	if len(trimmed) > 1 && (trimmed[0] == '{' || trimmed[0] == '[') {
 		var inner any
 		dec := json.NewDecoder(strings.NewReader(trimmed))

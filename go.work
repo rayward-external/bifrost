@@ -10,6 +10,7 @@ use (
 	./examples/mcps/error-test-server
 	./examples/mcps/go-test-server
 	./examples/mcps/http-no-ping-server
+	./examples/mcps/instructions-test-server
 	./examples/mcps/mcp-test-client
 	./examples/mcps/oauth-demo-server
 	./examples/mcps/parallel-test-server

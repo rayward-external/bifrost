@@ -423,3 +423,24 @@ updates:
     directory: /scripts/realtime-test
     schedule:
       interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/agentgateway
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/live
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: uv
+    directory: /tests/live/python
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /.github/workflows/tools/micromatch-compat
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0

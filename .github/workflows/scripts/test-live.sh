@@ -18,6 +18,11 @@ mkdir -p tmp
 if [ "${LIVE_PREBUILT:-}" = "1" ] && [ -x tmp/bifrost-http ]; then
   echo "📦 Using the prebuilt tmp/bifrost-http"
 else
+  # This build only exercises the gateway API, not the UI, but main.go's go:embed
+  # directive still needs a nonempty ui/ directory to compile (same requirement
+  # test-bifrost-http.sh already works around for its own unit-test build).
+  mkdir -p transports/bifrost-http/ui
+  [ -f transports/bifrost-http/ui/.gitkeep ] || echo "placeholder" > transports/bifrost-http/ui/.gitkeep
   echo "🔨 Building bifrost-http..."
   (cd transports && go build -o ../tmp/bifrost-http ./bifrost-http)
 fi

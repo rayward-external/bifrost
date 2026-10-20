@@ -40,9 +40,9 @@ var leakMarkers = []string{
 const prodErrorBody = `{"is_bifrost_error":false,"status_code":400,"error":{"type":"invalid_request_error","code":"invalid_value","message":"Invalid value: 'wizard'. Supported values are: 'system', 'assistant', 'user', 'function', 'tool', and 'developer'.","param":"messages[0].role"}}`
 
 func TestStripRemovesTheGatewaySoftwareName(t *testing.T) {
-	got, ok := StripExtraFields([]byte(prodErrorBody))
+	got, ok := stripExtraFieldsNoRewrite([]byte(prodErrorBody))
 	if !ok {
-		t.Fatal("StripExtraFields reported failure on a well-formed error body")
+		t.Fatal("stripExtraFieldsNoRewrite reported failure on a well-formed error body")
 	}
 	assertNoLeak(t, string(got))
 
@@ -67,7 +67,7 @@ func TestStripRemovesEveryKeyFromOneBody(t *testing.T) {
 	// probe returns on its first hit, so a loop that stopped at the first Unset
 	// would leave the second key in place and still report success.
 	both := `{"is_bifrost_error":false,"extra_fields":{"routing_info":{"key":"east"}},"error":{"message":"x"}}`
-	got, ok := StripExtraFields([]byte(both))
+	got, ok := stripExtraFieldsNoRewrite([]byte(both))
 	if !ok {
 		t.Fatal("unexpected failure")
 	}
@@ -87,9 +87,9 @@ func assertNoLeak(t *testing.T, body string) {
 }
 
 func TestStripExtraFieldsRemovesTheWholeObject(t *testing.T) {
-	got, ok := StripExtraFields([]byte(prodLeakBody))
+	got, ok := stripExtraFieldsNoRewrite([]byte(prodLeakBody))
 	if !ok {
-		t.Fatal("StripExtraFields reported failure on a well-formed body")
+		t.Fatal("stripExtraFieldsNoRewrite reported failure on a well-formed body")
 	}
 	assertNoLeak(t, string(got))
 
@@ -107,19 +107,19 @@ func TestStripExtraFieldsIsAllocationFreeWhenAbsent(t *testing.T) {
 	// that never had the key. If it regresses to always parsing, streaming cost
 	// per token goes up silently.
 	body := []byte(`{"choices":[{"delta":{"content":"Hi"}}]}`)
-	got, ok := StripExtraFields(body)
+	got, ok := stripExtraFieldsNoRewrite(body)
 	if !ok {
 		t.Fatal("unexpected failure")
 	}
 	if &got[0] != &body[0] {
-		t.Error("StripExtraFields copied a body that needed no change")
+		t.Error("stripExtraFieldsNoRewrite copied a body that needed no change")
 	}
 }
 
 func TestStripExtraFieldsFailsClosedOnUnparseableLeak(t *testing.T) {
 	// The one combination where passing through would ship exactly what this
 	// policy removes.
-	if _, ok := StripExtraFields([]byte(`{"extra_fields":{"routing_info":{"key":"east"`)); ok {
+	if _, ok := stripExtraFieldsNoRewrite([]byte(`{"extra_fields":{"routing_info":{"key":"east"`)); ok {
 		t.Fatal("truncated body carrying the key was reported safe")
 	}
 }
@@ -128,7 +128,7 @@ func TestStripExtraFieldsLeavesNonJSONAlone(t *testing.T) {
 	// Plain-text 500s and upstream binary bodies are not ours and cannot carry
 	// the key — rewriting them would turn this policy into an outage.
 	const plain = "upstream returned a plain text error"
-	got, ok := StripExtraFields([]byte(plain))
+	got, ok := stripExtraFieldsNoRewrite([]byte(plain))
 	if !ok || string(got) != plain {
 		t.Fatalf("non-JSON body was modified: %q ok=%v", got, ok)
 	}
@@ -139,7 +139,7 @@ func TestStripExtraFieldsLeavesNestedMentionAlone(t *testing.T) {
 	// Unset() reports it did not exist at the top level and the document is
 	// returned unchanged rather than guessed at.
 	const nested = `{"choices":[{"message":{"content":"the extra_fields key is documented here"}}]}`
-	got, ok := StripExtraFields([]byte(nested))
+	got, ok := stripExtraFieldsNoRewrite([]byte(nested))
 	if !ok || string(got) != nested {
 		t.Fatalf("nested mention was rewritten: %q", got)
 	}

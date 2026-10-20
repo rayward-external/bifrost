@@ -2308,9 +2308,10 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 	deny := func(decision Decision, message string) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
 		ctx.SetValue(governanceRejectedContextKey, true)
 		return req, &schemas.A2APluginShortCircuit{Error: &schemas.BifrostError{
-			Type:       bifrost.Ptr(string(decision)),
-			StatusCode: bifrost.Ptr(403),
-			Error:      &schemas.ErrorField{Message: message},
+			IsBifrostError: true,
+			Type:           bifrost.Ptr(string(decision)),
+			StatusCode:     bifrost.Ptr(403),
+			Error:          &schemas.ErrorField{Message: message},
 		}}, nil
 	}
 
@@ -2393,6 +2394,7 @@ func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
 	stampVirtualKeyContentLogging(ctx, vk)
+	stampVirtualKeyMetadata(ctx, vk)
 	if vk.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)

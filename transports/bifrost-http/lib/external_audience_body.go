@@ -552,13 +552,13 @@ func parseRequestedModel(body []byte) string {
 	return model
 }
 
-// StripExtraFields applies the body policy with no model rewrite.
+// stripExtraFieldsNoRewrite applies the body policy with no model rewrite.
 //
 // Kept as its own name because the stripping half is independently meaningful
 // and independently tested: a body policy that only removed keys is exactly what
 // this was before the model rewrite, and the tests for that half should not have
 // to thread a model through to say what they mean.
-func StripExtraFields(body []byte) (out []byte, ok bool) {
+func stripExtraFieldsNoRewrite(body []byte) (out []byte, ok bool) {
 	return ApplyBodyPolicy(body, "")
 }
 

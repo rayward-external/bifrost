@@ -75,7 +75,7 @@ func TestGPT6XHighReasoningEffortIsForwarded(t *testing.T) {
 		for _, model := range []string{"gpt-6-astra", "gpt-6-astra-2026-09-03"} {
 			t.Run(string(provider)+"/"+model, func(t *testing.T) {
 				caps := schemas.ResolveModelCaps(provider, model)
-				if got := caps.NormalizeReasoningEffort("xhigh", defaultEffortControl(model)); got != "xhigh" {
+				if got := caps.NormalizeReasoningEffort("xhigh", defaultEffortControl(provider, model)); got != "xhigh" {
 					t.Fatalf("NormalizeReasoningEffort(xhigh) = %q, want %q", got, "xhigh")
 				}
 				body := gpt6WireBody(t, gpt6ChatRequest(provider, model, "xhigh"))
@@ -92,7 +92,7 @@ func TestGPT6XHighReasoningEffortIsForwarded(t *testing.T) {
 // still resolve down to the strongest level the model does accept.
 func TestGPT6MaxReasoningEffortStillClamps(t *testing.T) {
 	caps := schemas.ResolveModelCaps(schemas.Azure, "gpt-6-astra")
-	if got := caps.NormalizeReasoningEffort("max", defaultEffortControl("gpt-6-astra")); got != "xhigh" {
+	if got := caps.NormalizeReasoningEffort("max", defaultEffortControl(schemas.Azure, "gpt-6-astra")); got != "xhigh" {
 		t.Fatalf("NormalizeReasoningEffort(max) = %q, want %q", got, "xhigh")
 	}
 }

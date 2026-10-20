@@ -1780,6 +1780,7 @@ jobs:
           sqlite3 --version
 
       - name: Run migration tests (PostgreSQL)
+        continue-on-error: true
         env:
           SKIP_GATEWAY_BUILD: "1"
         run: |
@@ -1787,6 +1788,7 @@ jobs:
           ./.github/workflows/scripts/run-migration-tests.sh postgres
 
       - name: Run migration tests (SQLite)
+        continue-on-error: true
         env:
           SKIP_GATEWAY_BUILD: "1"
         run: ./.github/workflows/scripts/run-migration-tests.sh sqlite

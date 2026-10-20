@@ -312,8 +312,9 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 }
 
 // applyBifrostResponseHeaders is ApplyBifrostResponseHeaders with the caller saying whether
-// extra holds a measured latency (see applyExtraFieldsScalarHeaders), and whether the caller's
-// own spend position should be emitted (emitUsage is false only on the error path).
+// extra holds a measured latency (see applyExtraFieldsScalarHeaders) and whether usage
+// headers should be emitted. emitUsage is false only on the error path — see
+// ApplyBifrostErrorResponseHeaders for why.
 func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields, latencyKnown bool, emitUsage bool) {
 	// "transport-response-headers" overhead phase: writing routed-identity and upstream
 	// headers onto the fasthttp response. Runs inside the root http.request span on the

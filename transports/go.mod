@@ -2,6 +2,27 @@ module github.com/maximhq/bifrost/transports/v2
 
 go 1.27.2
 
+// RAYWARD FORK PATCH — without these, a GOWORK=off build (e.g. `make build`
+// without LOCAL=1) resolves these modules via GOPROXY against the real
+// upstream maximhq/bifrost instead of this checkout's copy, silently losing
+// every fork-only patch in core/framework/plugins/*. Keep in step with
+// go.work's use() list and this file's require block.
+replace (
+	github.com/maximhq/bifrost/core => ../core
+	github.com/maximhq/bifrost/framework => ../framework
+	github.com/maximhq/bifrost/plugins/compat => ../plugins/compat
+	github.com/maximhq/bifrost/plugins/governance => ../plugins/governance
+	github.com/maximhq/bifrost/plugins/logging => ../plugins/logging
+	github.com/maximhq/bifrost/plugins/maxim => ../plugins/maxim
+	github.com/maximhq/bifrost/plugins/mocker => ../plugins/mocker
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver => ../plugins/modelcatalogresolver
+	github.com/maximhq/bifrost/plugins/otel => ../plugins/otel
+	github.com/maximhq/bifrost/plugins/prompts => ../plugins/prompts
+	github.com/maximhq/bifrost/plugins/routing => ../plugins/routing
+	github.com/maximhq/bifrost/plugins/semanticcache => ../plugins/semanticcache
+	github.com/maximhq/bifrost/plugins/telemetry => ../plugins/telemetry
+)
+
 require (
 	github.com/a2aproject/a2a-go/v2 v2.5.0
 	github.com/andybalholm/brotli v1.2.2
@@ -243,25 +264,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/clickhouse v0.7.0 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
-)
-
-// RAYWARD FORK PATCH — without these, a GOWORK=off build (e.g. `make build`
-// without LOCAL=1) resolves these modules via GOPROXY against the real
-// upstream maximhq/bifrost instead of this checkout's copy, silently losing
-// every fork-only patch in core/framework/plugins/*. Keep in step with
-// go.work's use() list and this file's require block.
-replace (
-	github.com/maximhq/bifrost/core => ../core
-	github.com/maximhq/bifrost/framework => ../framework
-	github.com/maximhq/bifrost/plugins/compat => ../plugins/compat
-	github.com/maximhq/bifrost/plugins/governance => ../plugins/governance
-	github.com/maximhq/bifrost/plugins/logging => ../plugins/logging
-	github.com/maximhq/bifrost/plugins/maxim => ../plugins/maxim
-	github.com/maximhq/bifrost/plugins/mocker => ../plugins/mocker
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver => ../plugins/modelcatalogresolver
-	github.com/maximhq/bifrost/plugins/otel => ../plugins/otel
-	github.com/maximhq/bifrost/plugins/prompts => ../plugins/prompts
-	github.com/maximhq/bifrost/plugins/routing => ../plugins/routing
-	github.com/maximhq/bifrost/plugins/semanticcache => ../plugins/semanticcache
-	github.com/maximhq/bifrost/plugins/telemetry => ../plugins/telemetry
 )

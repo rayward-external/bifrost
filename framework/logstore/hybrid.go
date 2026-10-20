@@ -76,9 +76,9 @@ type HybridLogStore struct {
 	objectExt             string // suffix of new object keys; selects json or parquet encoding
 	parquetCompression    string // parquet page codec, used when objectExt is parquetObjectExt
 	singleFormat          bool   // the backend can only hold json objects, so the other format is never probed or deleted
-	// RAYWARD FORK PATCH (#1068 companion) — sanitizer applied to every uploaded
-	// payload (log, merge, MCP and agent) before it leaves for object storage.
-	// A nil sanitizer is a no-op (see newPayloadSanitizer).
+	// sanitizer, when set, rewrites every payload just before Put (secret
+	// redaction, attachment stripping). A payload it cannot rewrite is dropped,
+	// never uploaded raw.
 	sanitizer *payloadSanitizer
 }
 
@@ -224,17 +224,14 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		work.payload = merged
 	}
 
-	// RAYWARD FORK PATCH (#1068 companion) — sanitize after the merge step and
-	// before objects.Put, so log, merge, MCP and agent uploads all pass through
-	// it. A nil sanitizer (no config) is a no-op.
 	if h.sanitizer != nil {
-		sanitized, err := h.sanitizer.Sanitize(work.payload)
+		clean, err := h.sanitizer.Sanitize(work.payload)
 		if err != nil {
-			h.logger.Warn("objectstore: failed to sanitize payload for log %s: %v", work.logID, err)
+			h.logger.Warn("objectstore: dropping upload for log %s: %v", work.logID, err)
 			h.droppedUploads.Add(1)
 			return
 		}
-		work.payload = sanitized
+		work.payload = clean
 	}
 
 	if err := h.putPayload(ctx, work.key, work.payload, work.tags); err != nil {

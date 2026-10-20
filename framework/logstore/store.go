@@ -286,6 +286,7 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 		hybrid.sanitizer = sanitizer
 		hybrid.setObjectFormat(config.ObjectStorage.ResolvedFormat(), config.ObjectStorage.ResolvedCompression())
 		hybrid.singleFormat = config.ObjectStorage.Type == objectstore.StoreTypeGCS // gcs rejects parquet, so no object is ever in the other format
+		hybrid.sanitizer = sanitizer
 		return hybrid, nil
 	}
 	return inner, nil

@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

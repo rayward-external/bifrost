@@ -3688,7 +3688,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	lib.ApplyBodyBufferPoolLimit(s.Config.ServerConfig, maxRequestBodySizeMB*1024*1024)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler),
+		// RAYWARD FORK PATCH — strips the response to an allowlisted header set for
+		// external callers (see external_audience_middleware.go). Must stay outermost.
+		Handler:            handlers.ExternalAudienceHeaderMiddleware()(handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler)),
 		MaxRequestBodySize: maxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 		// Explain an oversized body (413 naming the configured limit) instead of fasthttp's generic 400.

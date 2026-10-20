@@ -61,7 +61,7 @@ func TestEveryProdAuthErrorIsNeutralized(t *testing.T) {
 		"anthropic/revoked-key": prodAuthNotFoundAnthropic,
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, ok := StripExtraFields([]byte(body))
+			got, ok := StripAudienceExtraFields([]byte(body))
 			if !ok {
 				t.Fatalf("policy reported failure on a well-formed auth error: %s", body)
 			}
@@ -84,7 +84,7 @@ func TestEveryProdAuthErrorIsNeutralized(t *testing.T) {
 // The status code is the caller's primary signal and lives in the body for the
 // OpenAI dialect. Neutralizing the vocabulary must not disturb it.
 func TestNeutralizationPreservesTheStatusCode(t *testing.T) {
-	got, ok := StripExtraFields([]byte(prodAuthRequiredOpenAI))
+	got, ok := StripAudienceExtraFields([]byte(prodAuthRequiredOpenAI))
 	if !ok {
 		t.Fatal("policy reported failure")
 	}
@@ -100,7 +100,7 @@ func TestNeutralizationPreservesTheStatusCode(t *testing.T) {
 // which is why neutralizeAuthErrorIn is scoped to `error` and never walks.
 func TestAModelsOwnProseAboutVirtualKeysIsUntouched(t *testing.T) {
 	completion := `{"id":"chatcmpl-x","object":"chat.completion","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"To authenticate, send your virtual key in the x-bf-vk header."}}],"usage":{"total_tokens":30}}`
-	got, ok := StripExtraFields([]byte(completion))
+	got, ok := StripAudienceExtraFields([]byte(completion))
 	if !ok {
 		t.Fatal("policy reported failure on a clean completion")
 	}
@@ -113,7 +113,7 @@ func TestAModelsOwnProseAboutVirtualKeysIsUntouched(t *testing.T) {
 // #468 body — the trigger is now wider (it fires on auth vocabulary too), so
 // this guards the widening against collateral damage.
 func TestANonAuthErrorKeepsEveryActionableDetail(t *testing.T) {
-	got, ok := StripExtraFields([]byte(prodErrorBody))
+	got, ok := StripAudienceExtraFields([]byte(prodErrorBody))
 	if !ok {
 		t.Fatal("policy reported failure on a well-formed error body")
 	}
@@ -135,7 +135,7 @@ func TestANonAuthErrorKeepsEveryActionableDetail(t *testing.T) {
 // disclosure this file removes.
 func TestTruncatedAuthErrorFailsClosed(t *testing.T) {
 	truncated := []byte(`{"type":"virtual_key_required","error":{"message":"provide a virtual key via the x-bf-v`)
-	if _, ok := StripExtraFields(truncated); ok {
+	if _, ok := StripAudienceExtraFields(truncated); ok {
 		t.Error("an unparseable body naming the gateway software was passed through")
 	}
 }
@@ -149,7 +149,7 @@ func TestTruncatedAuthErrorFailsClosed(t *testing.T) {
 
 // The neutralized body must remain valid JSON of the same shape a client parses.
 func TestNeutralizedBodyKeepsTheErrorEnvelopeShape(t *testing.T) {
-	got, ok := StripExtraFields([]byte(prodAuthRequiredAnthropic))
+	got, ok := StripAudienceExtraFields([]byte(prodAuthRequiredAnthropic))
 	if !ok {
 		t.Fatal("policy reported failure")
 	}
@@ -176,7 +176,7 @@ func TestRoutineGovernanceDenialsAreNotMistakenForAuthFailures(t *testing.T) {
 		"mcp_tool_denied":  `{"type":"mcp_tool_blocked","status_code":403,"error":{"message":"MCP tool 'shell' is not allowed for virtual key 'acme'"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, ok := StripExtraFields([]byte(body))
+			got, ok := StripAudienceExtraFields([]byte(body))
 			if !ok {
 				t.Fatalf("policy reported failure on a routine denial: %s", body)
 			}
@@ -201,7 +201,7 @@ func TestRoutineGovernanceDenialsAreNotMistakenForAuthFailures(t *testing.T) {
 func TestANonJSONFileMentioningTheVocabularySurvives(t *testing.T) {
 	file := []byte("Onboarding notes\n\nStep 3: our gateway raises virtual_key_required " +
 		"when a caller sends no credential; provide one via x-bf-vk on internal calls.\n")
-	got, ok := StripExtraFields(file)
+	got, ok := StripAudienceExtraFields(file)
 	if !ok {
 		t.Fatal("a plain-text file was failed closed and replaced with an error JSON")
 	}
@@ -224,7 +224,7 @@ func TestTheEnterpriseAuthMessageIsAlsoNeutralized(t *testing.T) {
 		"anthropic": `{"type":"error","error":{"type":"virtual_key_required","message":"` + enterpriseMsg + `"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, ok := StripExtraFields([]byte(body))
+			got, ok := StripAudienceExtraFields([]byte(body))
 			if !ok {
 				t.Fatalf("policy reported failure: %s", body)
 			}
@@ -254,7 +254,7 @@ func TestAnUpstreamProvidersOwnAuthErrorIsNotOverwritten(t *testing.T) {
 		"upstream 401":   `{"error":{"message":"Authentication is required. Check the API key configured for this deployment.","type":"authentication_error"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, ok := StripExtraFields([]byte(body))
+			got, ok := StripAudienceExtraFields([]byte(body))
 			if !ok {
 				t.Fatalf("policy reported failure on an upstream error: %s", body)
 			}

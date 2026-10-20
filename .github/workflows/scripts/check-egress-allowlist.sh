@@ -157,8 +157,10 @@ NOT_DIALLED_HOSTS = {
     "placeholder.search.windows.net": "Azure AI Search placeholder in a request body; never resolved",
     "replace-me.search.windows.net": "azureSearchEndpoint collection-variable placeholder, meant to be overridden locally with real credentials; same pattern as placeholder.search.windows.net",
     "does-not-exist-h146.search.windows.net": "148.6 [EXPECT-4XX] azure On Your Data data_sources endpoint - Azure OpenAI's On-Your-Data feature dereferences it server-side, Bifrost only forwards the URL string",
+    "petstore3.swagger.io": "OpenAPI/Swagger servers/base_url URL embedded in openapi_config.spec request bodies across the openapi mcp-openapi-spec preview and tools_to_execute registration tests - these assert the spec is parsed into tools and that base_url/tools_to_execute are echoed back in the client config, never a tool_call round trip through a real chat completion that would make Bifrost dial the petstore API itself",
     # Deliberately unresolvable - negative tests assert the failure path.
     "bifrost.invalid": "reserved .invalid TLD; negative-path tests assert it fails to resolve",
+    "harness-lib-installed.invalid": "reserved .invalid TLD; connection_url fixture value in the library 'installed' flag registration test - asserts registration/listing behavior, never dialled",
     "harness.example": "reserved RFC 2606 .example TLD; redirect_uri value registered via POST /oauth2/register and echoed back through GET /oauth2/authorize in the raw-path-auth regression (#5765) - matchRedirectURI (mcpoauth2issuance.go) only string-compares it against the registered value, never dereferences it",
     "unlisted.example": "reserved .example TLD; [EXPECT-400] openai oauth-redirect-policy remote callback rejected - redirect_uri is string-compared against the registered value, never dereferences it, same mechanism as harness.example",
     "idp.example": "reserved .example TLD; oauth_key_config token_url in three [EXPECT-400] save-rejection tests (half-oauth, http-oauth, query-auth-style) - the save itself is refused, so the config is never persisted or activated",

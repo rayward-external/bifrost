@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: 45
 
     env:
-      # The modules declare go 1.27.0; keep the toolchain resolution identical to
+      # The modules declare go 1.27.2; keep the toolchain resolution identical to
       # the test workflows rather than depending on the runner image default.
       GOTOOLCHAIN: auto
 

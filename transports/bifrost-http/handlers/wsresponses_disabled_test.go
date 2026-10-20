@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/fasthttp/router"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/valyala/fasthttp"
 )
 

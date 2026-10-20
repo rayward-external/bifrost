@@ -78,7 +78,7 @@ echo "🔧 Using plugin versions from version files for transport..."
 cd transports
 
 # Normalize the local go.mod directive up front so prior-release artifacts
-# (e.g. `go 1.27.0` written by earlier `go get` runs) don't trip GOTOOLCHAIN=local.
+# (e.g. `go 1.27.2` written by earlier `go get` runs) don't trip GOTOOLCHAIN=local.
 go mod edit -go=1.27.2 -toolchain=none
 
 for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do

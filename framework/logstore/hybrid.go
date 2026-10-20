@@ -76,6 +76,10 @@ type HybridLogStore struct {
 	objectExt             string // suffix of new object keys; selects json or parquet encoding
 	parquetCompression    string // parquet page codec, used when objectExt is parquetObjectExt
 	singleFormat          bool   // the backend can only hold json objects, so the other format is never probed or deleted
+	// sanitizer, when set, rewrites every payload just before Put (secret
+	// redaction, attachment stripping). A payload it cannot rewrite is dropped,
+	// never uploaded raw.
+	sanitizer *payloadSanitizer
 }
 
 type scopedDBLogStore interface {
@@ -218,6 +222,16 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 			return
 		}
 		work.payload = merged
+	}
+
+	if h.sanitizer != nil {
+		clean, err := h.sanitizer.Sanitize(work.payload)
+		if err != nil {
+			h.logger.Warn("objectstore: dropping upload for log %s: %v", work.logID, err)
+			h.droppedUploads.Add(1)
+			return
+		}
+		work.payload = clean
 	}
 
 	if err := h.putPayload(ctx, work.key, work.payload, work.tags); err != nil {

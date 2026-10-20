@@ -224,7 +224,7 @@ func ApplyBifrostStreamResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 		extra.DroppedCompatPluginParams, _ = bifrostCtx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
 	}
 	// Latency does not exist yet when stream headers go out.
-	applyBifrostResponseHeaders(ctx, bifrostCtx, extra, false)
+	applyBifrostResponseHeaders(ctx, bifrostCtx, extra, false, false)
 }
 
 // applyCacheMetadataHeaders writes one x-bifrost-cache-* header per cache_debug field the
@@ -282,7 +282,7 @@ func ApplyBifrostErrorResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		Latency:                   extra.Latency,
 		ConvertedRequestType:      extra.ConvertedRequestType,
 		DroppedCompatPluginParams: extra.DroppedCompatPluginParams,
-	}, false)
+	}, false, false)
 	if !ExtraFieldsInHeaders(ctx) {
 		return
 	}
@@ -304,12 +304,14 @@ func ApplyBifrostErrorResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 // A finished response always carries RequestType, so that is what marks its latency as
 // measured; an empty placeholder (a large-response stream) has none.
 func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) {
-	applyBifrostResponseHeaders(ctx, bifrostCtx, extra, extra.RequestType != "")
+	applyBifrostResponseHeaders(ctx, bifrostCtx, extra, extra.RequestType != "", true)
 }
 
 // applyBifrostResponseHeaders is ApplyBifrostResponseHeaders with the caller saying whether
-// extra holds a measured latency (see applyExtraFieldsScalarHeaders).
-func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields, latencyKnown bool) {
+// extra holds a measured latency (see applyExtraFieldsScalarHeaders) and whether usage
+// headers should be emitted. emitUsage is false only on the error path — see
+// ApplyBifrostErrorResponseHeaders for why.
+func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields, latencyKnown bool, emitUsage bool) {
 	// "transport-response-headers" overhead phase: writing routed-identity and upstream
 	// headers onto the fasthttp response. Runs inside the root http.request span on the
 	// way out, on no phase span, so it would otherwise fold into "core". Nil-safe.

@@ -16,10 +16,10 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
-	uiassets "github.com/maximhq/bifrost/transports/bifrost-http/internal/uiassets"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	bifrostServer "github.com/maximhq/bifrost/transports/bifrost-http/server"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
+	uiassets "github.com/maximhq/bifrost/transports/v2/bifrost-http/internal/uiassets"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	bifrostServer "github.com/maximhq/bifrost/transports/v2/bifrost-http/server"
 )
 
 var Version string

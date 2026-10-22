@@ -102,6 +102,7 @@
 		"vitest": "4.1.11"
 	},
 	"overrides": {
+		"@vitest/mocker": "4.1.12",
 		"dompurify": "3.4.16",
 		"esbuild": "0.28.1",
 		"follow-redirects": "1.16.1",

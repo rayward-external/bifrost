@@ -36,9 +36,10 @@
     "dotenv": "16.4.0",
     "eslint": "10.7.0",
     "typescript": "5.7.3",
-    "vitest": "4.1.12"
+    "vitest": "4.1.11"
   },
   "overrides": {
+    "@vitest/mocker": "4.1.12",
     "ast-v8-to-istanbul": "1.0.0",
     "brace-expansion@1": "1.1.21",
     "brace-expansion@2": "2.1.7",

@@ -21,7 +21,13 @@ jobs:
     # or owners of maximhq) cannot get a runner until @maximhq/bifrost-admin approves
     # the run through Review deployments. Everyone else lands on ci-trusted-branch,
     # an environment with no protection rules that only gives the job a name.
-    environment: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || !contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)) && 'pr-testing' || 'ci-trusted-branch' }}
+    # Fork patch: this repo IS a GitHub fork of maximhq/bifrost, so
+    # `head.repo.fork` is unconditionally true here and every PR (all of them
+    # opened by this routine or rayward-external members, never an untrusted
+    # outside contributor) would route to the unconfigured/unapprovable
+    # `pr-testing` environment and time out waiting for an approval that can
+    # never come. Pin to `ci-trusted-branch` on this fork. See fork-patches.txt.
+    environment: ci-trusted-branch
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

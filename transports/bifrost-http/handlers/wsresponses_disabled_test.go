@@ -122,4 +122,12 @@ func TestRealtimeWSDisabledPathsCoverUpstreamRegistration(t *testing.T) {
 			t.Fatalf("OpenAI realtime path %s is not covered by realtimeWSDisabledPaths", path)
 		}
 	}
+	for _, path := range integrations.AzureRealtimePaths("/azure") {
+		if !covered[path] {
+			t.Fatalf("Azure realtime path %s is not covered by realtimeWSDisabledPaths", path)
+		}
+	}
+	if !covered[azureVoiceLiveRootPath] {
+		t.Fatalf("Azure Voice Live root alias %s is not covered by realtimeWSDisabledPaths", azureVoiceLiveRootPath)
+	}
 }

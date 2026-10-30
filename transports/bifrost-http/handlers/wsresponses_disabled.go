@@ -66,7 +66,10 @@ const realtimeWSDisabledMessage = "Realtime API WebSocket mode is not supported 
 // would otherwise bind to the WebSocket upgrader. Derived from the same source
 // as upstream's registration so the two cannot drift apart.
 func realtimeWSDisabledPaths() []string {
-	return append([]string{"/v1/realtime"}, integrations.OpenAIRealtimePaths("/openai")...)
+	paths := append([]string{"/v1/realtime"}, integrations.OpenAIRealtimePaths("/openai")...)
+	// The JavaScript Voice Live SDK replaces the endpoint's path with /voice-live/realtime,
+	// so it is also served at the root - same alias upstream's RegisterRoutes registers.
+	return append(append(paths, integrations.AzureRealtimePaths("/azure")...), azureVoiceLiveRootPath)
 }
 
 // registerDisabledRealtimeWSRoutes binds every Realtime WebSocket path to a

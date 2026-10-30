@@ -651,7 +651,15 @@ func (a *Accumulator) cleanupOldAccumulators() {
 		return true
 	})
 
-	a.logger.Debug("[streaming] cleanup old accumulators done. current size: %d entries", count)
+	// a.logger can be nil: Stop/Cleanup closes stopCleanup and stops the ticker,
+	// then waits for this goroutine to exit, but time.Ticker.Stop does not drain
+	// a tick already queued on the channel — select can still take the ticker
+	// branch one more time in the narrow window where both cases are ready,
+	// racing a caller that constructed the Accumulator with a nil logger (as
+	// several tests do) and is mid-shutdown.
+	if a.logger != nil {
+		a.logger.Debug("[streaming] cleanup old accumulators done. current size: %d entries", count)
+	}
 }
 
 // startCleanup runs in a background goroutine to periodically remove expired entries

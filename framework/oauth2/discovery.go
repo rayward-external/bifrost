@@ -335,12 +335,6 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Starting discovery for server: %s", serverURL))
 	}
 
-	// adminBase is serverURL's own scheme+host - the one value every later hop below
-	// compares against (never a prefix or hostname-only match) to decide whether it is
-	// still provably talking to the admin-configured server, not somewhere a remote
-	// response chose. See adminOAuthDiscoveryTransport's doc comment.
-	adminBase, _ := splitURL(serverURL)
-
 	// Step 1: Attempt to connect to MCP server, expect 401 with WWW-Authenticate header
 	client := newOAuthDiscoveryHTTPClient(ctx, 10*time.Second)
 
@@ -397,7 +391,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	}
 
 	// Step 5: Fetch authorization server metadata
-	metadata, err := fetchAuthorizationServerMetadata(ctx, authServers, adminBase)
+	metadata, err := fetchAuthorizationServerMetadata(ctx, authServers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch authorization server metadata: %w", err)
 	}

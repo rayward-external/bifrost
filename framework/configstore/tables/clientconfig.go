@@ -64,6 +64,7 @@ type TableClientConfig struct {
 	MCPEnableTempTokenAuth                  bool                           `gorm:"default:false" json:"mcp_enable_temp_token_auth"`                    // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
 	AsyncJobResultTTL                       int                            `gorm:"default:3600" json:"async_job_result_ttl"`                           // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeadersJSON                     string                         `gorm:"type:text" json:"-"`                                                 // JSON serialized []string
+	BatchAdminVirtualKeyIDsJSON             string                         `gorm:"type:text" json:"-"`                                                 // JSON serialized []string of batch-admin virtual key IDs
 	LoggingHeadersJSON                      string                         `gorm:"type:text" json:"-"`                                                 // JSON serialized []string
 	HideDeletedVirtualKeysInFilters         bool                           `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"`          // Hide deleted virtual keys in logs filter dropdowns
 	DeleteExpiredVirtualKeys                bool                           `gorm:"default:false" json:"delete_expired_virtual_keys"`                   // Default for virtual keys without an explicit delete_after_expire: delete them once expired

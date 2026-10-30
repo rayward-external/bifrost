@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: builder-8-32
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:

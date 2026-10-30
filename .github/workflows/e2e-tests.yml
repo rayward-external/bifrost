@@ -14,7 +14,7 @@ permissions:
 jobs:
   test-e2e-ui:
     name: E2E UI (Playwright)
-    runs-on: builder-8-32
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read

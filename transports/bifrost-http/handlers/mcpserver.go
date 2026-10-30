@@ -258,7 +258,7 @@ func (h *MCPServerHandler) serveMCPStream(ctx *fasthttp.RequestCtx, bifrostCtx *
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 	w.copyHeaders(ctx)
 	ctx.Response.Header.Set("X-Accel-Buffering", "no")
-	ctx.Response.SetBodyStream(w.reader, -1)
+	ctx.Response.SetBodyStream(lib.WrapSSEForExternalAudience(ctx, w.reader), -1)
 
 	go streamMCP(bifrostCtx, cancel, w.reader, handled, &completerSlot, traceCompleter)
 }

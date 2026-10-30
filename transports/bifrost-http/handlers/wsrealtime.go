@@ -17,7 +17,6 @@ import (
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/valyala/fasthttp"
@@ -62,15 +61,7 @@ func NewWSRealtimeHandler(client *bifrost.Bifrost, config *lib.Config, pool *bfw
 
 // RegisterRoutes registers the Realtime WebSocket endpoint at the base path and the OpenAI and Azure integration paths.
 func (h *WSRealtimeHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	handler := lib.ChainMiddlewares(h.handleUpgrade, middlewares...)
-	r.GET("/v1/realtime", handler)
-	for _, path := range integrations.OpenAIRealtimePaths("/openai") {
-		r.GET(path, handler)
-	}
-	// The JavaScript Voice Live SDK replaces the endpoint's path with /voice-live/realtime, so it is also served at the root.
-	for _, path := range append(integrations.AzureRealtimePaths("/azure"), azureVoiceLiveRootPath) {
-		r.GET(path, handler)
-	}
+	registerDisabledRealtimeWSRoutes(r, middlewares...)
 }
 
 // Close closes active realtime connections.

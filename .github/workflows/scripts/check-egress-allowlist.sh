@@ -212,6 +212,12 @@ NOT_DIALLED_HOSTS = {
     "harness-endpoint-guard.example.invalid": "reserved .example.invalid; POST /api/providers/azure/keys endpoint value in the provider-endpoint-updates-require-dashboard-auth test, which asserts the write is refused (403) and the key never persisted - config data stored/compared, never dialed",
     "harness-credential-guard.example.invalid": "reserved .example.invalid; [EXPECT-401] vertex key-credential-dial-targets test - the management API call itself is refused (401, missing setup token) before the credential JSON is ever read, same guard mechanism as harness-endpoint-guard.example.invalid",
     "harness-plugin-guard.example.invalid": "reserved .example.invalid; [EXPECT-401] openai plugin-config-dial-targets test - the management API call itself is refused (401, missing setup token) before the otel config is ever read, same guard mechanism as harness-endpoint-guard.example.invalid",
+    "evil.example": "reserved RFC 2606 .example TLD, multiple [EXPECT-400]/assertion-only usages: (a) bedrock file-retrieve s3-bucket-host-injection tests (#7307) embed it in a URL-encoded s3 bucket path to assert Bifrost's own gate rejects it with 400 'invalid s3 bucket name' before any upstream dial; (b) the mcp oauth2 server discovery-document test sends it only as a spoofed Host header against Bifrost's own baseUrl, asserting the returned issuer/token_endpoint/jwks_uri do NOT echo it back - never a target Bifrost or the harness dials",
+    "auth.example.invalid": "reserved .example.invalid; authorize_url/token_url in the mcp-oauth-cimd-client [EXPECT-400] toggle tests - both cases assert the POST /api/mcp/client save itself is refused (400, before any authorization server could be reached), same mechanism as idp.example",
+    "mcp.example.invalid": "reserved .example.invalid; connection_string in the same mcp-oauth-cimd-client [EXPECT-400] toggle tests as auth.example.invalid above - the save is refused before the MCP server is ever contacted",
+    "other-mcp.invalid": "reserved .invalid TLD; mcp-oauth-resource-match [PREVIEW] test asserts the returned authorize_url does NOT include it - the row's prerequisite local fixture (mcp-oauth-resource-fixture.mjs, port 8799) is never started by the harness runners, so this row does not even execute in CI, let alone dial a real host",
+    "inspector.example.com": "used only as the value of an Origin request header on an OPTIONS CORS-preflight probe against Bifrost's own baseUrl - a string Bifrost's CORS logic compares, never a URL anyone dials",
+    "s3.us-east-1.amazonaws.com": "base_url value in a sigv4-relay create/delete config round trip (relays-e2e) - the folder description states plainly 'Management API only, the upstream is never called'; only Bifrost's own /api/relays CRUD is exercised, no request is proxied through the relay in this test",
     # Documentation links inside descriptions and comments.
     "anthropic.com": "doc link in a folder description",
     "www.anthropic.com": "doc link in a folder description",
@@ -225,6 +231,7 @@ NOT_DIALLED_HOSTS = {
     "s3.amazonaws.com": "XML namespace URI in a ListBucketResult document; namespaces are names, not fetches",
     "www.googleapis.com": "the cloud-platform OAuth SCOPE string; the token exchange itself goes to oauth2.googleapis.com",
     "www.ietf.org": "WebRTC SDP a=extmap identifier URI (draft-holmer-rmcat-transport-wide-cc-extensions-01) - an RFC-style namespace identifier, not a URL anyone fetches, same pattern as s3.amazonaws.com",
+    "www.w3.org": "SSML xmlns namespace URI embedded in the <speak> request bodies sent to Azure's speech-synthesis endpoint - an XML namespace identifier, not a URL anyone fetches, same pattern as s3.amazonaws.com",
 }
 
 HOST_RE = re.compile(r"https?://([A-Za-z0-9._-]+\.[A-Za-z]{2,})")

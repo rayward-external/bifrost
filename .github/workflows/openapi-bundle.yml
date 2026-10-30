@@ -14,8 +14,7 @@ permissions:
 jobs:
   bundle-openapi:
     name: Bundle OpenAPI Spec
-    if: github.repository == 'maximhq/bifrost'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4

@@ -21,14 +21,8 @@ jobs:
     # or owners of maximhq) cannot get a runner until @maximhq/bifrost-admin approves
     # the run through Review deployments. Everyone else lands on ci-trusted-branch,
     # an environment with no protection rules that only gives the job a name.
-    # Fork patch: this repo IS a GitHub fork of maximhq/bifrost, so
-    # `head.repo.fork` is unconditionally true here and every PR (all of them
-    # opened by this routine or rayward-external members, never an untrusted
-    # outside contributor) would route to the unconfigured/unapprovable
-    # `pr-testing` environment and time out waiting for an approval that can
-    # never come. Pin to `ci-trusted-branch` on this fork. See fork-patches.txt.
-    environment: ci-trusted-branch
-    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || !contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)) && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: builder-8-32
     timeout-minutes: 5
     steps:
       - name: Harden Runner
@@ -65,3 +59,15 @@ jobs:
 
       - name: Check module path major versions
         run: ./.github/workflows/scripts/module-major.test.sh
+
+      - name: Check test-ref resolver
+        run: ./.github/workflows/scripts/resolve-test-ref.test.sh
+
+      - name: Check Docker Compose installer
+        run: bash ./.github/workflows/scripts/install-docker-compose.test.sh
+
+      - name: Check arm64 runner dependency installer
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.test.sh
+
+      - name: Check apt HTTPS source rewriter
+        run: bash ./.github/workflows/scripts/apt-sources-https.test.sh

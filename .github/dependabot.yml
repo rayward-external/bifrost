@@ -344,6 +344,12 @@ updates:
       interval: daily
     open-pull-requests-limit: 0
 
+  - package-ecosystem: uv
+    directory: /tests/live/python
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
   - package-ecosystem: gomod
     directory: /tests/scripts/1millogs
     schedule:

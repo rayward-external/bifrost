@@ -454,3 +454,18 @@ updates:
     directory: /scripts/realtime-test
     schedule:
       interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/agentgateway
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/live
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/realtime
+    schedule:
+      interval: weekly

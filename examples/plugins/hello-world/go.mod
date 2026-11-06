@@ -11,7 +11,7 @@ require (
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.20.0 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mark3labs/mcp-go v1.3.0 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect

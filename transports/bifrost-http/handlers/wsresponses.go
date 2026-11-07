@@ -161,6 +161,12 @@ func captureSessionHeaders(ctx *fasthttp.RequestCtx) *sessionHeaders {
 		k := strings.ToLower(string(key))
 		capturedHeaders.headers[k] = append(capturedHeaders.headers[k], string(value))
 	}
+	if queryArgs := ctx.URI().QueryArgs(); queryArgs.Len() > 0 {
+		capturedHeaders.queryParams = make(map[string]string, queryArgs.Len())
+		for key, value := range queryArgs.All() {
+			capturedHeaders.queryParams[strings.ToLower(string(key))] = string(value)
+		}
+	}
 	return capturedHeaders
 }
 
@@ -271,18 +277,18 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, setupHe
 	// Mirrors the realtime handler (wsrealtime.go handleUpgrade).
 	// Surface upgrade-request headers/query so CEL rules (headers[...] / params[...])
 	// see the same shape they would for normal HTTP requests.
-	if auth != nil {
-		if len(auth.headers) > 0 {
-			flatHeaders := make(map[string]string, len(auth.headers))
-			for k, values := range auth.headers {
+	if setupHeaders != nil {
+		if len(setupHeaders.headers) > 0 {
+			flatHeaders := make(map[string]string, len(setupHeaders.headers))
+			for k, values := range setupHeaders.headers {
 				if len(values) > 0 {
 					flatHeaders[k] = values[0]
 				}
 			}
 			bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, flatHeaders)
 		}
-		if len(auth.queryParams) > 0 {
-			bifrostCtx.SetValue(schemas.BifrostContextKeyRequestQuery, auth.queryParams)
+		if len(setupHeaders.queryParams) > 0 {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyRequestQuery, setupHeaders.queryParams)
 		}
 	}
 	preReq := &schemas.BifrostRequest{

@@ -198,6 +198,22 @@ query-filters:
   - exclude:
       id: go/reflected-xss
 
+  # go/bad-redirect-check (1 medium FP): framework/openapimcp/refs.go's JSON
+  # Schema $ref resolver (lookup) checks `strings.HasPrefix(pointer, "/")`
+  # before walking a "#/a/b/c" JSON pointer through the parsed OpenAPI
+  # document. The flagged "ref" variable is a JSON Schema $ref string, not an
+  # HTTP Location/redirect target — nothing here ever reaches net/http's
+  # redirect machinery or a Location header. CodeQL's go/bad-redirect-check
+  # query matches on the leading-slash-only check pattern regardless of
+  # domain, producing a false positive wherever "ref"/leading-slash validation
+  # appears outside an actual redirect context. Audited: this is the only
+  # site matching this rule repo-wide. RE-AUDIT on every upstream sync: if a
+  # new site validates an actual HTTP redirect target with only a leading-
+  # slash check (missing the '/'/'\' open-redirect guard), this rule-level
+  # exclude would hide it.
+  - exclude:
+      id: go/bad-redirect-check
+
   # go/allocation-size-overflow (2 high FP, distinct rule from the
   # go/uncontrolled-allocation-size exclude above — CWE-190 "size computation
   # for allocation may overflow"): core/providers/runware/runware.go's

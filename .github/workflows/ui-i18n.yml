@@ -12,7 +12,7 @@ permissions:
 jobs:
   i18n-check:
     name: Hardcoded strings and locale catalogs
-    runs-on: builder-8-32
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Harden Runner

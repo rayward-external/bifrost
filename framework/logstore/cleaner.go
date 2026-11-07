@@ -3,7 +3,7 @@ package logstore
 import (
 	"context"
 	"errors"
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -345,5 +345,5 @@ func (c *LogsCleaner) nextRunDuration() time.Duration {
 // calculateNextRunDuration returns interval plus a random jitter between interval/96 and interval/48.
 func calculateNextRunDuration(interval time.Duration) time.Duration {
 	minJitter := interval / 96
-	return interval + minJitter + time.Duration(rand.Int63n(int64(minJitter)+1))
+	return interval + minJitter + time.Duration(rand.Int64N(int64(minJitter)+1))
 }

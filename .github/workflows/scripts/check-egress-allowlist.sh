@@ -225,6 +225,7 @@ NOT_DIALLED_HOSTS = {
     "code.claude.com": "doc link in a test case description (auto-mode-classifier-billing)",
     "developers.openai.com": "doc link in a folder description",
     "docs.aws.amazon.com": "doc link in a folder description",
+    "runware.ai": "doc link in a test case description (runware image-task long-running-sync-request test, linking Runware's own task-polling docs) - the real Runware endpoint Bifrost dials is api.runware.ai, already allowlisted separately",
     "docs.x.ai": "doc link in a folder description",
     "schema.getpostman.com": "Postman collection schema declaration, not fetched at run time",
     # Identifiers that merely look like endpoints.

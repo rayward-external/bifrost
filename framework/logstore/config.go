@@ -21,9 +21,7 @@ type Config struct {
 	ObjectStorageExcludeFields []string `json:"object_storage_exclude_fields,omitempty"`
 	// ObjectStorageExcludeRequestTypes lists request types (log object_type values) whose logs stay fully in the database and are never offloaded.
 	ObjectStorageExcludeRequestTypes []string `json:"object_storage_exclude_request_types,omitempty"`
-	// ObjectStorageSanitize rewrites payloads (secret redaction, attachment
-	// stripping) right before they are written to object storage.
-	ObjectStorageSanitize *ObjectStorageSanitizeConfig `json:"object_storage_sanitize,omitempty"`
+	CaptureClientIP                  bool     `json:"capture_client_ip,omitempty"` // records client_ip on LLM, MCP and relay logs; off by default
 }
 
 const (
@@ -96,15 +94,15 @@ func (c *WriterConfig) WithDefaults() WriterConfig {
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get the basic fields
 	type TempConfig struct {
-		Enabled                          bool                         `json:"enabled"`
-		Type                             LogStoreType                 `json:"type"`
-		Config                           json.RawMessage              `json:"config"` // Keep as raw JSON
-		RetentionDays                    int                          `json:"retention_days"`
-		Writer                           *WriterConfig                `json:"writer,omitempty"`
-		ObjectStorage                    *objectstore.Config          `json:"object_storage,omitempty"`
-		ObjectStorageExcludeFields       []string                     `json:"object_storage_exclude_fields,omitempty"`
-		ObjectStorageExcludeRequestTypes []string                     `json:"object_storage_exclude_request_types,omitempty"`
-		ObjectStorageSanitize            *ObjectStorageSanitizeConfig `json:"object_storage_sanitize,omitempty"`
+		Enabled                          bool                `json:"enabled"`
+		Type                             LogStoreType        `json:"type"`
+		Config                           json.RawMessage     `json:"config"` // Keep as raw JSON
+		RetentionDays                    int                 `json:"retention_days"`
+		Writer                           *WriterConfig       `json:"writer,omitempty"`
+		ObjectStorage                    *objectstore.Config `json:"object_storage,omitempty"`
+		ObjectStorageExcludeFields       []string            `json:"object_storage_exclude_fields,omitempty"`
+		ObjectStorageExcludeRequestTypes []string            `json:"object_storage_exclude_request_types,omitempty"`
+		CaptureClientIP                  bool                `json:"capture_client_ip,omitempty"`
 	}
 
 	var temp TempConfig
@@ -120,7 +118,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.ObjectStorage = temp.ObjectStorage
 	c.ObjectStorageExcludeFields = temp.ObjectStorageExcludeFields
 	c.ObjectStorageExcludeRequestTypes = temp.ObjectStorageExcludeRequestTypes
-	c.ObjectStorageSanitize = temp.ObjectStorageSanitize
+	c.CaptureClientIP = temp.CaptureClientIP
 	if !temp.Enabled {
 		c.Config = nil
 		return nil

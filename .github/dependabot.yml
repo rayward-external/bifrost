@@ -469,3 +469,23 @@ updates:
     directory: /tests/realtime
     schedule:
       interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/apps-server
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/input-required-server
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/per-user-discovery-server
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/cmd/mcpconsole
+    schedule:
+      interval: weekly

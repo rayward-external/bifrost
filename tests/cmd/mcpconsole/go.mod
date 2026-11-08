@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/tests/cmd/mcpconsole
 
-go 1.27.0
+go 1.27.3
 
 require github.com/mark3labs/mcp-go v1.5.0
 

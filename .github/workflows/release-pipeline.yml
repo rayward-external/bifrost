@@ -1890,19 +1890,15 @@ jobs:
           go-version: "1.27.3"
 
       - name: Run bifrost-http unit tests
-        # fork quarantine (2026-10-31): the "handlers" package hangs/fails under -race
-        # since the fork's golang.org/x/net v0.61.0->v0.62.0 security bump (landed via
-        # the 2026-10-31 sync PR #408's extra commit, and independently in PR #409);
-        # see fork-patches.txt for the full investigation notes and removal condition.
-        # STEP-level (not job-level) so this stays a required-status-check pass with a
-        # warning annotation instead of blocking merges.
-        continue-on-error: true
+        # Fork: NO continue-on-error on this step. A step-level mute hides every failure
+        # in the transport suite, including the fork's own security guard tests; quarantine
+        # a measured flake by name in GOTEST_SKIP below instead (see fork-patches.txt).
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
           # Fork patch: skip tests whose failures are upstream's own, not the fork's —
           # see fork-patches.txt for the reason and removal condition of each
-          GOTEST_SKIP: 'TestConvertToBifrostContext_HarnessSessionHeaderFallback/baggage_session-id_member_is_not_a_session_id$|TestSkillsServingAllSkillsGitRepoReusedUntilCorpusChanges$|TestClaudeMarketplaceGitRepoContainsMarketplaceAndCloneablePlugin$|TestGatewayMatchedRuleSuppressesGovernanceFallbacks$|TestGatewayModelOnlyRuleWithVirtualKeyWeights$|TestGatewayRulePinOutsideTheVirtualKeysKeys$|TestLoadConfigServesCatalogFeedsFromFixture$|TestFetchURLSafeGoesThroughGlobalProxy$|TestAnthropicHeldStreamDeliversHeartbeatsThenContent$'
+          GOTEST_SKIP: 'TestConvertToBifrostContext_HarnessSessionHeaderFallback/baggage_session-id_member_is_not_a_session_id$|TestSkillsServingAllSkillsGitRepoReusedUntilCorpusChanges$|TestClaudeMarketplaceGitRepoContainsMarketplaceAndCloneablePlugin$|TestGatewayMatchedRuleSuppressesGovernanceFallbacks$|TestGatewayModelOnlyRuleWithVirtualKeyWeights$|TestGatewayRulePinOutsideTheVirtualKeysKeys$|TestLoadConfigServesCatalogFeedsFromFixture$|TestFetchURLSafeGoesThroughGlobalProxy$|TestAnthropicHeldStreamDeliversHeartbeatsThenContent$|TestOpenAIChatHeldStreamCommitsEarly$'
         run: ./.github/workflows/scripts/test-bifrost-http.sh
 
   # GPT Live e2e suite (tests/live): the prebuilt gateway on the live profile, which points the

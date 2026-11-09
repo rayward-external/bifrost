@@ -55,11 +55,23 @@ if [ "${#packages[@]}" -eq 0 ]; then
   echo "❌ No transport unit-test packages found" >&2
   exit 1
 fi
+go_test_args=(-short -race -v -timeout 40m -coverprofile=coverage.txt)
 # Fork patch: skip upstream-broken tests named via GOTEST_SKIP (see fork-patches.txt)
 if [ -n "${GOTEST_SKIP:-}" ]; then
-  go test -short -race -v -timeout 40m -coverprofile=coverage.txt -skip "$GOTEST_SKIP" "${packages[@]}"
-else
-  go test -short -race -v -timeout 40m -coverprofile=coverage.txt "${packages[@]}"
+  go_test_args+=(-skip "$GOTEST_SKIP")
+fi
+# Fork patch: keep a copy of go test's output, then end the step with a FAIL SUMMARY
+# and ::error annotations naming the failing tests (go-test-fail-summary.sh; see
+# fork-patches.txt). go test's own exit status is what the step returns.
+go_test_log="$(mktemp)"
+set +e
+go test "${go_test_args[@]}" "${packages[@]}" 2>&1 | tee "$go_test_log"
+go_test_status=${PIPESTATUS[0]}
+set -e
+"$SCRIPT_DIR/go-test-fail-summary.sh" "$go_test_log" "$go_test_status" || echo "⚠️  go-test-fail-summary.sh failed; read the go test output above"
+rm -f "$go_test_log"
+if [ "$go_test_status" -ne 0 ]; then
+  exit "$go_test_status"
 fi
 
 # Upload coverage to Codecov

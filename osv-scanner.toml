@@ -1,0 +1,13 @@
+# Fork-only. Dependency advisories this fork has triaged as unfixable for us,
+# each with a reason and an expiry (osv-scanner config format). The daily
+# security sweep is the only author; .github/workflows/security-alert-sync.yml
+# mirrors every unexpired entry onto the matching Dependabot alert (dismissed
+# as tolerable_risk) and reopens it when the entry is removed or expires.
+#
+# Add an entry only for an advisory the shipped artifact does not install or
+# reach, with an expiry no more than 90 days out:
+#
+#   [[IgnoredVulns]]
+#   id = "GHSA-xxxx-xxxx-xxxx"      # or GO-/CVE- id; aliases are resolved
+#   ignoreUntil = 2027-01-01
+#   reason = "why it is unfixable AND why the shipped image does not reach it"

@@ -1117,8 +1117,13 @@ func TestWarpAdminRoutesAdmitRBACAuthorizedCaller(t *testing.T) {
 	require.Equal(t, 1, jobs.createdCount())
 
 	job := &tables.TableSidekiqJob{ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
+	// Fork patch: under the store's lock. startBackfill above has already handed a job
+	// to the sidekiq runner, whose goroutine reads this map (GetSidekiqJob); an unlocked
+	// write here is a -race failure of the fixture, not of the handlers.
+	jobs.mu.Lock()
 	jobs.jobs[job.ID] = job
 	jobs.inFlight = job
+	jobs.mu.Unlock()
 
 	statusCtx := rbacAdminCtx("")
 	statusCtx.QueryArgs().Set("id", job.ID)

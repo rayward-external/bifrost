@@ -167,7 +167,12 @@ func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 	// stall it; a second goroutine hands the chunks to fasthttp through an SSEStreamReader; and an SSE
 	// reply gets the comment heartbeat, so a caller who left is noticed while the upstream is quiet.
 	reader := lib.NewSSEStreamReader()
-	ctx.Response.SetBodyStream(reader, -1)
+	// RAYWARD FORK PATCH: the relay stream gets the same external-audience scrub as the
+	// passthrough stream it mirrors (integrations/router.go, handlePassthroughStream). The wrapper
+	// is a no-op unless the caller is external AND the reply is text/event-stream, and
+	// writeEndpointHeaders above has already set the upstream Content-Type it decides on. The
+	// heartbeat and Done() still go to reader; the wrapper only rewrites the bytes read out.
+	ctx.Response.SetBodyStream(lib.WrapSSEForExternalAudience(ctx, reader), -1)
 	var heartbeatDone chan struct{}
 	var heartbeatExited <-chan struct{}
 	if relayHeartbeatEligible(stream.Headers) {

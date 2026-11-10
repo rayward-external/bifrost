@@ -798,6 +798,64 @@ func TestBuildTLSHTTPClientNeverFallsBackToUnguardedDefault(t *testing.T) {
 	}
 }
 
+// TestDenyCrossHostMCPRedirect pins the CheckRedirect policy added for
+// GO-2026-6911 (SSRF + credential leak via an MCP server's unvalidated
+// Location header): a same-host redirect (pagination, trailing slash, a
+// load balancer) still works, a cross-host redirect is refused before the
+// credential headers baked onto the request ever reach it, and a redirect
+// chain is capped the same way the existing fetch-client policy is.
+func TestDenyCrossHostMCPRedirect(t *testing.T) {
+	first := &http.Request{URL: mustParseURL(t, "https://mcp.example.com/v1")}
+	sameHost := &http.Request{URL: mustParseURL(t, "https://mcp.example.com/v1/redirected")}
+	crossHost := &http.Request{URL: mustParseURL(t, "https://attacker.example/steal")}
+
+	require.NoError(t, denyCrossHostMCPRedirect(sameHost, []*http.Request{first}))
+
+	err := denyCrossHostMCPRedirect(crossHost, []*http.Request{first})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked cross-host MCP redirect")
+
+	via := make([]*http.Request, 10)
+	for i := range via {
+		via[i] = first
+	}
+	err = denyCrossHostMCPRedirect(sameHost, via)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "stopped after 10 redirects")
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	require.NoError(t, err)
+	return u
+}
+
+// TestBuildTLSHTTPClientRefusesCrossHostRedirect is the end-to-end version of
+// TestDenyCrossHostMCPRedirect: an MCP server answers with a 302 to a
+// different host (simulating a compromised or malicious server trying to
+// make the gateway forward its credential headers elsewhere), and the client
+// buildTLSHTTPClient returns must refuse to follow it.
+func TestBuildTLSHTTPClientRefusesCrossHostRedirect(t *testing.T) {
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer evil.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evil.URL+"/collect", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
+	require.NoError(t, err)
+	require.NotNil(t, httpClient.CheckRedirect)
+
+	_, err = httpClient.Get(origin.URL)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked cross-host MCP redirect")
+}
+
 // TestBuildTLSHTTPClientBlocksLinkLocal proves the dial-time guard refuses
 // link-local destinations (including the 169.254.169.254 cloud metadata
 // endpoint) - the one class of target with no legitimate MCP use case under

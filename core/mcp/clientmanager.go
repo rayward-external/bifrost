@@ -3904,7 +3904,10 @@ func (m *MCPManager) buildTLSHTTPClientWithProxyAndResolver(config *schemas.MCPC
 	// and on the direct path (no proxy configured, or a NO_PROXY match) the
 	// dialer sees the real target.
 	if !config.RequirePublicTarget {
-		return &http.Client{Transport: newTransport(mcpProxySelector(proxy, false, resolver), network.PrivateNetworkDialContext(mcpDialTimeout))}, nil
+		return &http.Client{
+			Transport:     newTransport(mcpProxySelector(proxy, false, resolver), network.PrivateNetworkDialContext(mcpDialTimeout)),
+			CheckRedirect: denyCrossHostMCPRedirect,
+		}, nil
 	}
 	// A RequirePublicTarget client needs two dial policies: the strict one for
 	// its destinations and the private-network one for the proxy itself, which
@@ -3913,11 +3916,35 @@ func (m *MCPManager) buildTLSHTTPClientWithProxyAndResolver(config *schemas.MCPC
 	// is selected for it, on two separate transports, so a direct request can
 	// never inherit the proxy policy because its destination happens to be an
 	// address a proxied request used before.
-	return &http.Client{Transport: &network.ProxyAwareTransport{
-		Proxy:    proxy,
-		Direct:   newTransport(nil, network.SSRFSafeDialContext(mcpDialTimeout)),
-		ViaProxy: newTransport(mcpProxySelector(proxy, true, resolver), network.PrivateNetworkDialContext(mcpDialTimeout)),
-	}}, nil
+	return &http.Client{
+		Transport: &network.ProxyAwareTransport{
+			Proxy:    proxy,
+			Direct:   newTransport(nil, network.SSRFSafeDialContext(mcpDialTimeout)),
+			ViaProxy: newTransport(mcpProxySelector(proxy, true, resolver), network.PrivateNetworkDialContext(mcpDialTimeout)),
+		},
+		CheckRedirect: denyCrossHostMCPRedirect,
+	}, nil
+}
+
+// denyCrossHostMCPRedirect is the http.Client CheckRedirect policy for every MCP
+// client transport. GO-2026-6911: the MCP client (transport.WithHTTPHeaders /
+// WithHTTPHeaderFunc) attaches static credential headers directly to the
+// outgoing request. Go's net/http only strips "Authorization"/"Cookie" on a
+// cross-host redirect; any other header -- including the API-key-style headers
+// MCP server configs use -- is forwarded to whatever host the server's 3xx
+// Location points at. An MCP server (malicious, or made to answer like one via
+// SSRF) can therefore redirect the gateway to an attacker-controlled host and
+// collect the caller's credential. Denying any redirect that changes host
+// closes both the credential leak and the SSRF pivot; MCP servers have no
+// legitimate need to redirect callers cross-host mid-session.
+func denyCrossHostMCPRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if req.URL.Host != via[0].URL.Host {
+		return fmt.Errorf("blocked cross-host MCP redirect to %q", req.URL.Host)
+	}
+	return nil
 }
 
 // mcpProxySelector wraps an http.Transport Proxy selector so the dial-time

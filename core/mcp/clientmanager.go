@@ -3926,23 +3926,33 @@ func (m *MCPManager) buildTLSHTTPClientWithProxyAndResolver(config *schemas.MCPC
 	}, nil
 }
 
-// denyCrossHostMCPRedirect is the http.Client CheckRedirect policy for every MCP
-// client transport. GO-2026-6911: the MCP client (transport.WithHTTPHeaders /
-// WithHTTPHeaderFunc) attaches static credential headers directly to the
-// outgoing request. Go's net/http only strips "Authorization"/"Cookie" on a
-// cross-host redirect; any other header -- including the API-key-style headers
-// MCP server configs use -- is forwarded to whatever host the server's 3xx
-// Location points at. An MCP server (malicious, or made to answer like one via
-// SSRF) can therefore redirect the gateway to an attacker-controlled host and
-// collect the caller's credential. Denying any redirect that changes host
-// closes both the credential leak and the SSRF pivot; MCP servers have no
-// legitimate need to redirect callers cross-host mid-session.
+// denyCrossHostMCPRedirect is the http.Client CheckRedirect policy for the MCP
+// streamable HTTP/SSE transports (not the OpenAPI-upstream client built in
+// createOpenAPIConnection, which clears it -- see the comment there).
+// GO-2026-6911: the MCP client (transport.WithHTTPHeaders / WithHTTPHeaderFunc)
+// attaches static credential headers directly to the outgoing request. Go's
+// net/http only strips "Authorization"/"Cookie" on a cross-host redirect; any
+// other header -- including the API-key-style headers MCP server configs use
+// -- is forwarded to whatever host (or, on a same-host scheme downgrade, over
+// plaintext to) the server's 3xx Location points at. An MCP server (malicious,
+// or made to answer like one via SSRF) can therefore redirect the gateway to
+// an attacker-controlled host, or downgrade it to http, and collect the
+// caller's credential. Denying any redirect that changes host or drops from
+// https to a non-https scheme closes both the credential leak and the SSRF
+// pivot; MCP servers have no legitimate need to redirect callers cross-host or
+// to plaintext mid-session. Mirrors core/providers/utils/tokencache/redirect.go's
+// checkTokenRedirect, which guards the same class of credential-replay leak
+// for OAuth token requests.
 func denyCrossHostMCPRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return errors.New("stopped after 10 redirects")
 	}
-	if req.URL.Host != via[0].URL.Host {
+	first := via[0].URL
+	if !strings.EqualFold(req.URL.Host, first.Host) {
 		return fmt.Errorf("blocked cross-host MCP redirect to %q", req.URL.Host)
+	}
+	if strings.EqualFold(first.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {
+		return fmt.Errorf("blocked MCP redirect from https to %q", req.URL.Scheme)
 	}
 	return nil
 }
@@ -4216,6 +4226,17 @@ func (m *MCPManager) createOpenAPIConnection(ctx context.Context, config *schema
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to build HTTP client for OpenAPI upstream: %w", err)
 	}
+	// denyCrossHostMCPRedirect (set by buildTLSHTTPClient for the MCP
+	// streamable/SSE transports) would break two things an OpenAPI upstream
+	// legitimately needs: ResolveSpec's LoadURL following a credential-free
+	// spec_url redirect cross-host (e.g. a github.com raw link redirecting to
+	// raw.githubusercontent.com), and Executor.clientFor's own, finer-grained
+	// policy for actual tool calls -- it already pins host+scheme for any
+	// request carrying a query string or a header beyond Accept/Content-Type,
+	// and deliberately leaves the client's base policy (this one) alone
+	// otherwise. Clearing it here, rather than in clientFor, keeps every
+	// redirect decision for this upstream in one place.
+	httpClient.CheckRedirect = nil
 	srv, err := factory(ctx, config, schemas.InProcessServerDeps{
 		HTTPClient: httpClient,
 		Headers:    m.openAPIHeaderResolver(config, staticHeaders),

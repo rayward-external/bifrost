@@ -798,6 +798,78 @@ func TestBuildTLSHTTPClientNeverFallsBackToUnguardedDefault(t *testing.T) {
 	}
 }
 
+// TestDenyCrossHostMCPRedirect pins the CheckRedirect policy added for
+// GO-2026-6911 (SSRF + credential leak via an MCP server's unvalidated
+// Location header): a same-host redirect (pagination, trailing slash, a
+// load balancer) still works, a cross-host redirect is refused before the
+// credential headers baked onto the request ever reach it, and a redirect
+// chain is capped the same way the existing fetch-client policy is.
+func TestDenyCrossHostMCPRedirect(t *testing.T) {
+	first := &http.Request{URL: mustParseURL(t, "https://mcp.example.com/v1")}
+	sameHost := &http.Request{URL: mustParseURL(t, "https://mcp.example.com/v1/redirected")}
+	crossHost := &http.Request{URL: mustParseURL(t, "https://attacker.example/steal")}
+	sameHostDowngrade := &http.Request{URL: mustParseURL(t, "http://mcp.example.com/v1/redirected")}
+
+	require.NoError(t, denyCrossHostMCPRedirect(sameHost, []*http.Request{first}))
+
+	err := denyCrossHostMCPRedirect(crossHost, []*http.Request{first})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked cross-host MCP redirect")
+
+	// A same-host https-to-http downgrade (e.g. a misconfigured load balancer,
+	// or anyone able to inject a same-host redirect) must be refused too: Go
+	// replays every header, including the credential ones, over the now
+	// plaintext connection.
+	err = denyCrossHostMCPRedirect(sameHostDowngrade, []*http.Request{first})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked MCP redirect from https to")
+
+	// An http origin may still hop to another http:// path on the same host --
+	// there is no downgrade to refuse when it never had TLS to begin with.
+	plainFirst := &http.Request{URL: mustParseURL(t, "http://mcp.example.com/v1")}
+	require.NoError(t, denyCrossHostMCPRedirect(sameHostDowngrade, []*http.Request{plainFirst}))
+
+	via := make([]*http.Request, 10)
+	for i := range via {
+		via[i] = first
+	}
+	err = denyCrossHostMCPRedirect(sameHost, via)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "stopped after 10 redirects")
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	require.NoError(t, err)
+	return u
+}
+
+// TestBuildTLSHTTPClientRefusesCrossHostRedirect is the end-to-end version of
+// TestDenyCrossHostMCPRedirect: an MCP server answers with a 302 to a
+// different host (simulating a compromised or malicious server trying to
+// make the gateway forward its credential headers elsewhere), and the client
+// buildTLSHTTPClient returns must refuse to follow it.
+func TestBuildTLSHTTPClientRefusesCrossHostRedirect(t *testing.T) {
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer evil.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evil.URL+"/collect", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
+	require.NoError(t, err)
+	require.NotNil(t, httpClient.CheckRedirect)
+
+	_, err = httpClient.Get(origin.URL)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked cross-host MCP redirect")
+}
+
 // TestBuildTLSHTTPClientBlocksLinkLocal proves the dial-time guard refuses
 // link-local destinations (including the 169.254.169.254 cloud metadata
 // endpoint) - the one class of target with no legitimate MCP use case under
@@ -1556,6 +1628,28 @@ func TestCreateOpenAPIConnection_RequiresFactory(t *testing.T) {
 
 	_, _, err = m.createOpenAPIConnection(context.Background(), &schemas.MCPClientConfig{Name: "noconfig", ConnectionType: schemas.MCPConnectionTypeOpenAPI}, nil)
 	require.ErrorContains(t, err, "openapi_config")
+}
+
+// TestCreateOpenAPIConnectionClearsRedirectGuard proves the OpenAPI upstream
+// client is handed to the factory with no base CheckRedirect. openapimcp's own
+// Executor.clientFor applies host+scheme pinning per request for anything that
+// carries a credential or query string, and deliberately leaves credential-free
+// requests -- such as ResolveSpec's spec_url fetch, which can legitimately
+// redirect cross-host (e.g. a github.com raw link redirecting to
+// raw.githubusercontent.com) -- to follow redirects freely. The MCP
+// streamable/SSE transports' blanket same-host/same-scheme policy
+// (denyCrossHostMCPRedirect) would break both if left on this client.
+func TestCreateOpenAPIConnectionClearsRedirectGuard(t *testing.T) {
+	var capturedClient *http.Client
+	factory := schemas.InProcessServerFactory(func(_ context.Context, _ *schemas.MCPClientConfig, deps schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		capturedClient = deps.HTTPClient
+		return server.NewMCPServer("stub", "1.0.0"), nil
+	})
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: factory}, nil, &MockLogger{}, nil)
+	_, _, err := m.createOpenAPIConnection(context.Background(), newOpenAPITestConfig("redirect-guard", "echo"), nil)
+	require.NoError(t, err)
+	require.NotNil(t, capturedClient)
+	require.Nil(t, capturedClient.CheckRedirect)
 }
 
 // TestAddClient_OpenAPI_SynthesizesServerAndLayersHeaders drives the full path

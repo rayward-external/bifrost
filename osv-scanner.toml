@@ -11,3 +11,8 @@
 #   id = "GHSA-xxxx-xxxx-xxxx"      # or GO-/CVE- id; aliases are resolved
 #   ignoreUntil = 2027-01-01
 #   reason = "why it is unfixable AND why the shipped image does not reach it"
+
+[[IgnoredVulns]]
+id = "GO-2026-6911"
+ignoreUntil = 2027-02-01
+reason = "SSRF/credential-leak via unvalidated Location header in github.com/mark3labs/mcp-go. osv-scanner's IgnoredVulns matches by ID repo-wide, so this covers every go.mod requiring mark3labs/mcp-go directly (examples/mcps/apps-server, examples/mcps/input-required-server, examples/mcps/per-user-discovery-server -- not in go.work) AND every module that replaces it with the maximhq/mcp-go fork (core, framework, transports, plugins/*; the fork does not patch this issue either -- checked client/transport/streamable_http.go, no CheckRedirect policy added). No patched mark3labs/mcp-go release exists (govulncheck: Fixed in N/A). 2026-11-10 re-check: govulncheck -db https://storage.googleapis.com/go-vulndb reports 0 reachable vulnerabilities (module-level only, never called) in core, framework, transports, plugins/semanticcache, and every example/test module affected -- same cross-repo residual first tracked 2026-11-08 (tests/cmd/mcpconsole row). transports/Dockerfile.custom builds only core/framework/plugins/transports + the ui/ static export (SHIPPED_RESOLUTION); examples/ and tests/ never ship."

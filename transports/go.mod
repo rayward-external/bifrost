@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/transports/v2
 
-go 1.27.3
+go 1.27.4
 
 // RAYWARD FORK PATCH — without these, a GOWORK=off build (e.g. `make build`
 // without LOCAL=1) resolves these modules via GOPROXY against the real

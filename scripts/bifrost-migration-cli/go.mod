@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/scripts/bifrost-migration-cli
 
-go 1.27.3
+go 1.27.4
 
 require (
 	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2

@@ -128,7 +128,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 			-e CGO_ENABLED=1 \
 			-e GOOS=$(TARGET_OS) \
 			-e GOARCH=$(TARGET_ARCH) \
-			golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd \
+			golang:1.27.4-alpine3.24@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf \
 			sh -c "apk add --no-cache gcc musl-dev && \
 				go build -buildmode=plugin -ldflags='-w -s' -trimpath -o $(OUTPUT) main.go"; \
 		echo "$(COLOR_SUCCESS)✓ Plugin built successfully: $(OUTPUT) ($(TARGET_OS)/$(TARGET_ARCH))$(COLOR_RESET)"; \

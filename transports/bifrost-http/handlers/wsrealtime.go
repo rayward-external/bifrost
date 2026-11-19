@@ -17,6 +17,7 @@ import (
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/valyala/fasthttp"
@@ -59,34 +60,25 @@ func NewWSRealtimeHandler(client *bifrost.Bifrost, config *lib.Config, pool *bfw
 	}
 }
 
-// RegisterRoutes registers every Realtime WebSocket path to a handler that refuses the upgrade outright.
+// RegisterRoutes registers the OpenAI-dialect Realtime WebSocket paths to a handler that refuses the
+// upgrade outright, and registers the Gemini Live and ElevenLabs Scribe WebSocket paths normally.
 //
 // RAYWARD FORK PATCH (gateway fix, rayward-internal/llm-gateway-infra#646): Realtime API WebSocket mode
+// (the OpenAI-dialect /v1/realtime, OpenAIRealtimePaths and AzureRealtimePaths/voice-live aliases only)
 // is DISABLED on this deployment — no realtime-capable model is served here. A `-X theirs` sync silently
-// restores upstream's vanilla body below (which upgrades and then dies inside runRealtimeSession); if a
-// future sync drops this again, re-apply by replacing the body with registerDisabledRealtimeWSRoutes and
-// see .github/fork-patches.txt for the full history (3+ recurrences). GUARDED BY
+// restores upstream's vanilla handler for those paths (which upgrades and then dies inside
+// runRealtimeSession); if a future sync drops this again, re-apply by routing them through
+// registerDisabledRealtimeWSRoutes while keeping the Gemini Live and ElevenLabs Scribe registrations
+// below live — see .github/fork-patches.txt for the full history (3+ recurrences). GUARDED BY
 // TestRealtimeWebSocketRoutesAreDisabled — never let that assertion flip.
-//
-// func (h *WSRealtimeHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-// 	handler := lib.ChainMiddlewares(h.handleUpgrade, middlewares...)
-// 	r.GET("/v1/realtime", handler)
-// 	for _, path := range integrations.OpenAIRealtimePaths("/openai") {
-// 		r.GET(path, handler)
-// 	}
-// 	// The JavaScript Voice Live SDK replaces the endpoint's path with /voice-live/realtime, so it is also served at the root.
-// 	for _, path := range append(integrations.AzureRealtimePaths("/azure"), azureVoiceLiveRootPath) {
-// 		r.GET(path, handler)
-// 	}
-// 	liveHandler := lib.ChainMiddlewares(h.handleGeminiLiveUpgrade, middlewares...)
-// 	for _, path := range append(integrations.GenAIRealtimePaths("/genai"), integrations.GenAIVertexRealtimePaths("/genai")...) {
-// 		r.GET(path, liveHandler)
-// 	}
-// 	// An ElevenLabs client's Scribe socket, on the /elevenlabs base URL its SDK is given.
-// 	r.GET(elevenlabsScribePath, lib.ChainMiddlewares(h.handleElevenlabsScribeUpgrade, middlewares...))
-// }
 func (h *WSRealtimeHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	registerDisabledRealtimeWSRoutes(r, middlewares...)
+	liveHandler := lib.ChainMiddlewares(h.handleGeminiLiveUpgrade, middlewares...)
+	for _, path := range append(integrations.GenAIRealtimePaths("/genai"), integrations.GenAIVertexRealtimePaths("/genai")...) {
+		r.GET(path, liveHandler)
+	}
+	// An ElevenLabs client's Scribe socket, on the /elevenlabs base URL its SDK is given.
+	r.GET(elevenlabsScribePath, lib.ChainMiddlewares(h.handleElevenlabsScribeUpgrade, middlewares...))
 }
 
 // Close closes active realtime connections.

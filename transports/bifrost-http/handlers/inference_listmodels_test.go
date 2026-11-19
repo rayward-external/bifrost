@@ -270,7 +270,7 @@ func TestElevenlabsProviderListingDoesNotSynthesizeCatalog(t *testing.T) {
 	var response schemas.BifrostListModelsResponse
 	require.NoError(t, schemas.Unmarshal(ctx.Response.Body(), &response))
 	require.Len(t, response.Data, 1)
-	require.Equal(t, "elevenlabs/eleven_turbo_v2_5", response.Data[0].ID)
+	require.Equal(t, "eleven_turbo_v2_5", response.Data[0].ID)
 	require.Equal(t, "Upstream Turbo", *response.Data[0].Name)
 }
 
@@ -303,11 +303,11 @@ func TestElevenlabsScribeDiscoveryVirtualKey(t *testing.T) {
 	}
 	management := &ProviderHandler{modelsManager: manager, inMemoryStore: handler.config}
 	providerModels := [][]string{
-		{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/dictation"},
-		{"elevenlabs/dictation"},
-		{"elevenlabs/eleven_turbo_v2_5"},
+		{"eleven_turbo_v2_5", "dictation"},
+		{"dictation"},
+		{"eleven_turbo_v2_5"},
 		{},
-		{"elevenlabs/eleven_turbo_v2_5"},
+		{"eleven_turbo_v2_5"},
 	}
 	for i, want := range [][]string{
 		{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/scribe_v1", "elevenlabs/scribe_v1_experimental", "elevenlabs/scribe_v2", "elevenlabs/dictation"},
@@ -327,10 +327,10 @@ func TestElevenlabsScribeDiscoveryVirtualKey(t *testing.T) {
 			ids := make([]string, 0, len(response.Data))
 			for _, model := range response.Data {
 				ids = append(ids, model.ID)
-				if model.ID == "elevenlabs/eleven_turbo_v2_5" {
+				if model.ID == "eleven_turbo_v2_5" {
 					require.Equal(t, "Upstream Turbo", *model.Name, "upstream metadata must be preserved")
 				}
-				if model.ID == "elevenlabs/dictation" {
+				if model.ID == "dictation" {
 					require.Equal(t, "scribe_v2", *model.Alias)
 				}
 			}
@@ -353,8 +353,8 @@ func TestElevenlabsScribeDiscoveryVirtualKey(t *testing.T) {
 	require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	var response schemas.BifrostListModelsResponse
 	require.NoError(t, schemas.Unmarshal(ctx.Response.Body(), &response))
-	require.True(t, slices.ContainsFunc(response.Data, func(model schemas.Model) bool { return model.ID == "openai/gpt-4o-mini" }), "%s", ctx.Response.Body())
-	require.False(t, slices.ContainsFunc(response.Data, func(model schemas.Model) bool { return model.ID == "elevenlabs/scribe_v2" }), "%s", ctx.Response.Body())
+	require.True(t, slices.ContainsFunc(response.Data, func(model schemas.Model) bool { return model.ID == "gpt-4o-mini" }), "%s", ctx.Response.Body())
+	require.False(t, slices.ContainsFunc(response.Data, func(model schemas.Model) bool { return model.ID == "scribe_v2" }), "%s", ctx.Response.Body())
 }
 
 func TestElevenlabsScribeProviderKeyRestrictions(t *testing.T) {
@@ -416,7 +416,7 @@ func TestElevenlabsScribeDiscoveryDoesNotCopyOtherKeyAliases(t *testing.T) {
 	for _, model := range response.Data {
 		ids = append(ids, model.ID)
 	}
-	require.ElementsMatch(t, []string{"elevenlabs/eleven_turbo_v2_5"}, ids)
+	require.ElementsMatch(t, []string{"eleven_turbo_v2_5"}, ids)
 }
 
 func TestElevenlabsScribeDiscoveryPreservesAliasOverride(t *testing.T) {
@@ -434,7 +434,7 @@ func TestElevenlabsScribeDiscoveryPreservesAliasOverride(t *testing.T) {
 			var response schemas.BifrostListModelsResponse
 			require.NoError(t, schemas.Unmarshal(ctx.Response.Body(), &response))
 			require.Len(t, response.Data, 1)
-			require.Equal(t, "elevenlabs/"+tc.alias, response.Data[0].ID)
+			require.Equal(t, tc.alias, response.Data[0].ID)
 			require.NotNil(t, response.Data[0].Alias)
 			require.Equal(t, tc.target, *response.Data[0].Alias)
 			ctx = scribeTranscriptionContext(t, "elevenlabs/"+tc.alias, vk.Value.GetValue())

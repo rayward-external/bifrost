@@ -11,7 +11,8 @@ permissions:
 jobs:
   snyk-open-source:
     name: Snyk Open Source (deps)
-    runs-on: builder-8-32
+    # fork: this org has no larger/custom runners (fork-patches.txt)
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write # upload-sarif
@@ -87,7 +88,8 @@ jobs:
 
   snyk-code:
     name: Snyk Code (SAST)
-    runs-on: builder-8-32
+    # fork: this org has no larger/custom runners (fork-patches.txt)
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write # upload-sarif

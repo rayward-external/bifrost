@@ -402,6 +402,7 @@ jobs:
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             generativelanguage.googleapis.com:443
+            texttospeech.googleapis.com:443
             files.pythonhosted.org:443
             pypi.org:443
             raw.githubusercontent.com:443
@@ -660,6 +661,7 @@ jobs:
             fal.media:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
+            texttospeech.googleapis.com:443
             generativelanguage.googleapis.com:443
             files.pythonhosted.org:443
             pypi.org:443

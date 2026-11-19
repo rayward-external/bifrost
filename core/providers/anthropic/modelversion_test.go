@@ -358,7 +358,7 @@ func TestClaudeCapabilityMatrix(t *testing.T) {
 			checkBool(t, "SupportsAdaptiveThinking", tc.model, DefaultSupportsAdaptiveThinking(tc.model), tc.supportsAdaptive)
 			checkBool(t, "SupportsEffortParameter", tc.model, DefaultSupportsNativeEffort(tc.model), tc.supportsEffort)
 			checkBool(t, "SupportsNativeEffort", tc.model, SupportsNativeEffort(caps), tc.supportsNativeEff)
-			checkBool(t, "SupportsFastMode", tc.model, DefaultSupportsFastMode(tc.model), tc.supportsFastMode)
+			checkBool(t, "SupportsFastMode", tc.model, DefaultSupportsFastMode(schemas.Anthropic, tc.model), tc.supportsFastMode)
 			checkBool(t, "SupportsDynamicWebSearch", tc.model, SupportsDynamicWebSearch(tc.model), tc.dynamicWebSearch)
 			checkBool(t, "SupportsMidConversationSystem", tc.model,
 				DefaultSupportsMidConversationSystem(schemas.Anthropic, tc.model), tc.midConvSystem)
@@ -436,14 +436,14 @@ func TestSupportsFastMode_BoundedWindow(t *testing.T) {
 
 	for _, model := range supported {
 		t.Run("supported/"+model, func(t *testing.T) {
-			if !DefaultSupportsFastMode(model) {
+			if !DefaultSupportsFastMode(schemas.Anthropic, model) {
 				t.Errorf("SupportsFastMode(%q) = false, want true (Opus 4.6/4.7/4.8 are documented fast-mode models)", model)
 			}
 		})
 	}
 	for _, model := range append(append([]string{}, unsupportedAboveWindow...), unsupportedOther...) {
 		t.Run("unsupported/"+model, func(t *testing.T) {
-			if DefaultSupportsFastMode(model) {
+			if DefaultSupportsFastMode(schemas.Anthropic, model) {
 				t.Errorf("SupportsFastMode(%q) = true, want false; forwarding speed:\"fast\" to a model outside the documented window is a 400", model)
 			}
 		})

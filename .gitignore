@@ -205,14 +205,7 @@ tests/e2e/api/webhook-receiver/webhook-receiver
 tests/cmd/e2eseed/e2eseed
 tests/cmd/seed/seed
 tests/cmd/seedvks/seedvks
-cmd/e2eseed/e2eseed
-scripts/realtime-test/realtime-test
-.github/workflows/scripts/schemasync/schema-sync
-tests/scripts/1millogs/1millogs
-tests/scripts/migration-checker/migration-checker
-examples/plugins/hello-world-wasm-go/hello-world-wasm
-transports/custom
-/custom
+tests/cmd/complexitysuggesteval/complexitysuggesteval
 
 # routing harness ledgers (local run journals, never committed)
 tests/e2e/api/routing/ledger-*
@@ -284,4 +277,5 @@ ui/app/routeTree.gen.ts
 bifrost-migration-cli
 
 tests/e2e/clis/reports
-.orca
+# Local assistant output, never committed
+Claude outputs/

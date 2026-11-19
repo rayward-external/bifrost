@@ -115,6 +115,10 @@ type HybridLogStore struct {
 	marker                hasObjectMarker    // nil: each upload worker flips has_object itself, one row at a time
 	markQueue             chan hasObjectMark // pending flips, read by markWorker; nil when marker is nil
 	markWG                sync.WaitGroup
+	// sanitizer, when set, rewrites every payload just before Put (secret
+	// redaction, attachment stripping). A payload it cannot rewrite is dropped,
+	// never uploaded raw.
+	sanitizer *payloadSanitizer
 }
 
 type scopedDBLogStore interface {

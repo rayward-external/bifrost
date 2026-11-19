@@ -4255,7 +4255,24 @@ func prepareFileUploadRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostFileUpl
 		}
 	}
 
-	if provider == "" {
+	// A `model` form field (LiteLLM-dialect batch uploads send
+	// `-F model=<name>`) routes the upload: a provider-prefixed value sets
+	// the provider outright; a bare name is passed through on the request so
+	// the core PreRequestHook routing pipeline (governance routing rules,
+	// virtual-key load balancing, the model-catalog resolver) resolves the
+	// provider — the same path chat completions take.
+	var uploadModel *string
+	if len(form.Value["model"]) > 0 && form.Value["model"][0] != "" {
+		formProvider, formModel := schemas.ParseModelString(form.Value["model"][0], "")
+		if provider == "" && formProvider != "" {
+			provider = string(formProvider)
+		}
+		if formModel != "" {
+			uploadModel = &formModel
+		}
+	}
+
+	if provider == "" && uploadModel == nil {
 		return nil, fasthttp.StatusBadRequest, errors.New("provider query parameter or x-model-provider header is required")
 	}
 
@@ -4332,7 +4349,7 @@ func prepareFileUploadRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostFileUpl
 
 	// Collect unknown form fields as extra params (multipart — cannot use extractExtraParams which expects JSON).
 	// gcs_bucket/gcs_prefix are consumed into StorageConfig above; other providers (e.g. Bedrock s3_bucket) still flow through here.
-	fileUploadKnownFields := map[string]bool{"file": true, "purpose": true, "provider": true, "filename": true, "content_type": true, "gcs_bucket": true, "gcs_prefix": true, "expires_after[anchor]": true, "expires_after[seconds]": true}
+	fileUploadKnownFields := map[string]bool{"file": true, "purpose": true, "provider": true, "model": true, "filename": true, "content_type": true, "gcs_bucket": true, "gcs_prefix": true, "expires_after[anchor]": true, "expires_after[seconds]": true}
 	extraParams := map[string]interface{}{}
 	for k, vals := range form.Value {
 		if !fileUploadKnownFields[k] && len(vals) > 0 && vals[0] != "" {

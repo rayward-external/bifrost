@@ -1452,17 +1452,31 @@ func RejectsDisabledThinking(caps schemas.ModelCaps, effort *string) bool {
 //   - Vertex: Claude Fable 5.2 only (cite: V-fast). Google serves fast mode on the
 //     latest version of a family plus a 30-day window for the retiring one; a
 //     later model is carried by the datasheet rather than this fallback.
-//   - Everywhere else: the Claude API research preview on Opus 4.6 and Opus 4.7+
-//     (which covers 4.8 and 5). Every other model rejects it with a 400.
+//   - Everywhere else: a research preview on the EXACT Opus versions Anthropic
+//     documents (see fastModeOpusVersions) — NOT every Opus 4.7+, which would
+//     forward speed:"fast" to a model outside the documented window and get it
+//     rejected with a 400. The set is intentionally closed and bounded, unlike
+//     the open-ended IsOpus47Plus/IsOpus5Plus version-floor checks used elsewhere.
 func DefaultSupportsFastMode(provider schemas.ModelProvider, model string) bool {
 	if provider == schemas.Vertex {
 		return isFable52(model)
 	}
-	if IsOpus47Plus(model) {
-		return true
+	v := parseClaudeModel(model)
+	if v.Family != claudeFamilyOpus || !v.HasVersion {
+		return false
 	}
 	_, ok := fastModeOpusVersions[[2]int{v.Major, v.Minor}]
 	return ok
+}
+
+// fastModeOpusVersions is the exact set of Opus (major, minor) versions
+// Anthropic documents as supporting speed:"fast". It is a closed set on
+// purpose — see DefaultSupportsFastMode. Add an entry only when the fast-mode
+// doc lists the version.
+var fastModeOpusVersions = map[[2]int]struct{}{
+	{4, 6}: {},
+	{4, 7}: {},
+	{4, 8}: {},
 }
 
 // isFable52 matches Claude Fable 5.2 in its plain, dotted, Vertex "@date" and

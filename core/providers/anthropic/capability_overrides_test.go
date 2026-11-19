@@ -619,7 +619,7 @@ func TestMidConversationSystemSupported_IgnoresOlderKey(t *testing.T) {
 		{schemas.Azure, "claude-opus-5", true},
 		{schemas.BedrockMantle, "anthropic.claude-haiku-5-5", true},
 		{schemas.Anthropic, "claude-opus-5-5", true},
-		{schemas.Bedrock, "us.anthropic.claude-opus-6", false},
+		{schemas.Bedrock, "us.anthropic.claude-opus-4-9", false},
 		{schemas.Bedrock, "us.anthropic.claude-sonnet-5", false},
 		{schemas.Vertex, "claude-mythos-5", false},
 		{schemas.Bedrock, "anthropic.claude-opus-4-8", false},

@@ -142,8 +142,8 @@ func TestInlinedSystemReminder_TrimsTheUserTextItJoins(t *testing.T) {
 		want        string
 	}{
 		{"claude 4 keeps", "global.anthropic.claude-haiku-4-5-20251001-v1:0", nil, marked},
-		{"unrecognised model keeps", "global.anthropic.claude-opus-6", nil, marked},
-		{"datasheet trims an unrecognised model", "global.anthropic.claude-opus-6", &schemas.ModelCapabilities{StripsUserTurnTrailingWhitespace: new(true)}, trimmed},
+		{"unrecognised model keeps", "global.anthropic.claude-nova-9", nil, marked},
+		{"datasheet trims an unrecognised model", "global.anthropic.claude-nova-9", &schemas.ModelCapabilities{StripsUserTurnTrailingWhitespace: new(true)}, trimmed},
 	}
 
 	for _, tc := range models {
@@ -244,7 +244,7 @@ func TestInlinedSystemReminder_TrimIsStableAsTheBreakpointMoves(t *testing.T) {
 		name, model, want string
 		row               *schemas.ModelCapabilities // datasheet row; nil ⇒ name detection
 	}{
-		{"datasheet trims", "global.anthropic.claude-opus-6", strings.TrimSuffix(marked, "\n"), &schemas.ModelCapabilities{StripsUserTurnTrailingWhitespace: new(true)}},
+		{"datasheet trims", "global.anthropic.claude-nova-9", strings.TrimSuffix(marked, "\n"), &schemas.ModelCapabilities{StripsUserTurnTrailingWhitespace: new(true)}},
 		{"claude 4", "global.anthropic.claude-haiku-4-5-20251001-v1:0", marked, nil},
 	} {
 		if tc.row != nil {

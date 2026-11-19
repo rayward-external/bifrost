@@ -4096,7 +4096,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	maxRequestBodySizeMB := s.Config.ClientConfig.MaxRequestBodySizeMB
 	lib.ApplyBodyBufferPoolLimit(s.Config.ServerConfig, maxRequestBodySizeMB*1024*1024)
 	// Create fasthttp server instance
-	s.Server = newFastHTTPServer(handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler), maxRequestBodySizeMB, s.Config.ServerConfig.ReadBufferSize, logger.Warn)
+	// RAYWARD FORK PATCH: wrap the root handler in ExternalAudienceHeaderMiddleware so every
+	// response is filtered to the external-audience header allowlist before it leaves the
+	// gateway. A `-X theirs` sync has repeatedly dropped this wrap (see .github/fork-patches.txt)
+	// — if it is missing again, re-apply it here rather than leaving Handler unwrapped.
+	s.Server = newFastHTTPServer(handlers.ExternalAudienceHeaderMiddleware()(handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler)), maxRequestBodySizeMB, s.Config.ServerConfig.ReadBufferSize, logger.Warn)
 	s.StartBifrostMCP(s.Ctx, handlers.DefaultOpenAPIURL, s.Server.Handler, s.Server.MaxRequestBodySize, s.Server.ReadBufferSize, bifrostMCPMiddlewares...)
 	startSkillsOrphanCleanupWorker(s.Ctx, s.Config, nil)
 	// Keep the live model catalog current after boot. Without this, a model an

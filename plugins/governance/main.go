@@ -325,11 +325,11 @@ func Init(
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
 		routingChainMaxDepth = config.RoutingChainMaxDepth
+		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
 	}
 	if routingChainMaxDepth == nil {
 		defaultDepth := DefaultRoutingChainMaxDepth
 		routingChainMaxDepth = &defaultDepth
-		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
 	}
 
 	newStoreStart := time.Now()
@@ -424,11 +424,11 @@ func InitFromStore(
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
 		routingChainMaxDepth = config.RoutingChainMaxDepth
+		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
 	}
 	if routingChainMaxDepth == nil {
 		defaultDepth := DefaultRoutingChainMaxDepth
 		routingChainMaxDepth = &defaultDepth
-		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)

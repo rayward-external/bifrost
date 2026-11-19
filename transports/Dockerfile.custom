@@ -13,6 +13,9 @@
 
   COPY ui/ ./
 
+  # tsc --noEmit (invoked by build-enterprise) OOMs on Node's default heap once the
+  # UI's TypeScript project grows past a few hundred files; bump the heap for this stage only.
+  ENV NODE_OPTIONS=--max-old-space-size=4096
   RUN npm run build-enterprise
 
   # --- Go Build Stage: Compile the custom wrapper binary using local modules ---

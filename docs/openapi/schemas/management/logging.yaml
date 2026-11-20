@@ -496,16 +496,6 @@ MCPLogsFilterDataResponse:
       items:
         type: string
       description: All unique server labels
-    apps:
-      type: array
-      items:
-        type: string
-      description: All unique detected client apps
-    user_agents:
-      type: array
-      items:
-        type: string
-      description: All unique raw User-Agent strings
     virtual_keys:
       type: array
       items:

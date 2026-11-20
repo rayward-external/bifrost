@@ -900,7 +900,7 @@ curl -X POST "$R/phrases" \
 - **Adding phrases.** A phrase the tier already holds is skipped and reported. A phrase another tier holds, or a total past the 750-phrase limit, refuses the whole request and saves nothing. `suggestion_ids` is optional; each must be one of this router's open suggestions (`404` if unknown, `409` if not open). The response lists what was `added`, `skipped`, and `accepted`.
 - **Status.** An open suggestion can be `accepted` or `dismissed`, and either can be set back to `open`. Accepting this way only records the decision; its phrases are not served until you add them.
 
-See the [Phrase Suggestions API reference](/api-reference/routing/list-phrase-suggestions) for every field and response.
+See the Phrase Suggestions API reference for every field and response.
 
 ---
 

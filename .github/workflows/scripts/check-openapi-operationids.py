@@ -84,14 +84,19 @@ def unannounced_removals(base_ids, head_ids, changelog, base_changelog=""):
 
 
 def last_release_tag():
+    """The latest transports/v* release tag, or None when the checkout has none.
+
+    Fork-only: rayward-external/bifrost never pushes module-release tags (its
+    core-release/framework-release/plugins-release/bifrost-http-release jobs
+    are guarded to upstream only), so there is never a baseline here. Upstream
+    always has one once it has shipped a release.
+    """
     tags = subprocess.run(
         ["git", "tag", "-l", "transports/v*", "--sort=-v:refname"],
         cwd=REPO_ROOT, check=True, capture_output=True, text=True,
     ).stdout.split()
     releases = [t for t in tags if "-" not in t.split("/v", 1)[1]]
-    if not releases:
-        raise SystemExit("no transports/v* release tag found; fetch tags (actions/checkout with fetch-depth: 0)")
-    return releases[0]
+    return releases[0] if releases else None
 
 
 def changelog_at(ref, path):
@@ -123,6 +128,9 @@ def main():
     args = parser.parse_args()
 
     base_ref = args.base_ref or last_release_tag()
+    if base_ref is None:
+        print("no transports/v* release tag found in this checkout: nothing to compare against, skipping")
+        return 0
     with tempfile.TemporaryDirectory() as tmp:
         base_ids = exposed_operation_ids(bundle_ref(base_ref, tmp))
         head_ids = exposed_operation_ids(bundle(REPO_ROOT / SPEC_DIR, Path(tmp) / "head.json"))

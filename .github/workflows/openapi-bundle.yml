@@ -15,7 +15,7 @@ permissions:
 jobs:
   bundle-openapi:
     name: Bundle OpenAPI Spec
-    runs-on: builder-8-32
+    runs-on: ubuntu-latest
     permissions:
       contents: write # commits and pushes the bundled spec
     steps:

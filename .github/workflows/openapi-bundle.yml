@@ -15,6 +15,7 @@ permissions:
 jobs:
   bundle-openapi:
     name: Bundle OpenAPI Spec
+    if: github.repository == 'maximhq/bifrost'
     runs-on: ubuntu-latest
     permissions:
       contents: write # commits and pushes the bundled spec

@@ -2138,6 +2138,9 @@ func processProvider(
 		if err := providerKeyInFile.Aliases.Validate(baseProvider); err != nil {
 			return fmt.Errorf("invalid aliases for key %q in provider %s: %w", providerKeyInFile.Name, provider, err)
 		}
+		if err := schemas.ValidateKeyServiceTier(baseProvider, providerKeyInFile.ServiceTier); err != nil {
+			return fmt.Errorf("invalid key %q in provider %s: %w", providerKeyInFile.Name, provider, err)
+		}
 	}
 	// Generate hash from config.json provider config
 	fileProviderConfigHash, err := providerCfgInFile.GenerateConfigHash(string(provider))
@@ -2175,6 +2178,9 @@ func processAuthoritativeProvider(
 		}
 		if err := providerKeyInFile.Aliases.Validate(baseProvider); err != nil {
 			logger.Warn("invalid aliases for key %q in provider %s (writing through): %v", providerKeyInFile.Name, provider, err)
+		}
+		if err := schemas.ValidateKeyServiceTier(baseProvider, providerKeyInFile.ServiceTier); err != nil {
+			logger.Warn("invalid key %q in provider %s (writing through): %v", providerKeyInFile.Name, provider, err)
 		}
 	}
 	fileProviderConfigHash, err := providerCfgInFile.GenerateConfigHash(string(provider))
@@ -2296,6 +2302,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
+					ServiceTier:            dbKey.ServiceTier,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
@@ -2390,6 +2397,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
+					ServiceTier:            dbKey.ServiceTier,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v", dbKey.Name, provider, err)

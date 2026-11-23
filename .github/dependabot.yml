@@ -194,6 +194,12 @@ updates:
       interval: daily
     open-pull-requests-limit: 0
 
+  - package-ecosystem: uv
+    directory: /examples/agents/revops-copilot
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
   - package-ecosystem: gomod
     directory: /framework
     schedule:
@@ -437,6 +443,11 @@ updates:
 
   - package-ecosystem: gomod
     directory: /tests/cmd/seedvks
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/cmd/complexitysuggesteval
     schedule:
       interval: weekly
 

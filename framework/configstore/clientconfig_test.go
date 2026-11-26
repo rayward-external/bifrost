@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -97,6 +98,12 @@ func TestGenerateRelayHash(t *testing.T) {
 		},
 		"skip_route_check":     func(c *schemas.RelayConfig) { c.SkipRouteCheck = true },
 		"ignore_upstream_cost": func(c *schemas.RelayConfig) { c.IgnoreUpstreamCost = true },
+		"body_overrides": func(c *schemas.RelayConfig) {
+			c.BodyOverrides = map[string]json.RawMessage{"include_usage": json.RawMessage("true")}
+		},
+		"route body_overrides": func(c *schemas.RelayConfig) {
+			c.Routes[0].BodyOverrides = map[string]json.RawMessage{"include_usage": json.RawMessage("true")}
+		},
 	}
 	for name, change := range changes {
 		cfg := testRelay("tavily")
@@ -182,6 +189,58 @@ func TestGenerateClientConfigHash_BifrostURLAndAllowWritesAreUnambiguous(t *test
 	unsetHash, err := unset.GenerateClientConfigHash()
 	require.NoError(t, err)
 	require.Equal(t, "66ee28323ac8b742b63ca063f251b2f585209a32980345cf26dd0b81298ddf4c", unsetHash, "both unset keeps the hash configs had before the fields existed")
+}
+
+// browser_base_url changes the hash only when set, so a config.json edit to it
+// reaches the stored config while configs without it keep their hash, and an
+// issuer ending in the browser field's text cannot hash like that field set.
+func TestGenerateClientConfigHash_OAuth2BrowserBaseURL(t *testing.T) {
+	hashOf := func(issuer string, browser *schemas.SecretVar) string {
+		c := ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{IssuerURL: schemas.NewSecretVar(issuer), BrowserBaseURL: browser}}
+		h, err := c.GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	hashWith := func(browser *schemas.SecretVar) string { return hashOf("https://tunnel.example.com", browser) }
+	unset := hashWith(nil)
+	require.Equal(t, unset, hashWith(schemas.NewSecretVar("")), "an empty value hashes like no value")
+	set := hashWith(schemas.NewSecretVar("https://bifrost.corp.example.com"))
+	require.NotEqual(t, unset, set)
+	require.NotEqual(t, set, hashWith(schemas.NewSecretVar("https://other.corp.example.com")))
+	require.NotEqual(t,
+		hashOf("https://issuer.example/oauth2BrowserBaseURL:27:val:https://browser.example", nil),
+		hashOf("https://issuer.example/", schemas.NewSecretVar("https://browser.example")))
+}
+
+// additional_issuer_urls changes the hash only when set, and the order and
+// value of each entry count.
+func TestGenerateClientConfigHash_OAuth2AdditionalIssuers(t *testing.T) {
+	hashWith := func(issuers ...string) string {
+		oc := &tables.OAuth2ServerConfig{IssuerURL: schemas.NewSecretVar("https://corp.example.com")}
+		for _, i := range issuers {
+			oc.AdditionalIssuerURLs = append(oc.AdditionalIssuerURLs, schemas.NewSecretVar(i))
+		}
+		h, err := (&ClientConfig{OAuth2ServerConfig: oc}).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	unset := hashWith()
+	one := hashWith("https://a.example.com")
+	require.NotEqual(t, unset, one)
+	require.NotEqual(t, one, hashWith("https://b.example.com"))
+	require.NotEqual(t, hashWith("https://a.example.com", "https://b.example.com"), hashWith("https://b.example.com", "https://a.example.com"))
+
+	// A primary ending in an entry's text must not hash like that entry configured.
+	absorbed, err := (&ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+		IssuerURL: schemas.NewSecretVar("https://corp.example.com/oauth2AdditionalIssuerURL:25:val:https://a.example.com"),
+	}}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	framed, err := (&ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+		IssuerURL:            schemas.NewSecretVar("https://corp.example.com/"),
+		AdditionalIssuerURLs: []*schemas.SecretVar{schemas.NewSecretVar("https://a.example.com")},
+	}}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.NotEqual(t, absorbed, framed)
 }
 
 // The entity access profile mode is part of what decides whether a changed config.json replaces the

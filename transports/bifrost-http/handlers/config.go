@@ -609,6 +609,24 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusForbidden, "changing allowed_redirect_uris requires an authenticated admin session")
 			return
 		}
+		// It decides where browsers carry the consent link, like a redirect URI.
+		var previousBrowserBaseURL string
+		if currentConfig.OAuth2ServerConfig != nil {
+			previousBrowserBaseURL = currentConfig.OAuth2ServerConfig.BrowserBaseURL.GetValue()
+		}
+		if isAuthBypassed(ctx) && previousBrowserBaseURL != effectiveOAuth2Config.BrowserBaseURL.GetValue() {
+			SendError(ctx, fasthttp.StatusForbidden, "changing browser_base_url requires an authenticated admin session")
+			return
+		}
+		// Each one is an issuer every MCP client trusts.
+		var previousIssuers []*schemas.SecretVar
+		if currentConfig.OAuth2ServerConfig != nil {
+			previousIssuers = currentConfig.OAuth2ServerConfig.AdditionalIssuerURLs
+		}
+		if isAuthBypassed(ctx) && !slices.Equal(secretVarValues(previousIssuers), secretVarValues(effectiveOAuth2Config.AdditionalIssuerURLs)) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing additional_issuer_urls requires an authenticated admin session")
+			return
+		}
 		if isAuthBypassed(ctx) && clientGatewayTelemetryDestinationsChanged(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
 			SendError(ctx, fasthttp.StatusForbidden, "changing client gateway telemetry destinations requires an authenticated admin session")
 			return
@@ -676,6 +694,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if (effectiveAuthMode == configstoreTables.MCPServerAuthModeOAuth || effectiveAuthMode == configstoreTables.MCPServerAuthModeBoth) &&
 		(effectiveOAuth2Config == nil || !effectiveOAuth2Config.IssuerURL.IsSet() || effectiveOAuth2Config.IssuerURL.GetValue() == "") {
 		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
+		return
+	}
+
+	if err := configstore.ValidateOAuth2BrowserBaseURL(effectiveOAuth2Config); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if err := configstore.ValidateOAuth2AdditionalIssuers(effectiveOAuth2Config); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 

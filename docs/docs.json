@@ -223,6 +223,8 @@
                   "mcp/auth/per-user-headers",
                   "mcp/auth/oauth",
                   "mcp/auth/per-user-oauth",
+                  "mcp/auth/client-credentials",
+                  "mcp/auth/aws-sigv4",
                   "mcp/auth/token-exchange",
                   "mcp/auth/cross-app-access"
                 ]
@@ -266,6 +268,7 @@
               "relays/configuration",
               "relays/routes",
               "relays/pricing",
+              "relays/async-jobs",
               "relays/troubleshooting"
             ]
           },
@@ -581,7 +584,8 @@
                 "icon": "diamond",
                 "pages": [
                   "integrations/genai-sdk/overview",
-                  "integrations/genai-sdk/files-and-batch"
+                  "integrations/genai-sdk/files-and-batch",
+                  "integrations/genai-sdk/interactions"
                 ]
               },
               {
@@ -2546,6 +2550,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.50",
               "changelogs/helm-v2.1.49",
               "changelogs/helm-v2.1.48",
               "changelogs/helm-v2.1.47",

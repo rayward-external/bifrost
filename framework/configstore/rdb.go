@@ -1855,6 +1855,8 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					DiscoveredInstructions: dbClient.DiscoveredInstructions,
 					PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 					TokenExchange:          dbClient.TokenExchange,
+					ClientCredentials:      dbClient.ClientCredentials,
+					AWSSigV4:               dbClient.AWSSigV4,
 					PendingOAuthConfig:     dbClient.PendingOAuthConfig,
 					OpenAPIConfig:          dbClient.OpenAPIConfig,
 					// ConfigHash must round-trip so config-file reconciliation
@@ -1924,6 +1926,8 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			DiscoveredInstructions: dbClient.DiscoveredInstructions,
 			PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 			TokenExchange:          dbClient.TokenExchange,
+			ClientCredentials:      dbClient.ClientCredentials,
+			AWSSigV4:               dbClient.AWSSigV4,
 			PendingOAuthConfig:     dbClient.PendingOAuthConfig,
 			OpenAPIConfig:          dbClient.OpenAPIConfig,
 			// ConfigHash must round-trip so config-file reconciliation can
@@ -2386,6 +2390,8 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		DiscoveredInstructions: dbClient.DiscoveredInstructions,
 		PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 		TokenExchange:          dbClient.TokenExchange,
+		ClientCredentials:      dbClient.ClientCredentials,
+		AWSSigV4:               dbClient.AWSSigV4,
 		PendingOAuthConfig:     dbClient.PendingOAuthConfig,
 		OpenAPIConfig:          dbClient.OpenAPIConfig,
 
@@ -2593,6 +2599,8 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			// invalid for per_user_headers), leaving the client orphaned.
 			PerUserHeaderKeys:  clientConfigCopy.PerUserHeaderKeys,
 			TokenExchange:      clientConfigCopy.TokenExchange,
+			ClientCredentials:  clientConfigCopy.ClientCredentials,
+			AWSSigV4:           clientConfigCopy.AWSSigV4,
 			PendingOAuthConfig: clientConfigCopy.PendingOAuthConfig,
 			OpenAPIConfig:      clientConfigCopy.OpenAPIConfig,
 			Disabled:           clientConfigCopy.Disabled,
@@ -2613,23 +2621,22 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 	})
 }
 
-// marshalTokenExchangeJSON serialises the token_exchange block the way
-// TableMCPClient.BeforeSave does (nil -> NULL, encrypted at rest when
-// enabled — the block carries the exchange application's client_secret),
+// marshalEncryptedJSON serialises a credential-bearing block the way
+// TableMCPClient.BeforeSave does (nil -> NULL, encrypted at rest when enabled),
 // for the map-based update path that bypasses GORM hooks.
-func marshalTokenExchangeJSON(cfg *schemas.MCPTokenExchangeConfig) (*string, error) {
+func marshalEncryptedJSON[T any](cfg *T, name string) (*string, error) {
 	if cfg == nil {
 		return nil, nil
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal token_exchange: %w", err)
+		return nil, fmt.Errorf("failed to marshal %s: %w", name, err)
 	}
 	s := string(data)
 	if encrypt.IsEnabled() && s != "" {
 		encrypted, err := encrypt.Encrypt(s)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encrypt mcp token exchange config: %w", err)
+			return nil, fmt.Errorf("failed to encrypt mcp %s config: %w", name, err)
 		}
 		s = encrypted
 	}
@@ -2828,12 +2835,26 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 		// Mirror BeforeSave for the token_exchange block: nil means
 		// "preserve" on API updates (same convention as PerUserHeaderKeys).
-		tokenExchangeJSON, tokenExchangeErr := marshalTokenExchangeJSON(clientConfig.TokenExchange)
+		tokenExchangeJSON, tokenExchangeErr := marshalEncryptedJSON(clientConfig.TokenExchange, "token exchange")
 		if tokenExchangeErr != nil {
 			return tokenExchangeErr
 		}
 		if tokenExchangeJSON != nil {
 			updates["token_exchange_json"] = tokenExchangeJSON
+		}
+		clientCredentialsJSON, clientCredentialsErr := marshalEncryptedJSON(clientConfig.ClientCredentials, "client_credentials")
+		if clientCredentialsErr != nil {
+			return clientCredentialsErr
+		}
+		if clientCredentialsJSON != nil {
+			updates["client_credentials_json"] = clientCredentialsJSON
+		}
+		awsSigV4JSON, awsSigV4Err := marshalEncryptedJSON(clientConfig.AWSSigV4, "aws_sigv4")
+		if awsSigV4Err != nil {
+			return awsSigV4Err
+		}
+		if awsSigV4JSON != nil {
+			updates["aws_sigv4_json"] = awsSigV4JSON
 		}
 		// openapi_config follows the same PATCH convention: nil preserves the
 		// stored spec and credentials, non-nil replaces both columns.
@@ -2872,6 +2893,8 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			// Config-file mode syncs the full auth metadata, so nil here
 			// means "clear", not "preserve".
 			updates["token_exchange_json"] = tokenExchangeJSON
+			updates["client_credentials_json"] = clientCredentialsJSON
+			updates["aws_sigv4_json"] = awsSigV4JSON
 			// Mirror BeforeSave: nil → NULL; non-nil → serialised JSON,
 			// encrypted at rest (the stash can carry an inline OAuth
 			// client_secret).
@@ -9145,6 +9168,38 @@ func (s *RDBConfigStore) MarkOauthTokenNeedsReauthIfUnrenewable(ctx context.Cont
 		}
 		if current.Status != "active" || strings.TrimSpace(current.RefreshToken) != "" ||
 			current.ExpiresAt == nil || !time.Now().After(*current.ExpiresAt) {
+			return nil
+		}
+		if err := tx.Model(&tables.TableMCPOauthToken{}).Where("id = ?", tokenID).Updates(needsReauthColumns(reason)).Error; err != nil {
+			return err
+		}
+		marked = true
+		return deleteCredentialDiscovery(tx, current.AuthMode, current.UserID, current.VirtualKeyID, current.MCPClientID)
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to mark oauth token %s needs_reauth: %w", tokenID, err)
+	}
+	return marked, nil
+}
+
+// MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged flips an active row still holding
+// redeemedRefreshToken to 'needs_reauth', under a row lock. The comparison runs on the loaded
+// model because refresh_token is encrypted at rest. A per-user row's discovery is deleted with
+// the flip, as MarkOauthUserTokenNeedsReauthByID does.
+func (s *RDBConfigStore) MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged(ctx context.Context, tokenID, redeemedRefreshToken, reason string) (bool, error) {
+	if tokenID == "" {
+		return false, nil
+	}
+	marked := false
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current tables.TableMCPOauthToken
+		if err := dbForUpdate(tx).Where("id = ?", tokenID).First(&current).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if current.Status != "active" || current.RefreshToken != redeemedRefreshToken {
 			return nil
 		}
 		if err := tx.Model(&tables.TableMCPOauthToken{}).Where("id = ?", tokenID).Updates(needsReauthColumns(reason)).Error; err != nil {

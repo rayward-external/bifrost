@@ -1479,6 +1479,76 @@ func TestUpdateConfig_RejectsOAuthModeWithoutIssuerURL(t *testing.T) {
 	}
 }
 
+// TestUpdateConfig_RejectsInvalidBrowserBaseURL pins that PUT /api/config refuses a
+// browser_base_url that is not an absolute http(s) base URL, or a reference that
+// resolves to nothing, as config load does.
+func TestUpdateConfig_RejectsInvalidBrowserBaseURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+	cfg := newTestOAuth2Config(newRealOAuth2Store(t), configtables.MCPServerAuthModeOAuth, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	for _, browser := range []string{"bifrost.corp.test", "env.BIFROST_TEST_BROWSER_URL"} {
+		t.Setenv("BIFROST_TEST_BROWSER_URL", "")
+		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"` + testIssuer + `","browser_base_url":"` + browser + `"}}}`)
+		h.updateConfig(ctx)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Contains(t, string(ctx.Response.Body()), "browser_base_url", browser)
+	}
+}
+
+// TestUpdateConfig_BrowserBaseURLChangeNeedsAdminSession pins that, with dashboard
+// auth off, browser_base_url can't be changed, since it decides where every
+// browser is sent with the consent link; resending the stored value is allowed.
+func TestUpdateConfig_BrowserBaseURLChangeNeedsAdminSession(t *testing.T) {
+	SetLogger(&mockLogger{})
+	cfg := newTestOAuth2Config(newRealOAuth2Store(t), configtables.MCPServerAuthModeOAuth, false)
+	cfg.ClientConfig.OAuth2ServerConfig.BrowserBaseURL = schemas.NewSecretVar(testBrowserBase)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	put := func(browser string) *fasthttp.RequestCtx {
+		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"` + testIssuer + `","browser_base_url":"` + browser + `"}}}`)
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		h.updateConfig(ctx)
+		return ctx
+	}
+
+	changed := put("https://attacker.example")
+	require.Equal(t, fasthttp.StatusForbidden, changed.Response.StatusCode(), string(changed.Response.Body()))
+	assert.Contains(t, string(changed.Response.Body()), "browser_base_url")
+	assert.Equal(t, testBrowserBase, cfg.ClientConfig.OAuth2ServerConfig.BrowserBaseURL.GetValue())
+
+	same := put(testBrowserBase)
+	assert.Equal(t, fasthttp.StatusOK, same.Response.StatusCode(), string(same.Response.Body()))
+}
+
+// TestUpdateConfig_AdditionalIssuers pins the save side: a hostname clash is
+// refused with 400, and with dashboard auth off the list cannot change, since
+// every MCP client trusts each issuer on it; resending it unchanged is allowed.
+func TestUpdateConfig_AdditionalIssuers(t *testing.T) {
+	SetLogger(&mockLogger{})
+	cfg := withTunnelIssuer(newTestOAuth2Config(newRealOAuth2Store(t), configtables.MCPServerAuthModeOAuth, false))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	put := func(issuers string, bypassed bool) *fasthttp.RequestCtx {
+		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"` + testIssuer + `","additional_issuer_urls":` + issuers + `}}}`)
+		if bypassed {
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		}
+		h.updateConfig(ctx)
+		return ctx
+	}
+
+	clash := put(`["https://BIFROST.test/other"]`, false)
+	require.Equal(t, fasthttp.StatusBadRequest, clash.Response.StatusCode(), string(clash.Response.Body()))
+	assert.Contains(t, string(clash.Response.Body()), "repeats the hostname")
+
+	changed := put(`["https://attacker.example"]`, true)
+	require.Equal(t, fasthttp.StatusForbidden, changed.Response.StatusCode(), string(changed.Response.Body()))
+	assert.Contains(t, string(changed.Response.Body()), "additional_issuer_urls")
+	assert.Equal(t, testTunnelIssuer, cfg.ClientConfig.OAuth2ServerConfig.AdditionalIssuerURLs[0].GetValue())
+
+	same := put(`["`+testTunnelIssuer+`"]`, true)
+	assert.Equal(t, fasthttp.StatusOK, same.Response.StatusCode(), string(same.Response.Body()))
+}
+
 // TestUpdateConfig_RejectsFileURLsOverAPI pins the API-side rule for all three
 // catalog URLs: PUT /api/config answers 400 and persists nothing.
 func TestUpdateConfig_RejectsFileURLsOverAPI(t *testing.T) {

@@ -510,6 +510,7 @@ func (h *MCPServerHandler) runTool(ctx context.Context, toolName string, declare
 
 	// Execute the tool via tool executor
 	ctx = withInputResumption(withCallerCapabilities(ctx), request.Params.MultiRoundTripParams)
+	ctx = withProgressRelay(ctx, request.Params.Meta)
 	toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 	if err != nil {
 		logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
@@ -526,6 +527,31 @@ func (h *MCPServerHandler) runTool(ctx context.Context, toolName string, declare
 		result.RequestState = coremcp.WrapRoundTripState(coremcp.CallRoundTripID(ctx), result.RequestState)
 	}
 	return result
+}
+
+// withProgressRelay sends the caller the progress the upstream reports on this call, under the
+// caller's own progressToken. Without a token, ctx is returned unchanged.
+func withProgressRelay(ctx context.Context, meta *mcp.Meta) context.Context {
+	if meta == nil || meta.ProgressToken == nil {
+		return ctx
+	}
+	srv := server.ServerFromContext(ctx)
+	if srv == nil {
+		return ctx
+	}
+	token := meta.ProgressToken
+	return context.WithValue(ctx, schemas.BifrostContextKeyMCPProgressReporter, coremcp.ProgressReporter(func(callCtx context.Context, progress float64, total *float64, message string) {
+		params := map[string]any{"progressToken": token, "progress": progress}
+		if total != nil {
+			params["total"] = *total
+		}
+		if message != "" {
+			params["message"] = message
+		}
+		if err := srv.SendNotificationToClient(callCtx, string(mcp.MethodNotificationProgress), params); err != nil {
+			logger.Debug("[mcp-server] progress not relayed: %v", err)
+		}
+	}))
 }
 
 // gatewayTool is the MCP form of a Bifrost tool, as tools/list sends it.
@@ -1169,6 +1195,22 @@ func convertToolFunctionParametersToMCPInputSchema(params *schemas.ToolFunctionP
 		inputSchema.Defs = defs
 	}
 
+	// A root-level oneOf/anyOf/allOf (a tagged union) carries the tool's arguments; mcp-go writes
+	// AdditionalFields back out as top-level keywords.
+	for keyword, branches := range map[string][]schemas.OrderedMap{"oneOf": params.OneOf, "anyOf": params.AnyOf, "allOf": params.AllOf} {
+		if len(branches) == 0 {
+			continue
+		}
+		if inputSchema.AdditionalFields == nil {
+			inputSchema.AdditionalFields = make(map[string]any, 1)
+		}
+		members := make([]any, len(branches))
+		for i := range branches {
+			members[i] = &branches[i]
+		}
+		inputSchema.AdditionalFields[keyword] = members
+	}
+
 	return inputSchema
 }
 
@@ -1277,8 +1319,9 @@ func mcpRequestHeader(ctx *fasthttp.RequestCtx) http.Header {
 	return header
 }
 
-// opensMCPStream reports whether the request is one whose answer is an SSE stream: the legacy GET
-// stream, or a 2026-07-28 subscriptions/listen. Everything else is answered inline.
+// opensMCPStream reports whether the request is one whose answer may be an SSE stream: the legacy GET
+// stream, a 2026-07-28 subscriptions/listen, or a tools/call that asks for progress. Everything else
+// is answered inline.
 func opensMCPStream(ctx *fasthttp.RequestCtx) bool {
 	if ctx.IsGet() {
 		return true
@@ -1286,10 +1329,17 @@ func opensMCPStream(ctx *fasthttp.RequestCtx) bool {
 	if !ctx.IsPost() {
 		return false
 	}
-	if method := ctx.Request.Header.Peek(mcp.HeaderMethod); len(method) > 0 {
-		return string(method) == string(mcp.MethodSubscriptionsListen)
+	method := string(ctx.Request.Header.Peek(mcp.HeaderMethod))
+	if method == "" {
+		method = gjson.GetBytes(ctx.PostBody(), "method").Str
 	}
-	return gjson.GetBytes(ctx.PostBody(), "method").Str == string(mcp.MethodSubscriptionsListen)
+	switch method {
+	case string(mcp.MethodSubscriptionsListen):
+		return true
+	case string(mcp.MethodToolsCall):
+		return gjson.GetBytes(ctx.PostBody(), "params._meta.progressToken").Exists()
+	}
+	return false
 }
 
 // mcpBufferedWriter writes an inline answer straight into the fasthttp response. It reports that it

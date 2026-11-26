@@ -883,6 +883,7 @@ test-memory: install-gotestsum ## Run memory-regression tests (allocation scalin
 			--junitfile=$(CURDIR)/$(TEST_REPORTS_DIR)/memory-$$mod.xml \
 			-- -timeout 15m -count=1 \
 			-run '_AllocationScaling|_Retention|TestEveryLoopBoundJSONMutationIsReviewed|TestCoveredSitesHaveARealTest' \
+			$${MEMTEST_SKIP:+-skip "$$MEMTEST_SKIP"} \
 			$$pkgs ) || rc=1; \
 	done; \
 	exit $$rc

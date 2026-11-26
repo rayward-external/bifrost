@@ -1854,6 +1854,12 @@
           },
           {
             "relay_name": "harness-relay-beta"
+          },
+          {
+            "relay_name": "harness-relay-forced"
+          },
+          {
+            "relay_name": "harness-relay-jobs"
           }
         ]
       },
@@ -1917,6 +1923,24 @@
         {
           "method": "GET",
           "path": "/v1/status"
+        },
+        {
+          "method": "GET",
+          "path": "/v1/files/**",
+          "billable": true,
+          "usage": {
+            "cost_per_request": 0.003,
+            "cost_per_unit": 0
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/v1/files/**/meta",
+          "billable": true,
+          "usage": {
+            "cost_per_request": 0.007,
+            "cost_per_unit": 0
+          }
         },
         {
           "method": "POST",
@@ -2003,6 +2027,14 @@
         {
           "method": "POST",
           "path": "/v1/echo"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/forced",
+          "body_overrides": {
+            "include_usage": true,
+            "options.depth": "advanced"
+          }
         }
       ]
     },
@@ -2042,6 +2074,145 @@
         "cost_per_request": 0.003
       },
       "skip_route_check": true
+    },
+    {
+      "name": "harness-relay-forced",
+      "description": "Harness relay (relays-e2e): Tavily-shaped body_overrides. The relay forces include_usage: true on every call, routes add or replace fields, and the fixture's /v1/gated/** reports credits only when include_usage is true",
+      "base_url": "http://127.0.0.1:8783",
+      "auth": {
+        "type": "bearer"
+      },
+      "credential": {
+        "value": "sk-harness-relay-forced"
+      },
+      "usage": {
+        "units_path": "usage.credits",
+        "cost_per_unit": 0.008
+      },
+      "body_overrides": {
+        "include_usage": true
+      },
+      "skip_route_check": true,
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/v1/gated/search"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/gated/deep",
+          "body_overrides": {
+            "options.depth": "advanced"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/gated/off",
+          "body_overrides": {
+            "include_usage": false
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/v1/gated/status"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/gated/stream",
+          "stream": true
+        },
+        {
+          "method": "POST",
+          "path": "/v1/gated/disabled",
+          "enabled": false
+        },
+        {
+          "method": "POST",
+          "path": "/v1/gated/raw",
+          "inherit_body_overrides": false
+        },
+        {
+          "method": "POST",
+          "path": "/v1/gated/own",
+          "inherit_body_overrides": false,
+          "body_overrides": {
+            "options.depth": "advanced"
+          }
+        }
+      ]
+    },
+    {
+      "name": "harness-relay-jobs",
+      "description": "Harness relay (relays-e2e): Textract-shaped async jobs. The start route charges a $0.01 fee and starts a job that settles once at DocumentMetadata.Pages x $0.05; the caller's own status checks are free. /v1/rest/jobs starts a job whose id lands in the poll path",
+      "base_url": "http://127.0.0.1:8783",
+      "auth": {
+        "type": "bearer"
+      },
+      "credential": {
+        "value": "sk-harness-relay-jobs"
+      },
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/v1/textract",
+          "headers": {
+            "X-Amz-Target": "Textract.StartDocumentAnalysis"
+          },
+          "usage": {
+            "cost_per_request": 0.01
+          },
+          "job": {
+            "id_path": "JobId",
+            "poll": {
+              "method": "POST",
+              "path": "/v1/textract",
+              "headers": {
+                "X-Amz-Target": "Textract.GetDocumentAnalysis"
+              },
+              "body": "{\"JobId\":\"{{job.id}}\"}",
+              "content_type": "application/x-amz-json-1.1"
+            },
+            "status_path": "JobStatus",
+            "succeeded": [
+              "SUCCEEDED",
+              "PARTIAL_SUCCESS"
+            ],
+            "failed": [
+              "FAILED"
+            ],
+            "interval_seconds": 2,
+            "timeout_seconds": 300,
+            "usage": {
+              "units_path": "DocumentMetadata.Pages",
+              "cost_per_unit": 0.05
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/rest/jobs",
+          "usage": {
+            "cost_per_request": 0.01
+          },
+          "job": {
+            "id_path": "id",
+            "poll": {
+              "method": "GET",
+              "path": "/v1/rest/jobs/{{job.id}}"
+            },
+            "status_path": "status",
+            "succeeded": [
+              "done"
+            ],
+            "interval_seconds": 2,
+            "timeout_seconds": 60
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/v1/rest/jobs/**"
+        }
+      ]
     }
   ],
   "server": {

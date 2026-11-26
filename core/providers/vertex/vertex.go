@@ -46,13 +46,8 @@ var vertexLocationsPathRe = regexp.MustCompile(`/locations/[^/]+`)
 
 var vertexProjectsPathRe = regexp.MustCompile(`/projects/[^/]+`)
 
-// vertexBodyProjectsRe matches projects/{project} in body JSON values,
-// where the path may appear as "projects/X (after a JSON quote) or /projects/X (mid-path).
-var vertexBodyProjectsRe = regexp.MustCompile(`(["/])projects/[^/"]+`)
-
-// vertexShortModelRe matches short-form model names like "models/X" in JSON bodies
-// that need expanding to the full Vertex resource path.
-var vertexShortModelRe = regexp.MustCompile(`"(models/[^/"]+)"`)
+// vertexBodyProjectsRe matches projects/{project} inside one resource-name string, at its start or after a "/".
+var vertexBodyProjectsRe = regexp.MustCompile(`(^|/)projects/[^/]+`)
 
 // defaultCredentialsCacheKey is the sentinel pool key used when AuthCredentials
 // is empty and we fall back to google.FindDefaultCredentials.
@@ -1307,6 +1302,9 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
 	}
+	if useVertexInteractions(ctx, request) {
+		return provider.interactionsResponses(ctx, key, request)
+	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		jsonBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Vertex,
@@ -1430,6 +1428,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 		return response, nil
 	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
+		gemini.RecordGeminiClientToolSearch(ctx, request)
 		jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
@@ -1572,6 +1571,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		response := geminiResponse.ToResponsesBifrostResponsesResponse()
+		gemini.MarkGeminiClientToolSearchCalls(ctx, response)
 		response.ExtraFields.Latency = latency.Milliseconds()
 		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
@@ -1608,6 +1608,9 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	// Claude, which accepts base64 sources only. See classifyURLSource.
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
+	}
+	if useVertexInteractions(ctx, request) {
+		return provider.interactionsResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		region := resolveVertexRegion(ctx, key)
@@ -1685,6 +1688,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		}
 
 		// Use Gemini-style streaming for Gemini models
+		gemini.RecordGeminiClientToolSearch(ctx, request)
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
@@ -4952,6 +4956,18 @@ func (provider *VertexProvider) ContainerFileDelete(_ *schemas.BifrostContext, _
 }
 
 func (provider *VertexProvider) Passthrough(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	req *schemas.BifrostPassthroughRequest,
+) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	// A stored run created through an alias lives where the alias sent it, which a read of it does not name.
+	if resp, bifrostErr, ok := provider.pollInteraction(ctx, key, req); ok {
+		return resp, bifrostErr
+	}
+	return provider.passthroughOnce(ctx, key, req)
+}
+
+func (provider *VertexProvider) passthroughOnce(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,

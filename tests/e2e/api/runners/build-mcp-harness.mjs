@@ -43,7 +43,7 @@ const ADM05 = folder("ADM-05 Create rejects a bad body, connection_type and auth
     })),
   request("ADM-05", "auth_type \"bogus\" is rejected", "POST", "/api/mcp/client", {
     body: clientBody({ name: "adm05_client", auth_type: "bogus" }),
-    asserts: [A.status(400), A.msgEquals("Invalid auth_type \"bogus\": must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange")],
+    asserts: [A.status(400), A.msgEquals("Invalid auth_type \"bogus\": must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange, client_credentials")],
   }),
   request("ADM-05", "no client was added", "GET", "/api/mcp/clients", {
     asserts: [A.status(200), A.custom("total_count is unchanged", [
@@ -8074,6 +8074,79 @@ const capIs = (v) => A.custom(`max_protocol_version is ${v === undefined ? "abse
 const noClient = (id, clientId, title) => request(id, title, "GET", `/api/mcp/clients?server=${clientId}`, { asserts: [A.status(200), A.custom("no such client is listed", ["pm.expect(pm.response.json().clients || [], 'body: ' + pm.response.text()).to.eql([]);"])] });
 const healthyAfterHandshakes = (id, clientId, title) => request(id, title, "GET", `/api/mcp/clients?server=${clientId}`, { pre: waitForClient(clientId, "c.state === 'healthy'"), asserts: [A.status(200), clientState("healthy")] });
 
+// ---------------------------------------------------------------- EP-84 progress relay
+// A tools/call that sends _meta.progressToken gets the progress its upstream reports as SSE, under the caller's
+// own token and before the result. Each server's work tool reports two steps when it is given a token.
+const PROGRESS_STEPS = [{ progress: 1, total: 2, message: "step 1 of 2" }, { progress: 2, total: 2, message: "step 2 of 2" }];
+const PROGRESS_TOKEN = "harness-progress";
+const progressCall = (name, meta = {}) => ({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: {}, _meta: meta } });
+// modernProgressCall is a 2026-07-28 tools/call whose _meta carries the token beside the protocol fields.
+const modernProgressCall = (name) => {
+  const msg = modernMsg("tools/call", { name, arguments: {} });
+  msg.params._meta.progressToken = PROGRESS_TOKEN;
+  return msg;
+};
+const legacyProgressRpc = (id, title, name, meta, asserts) => rpc(id, title, progressCall(name, meta), { headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: "2025-11-25" }], asserts });
+// SSE_FRAMES is every JSON-RPC message in the answer, in order: the one JSON body, or the SSE events read as a
+// client reads them. A blank line ends an event, its data lines join with a newline, an event with no data (a
+// heartbeat) carries no message, and an event the stream never ends is dropped.
+const SSE_FRAMES = [
+  "var text = pm.response.text();",
+  "var all = [];",
+  "if (text.indexOf('data:') === -1) { all.push(JSON.parse(text)); } else {",
+  "  var events = text.split(/\\r?\\n\\r?\\n/);",
+  "  events.pop();",
+  "  events.forEach(function (event) {",
+  "    var data = event.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).replace(/^ /, ''); });",
+  "    if (data.length) { all.push(JSON.parse(data.join('\\n'))); }",
+  "  });",
+  "}",
+];
+// ANSWERS_THIS_CALL checks the last message is the successful result of the call, whose id is 1.
+const ANSWERS_THIS_CALL = [
+  "var last = all[all.length - 1];",
+  "pm.expect(last.jsonrpc, 'body: ' + text).to.equal('2.0');",
+  "pm.expect(last.id, 'the result answers this call: ' + text).to.equal(1);",
+  "pm.expect(last.result, 'the result comes last: ' + text).to.be.an('object');",
+  "pm.expect(last.result.isError, 'body: ' + text).to.not.equal(true);",
+];
+const progressRelayed = A.custom("the two upstream steps arrive under the caller's token, in order, then the result", [
+  "pm.expect(pm.response.headers.get('Content-Type') || '', 'progress needs an SSE answer: ' + pm.response.text()).to.include('text/event-stream');",
+  ...SSE_FRAMES,
+  `pm.expect(all.length, 'the progress, then one result: ' + text).to.equal(${PROGRESS_STEPS.length + 1});`,
+  `pm.expect(all.slice(0, -1), 'progress notifications come first, in order: ' + text).to.eql(${lit(PROGRESS_STEPS.map((step) => ({ jsonrpc: "2.0", method: "notifications/progress", params: { ...step, progressToken: PROGRESS_TOKEN } })))});`,
+  ...ANSWERS_THIS_CALL,
+]);
+const noProgressRelayed = A.custom("the result and no progress", [
+  ...SSE_FRAMES,
+  "pm.expect(text, 'progress reached a caller that did not ask for it').to.not.include('notifications/progress');",
+  "pm.expect(all.length, 'body: ' + text).to.equal(1);",
+  ...ANSWERS_THIS_CALL,
+]);
+const progressCallsAre = (server, calls, progressCalls) => mockGet("EP-84", server, `${server} ran work ${calls} times and was asked for progress ${progressCalls}`, [callsIs("work", calls), A.custom(`progress_calls[work] is ${progressCalls}`, [
+  `pm.expect((pm.response.json().counters.progress_calls || {}).work || 0, 'body: ' + pm.response.text()).to.equal(${progressCalls});`,
+])]);
+const progressServer = (server, versions) => [
+  ...serveTools("EP-84", server, [{ name: "work", progress: PROGRESS_STEPS }], "work, which reports two steps of progress"),
+  ...(versions ? [setVersions("EP-84", server, versions)] : []),
+];
+const EP84 = folder("EP-84 Progress relay", "Setup: fleet servers ep84a (every revision), ep84b (2025-11-25 only) and ep84c, each serving work, which reports two steps of progress when the call carries a progressToken; client ep84_a per call over HTTP on ep84a, ep84_b sticky over HTTP on ep84b, ep84_c over SSE on ep84c; anonymous callers.", [
+  ...progressServer("ep84a", ALL_VERSIONS), ...progressServer("ep84b", ["2025-11-25"]), ...progressServer("ep84c"),
+  createClient("EP-84", httpClient("ep84-a", "ep84_a", "ep84a", { tools_to_execute: ["*"] }), "setup: client ep84_a, per call on ep84a"),
+  createClient("EP-84", stickyOn("ep84-b", "ep84_b", "ep84b"), "setup: client ep84_b, sticky on ep84b"),
+  createClient("EP-84", sseClient("ep84-c", "ep84_c", "ep84c", { tools_to_execute: ["*"] }), "setup: client ep84_c, SSE on ep84c"),
+  legacyProgressRpc("EP-84", "2025-11-25 tools/call ep84_a-work with a progressToken", "ep84_a-work", { progressToken: PROGRESS_TOKEN }, [A.status(200), progressRelayed]),
+  rpc("EP-84", `${MODERN} tools/call ep84_a-work with a progressToken`, modernProgressCall("ep84_a-work"),
+    { headers: modernHeaders("tools/call", "ep84_a-work"), asserts: [A.status(200), progressRelayed] }),
+  legacyProgressRpc("EP-84", "2025-11-25 tools/call ep84_a-work without a progressToken", "ep84_a-work", {}, [A.status(200), noProgressRelayed]),
+  progressCallsAre("ep84a", 3, 2),
+  legacyProgressRpc("EP-84", "2025-11-25 tools/call ep84_b-work with a progressToken", "ep84_b-work", { progressToken: PROGRESS_TOKEN }, [A.status(200), progressRelayed]),
+  progressCallsAre("ep84b", 1, 1),
+  legacyProgressRpc("EP-84", "2025-11-25 tools/call ep84_c-work with a progressToken", "ep84_c-work", { progressToken: PROGRESS_TOKEN }, [A.status(200), progressRelayed]),
+  progressCallsAre("ep84c", 1, 1),
+  deleteClient("EP-84", "ep84-a"), deleteClient("EP-84", "ep84-b"), deleteClient("EP-84", "ep84-c"),
+]);
+
 const SET27 = folder("SET-27 Max protocol version validation", "Setup: admin credentials; alpha (echo_tool); client set27-c, per call on alpha, with no cap.", [
   ...freshServer("SET-27", "alpha", ["echo_tool"]),
   createClient("SET-27", httpClient("set27-c", "set27_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
@@ -8450,6 +8523,91 @@ const INF80 = folder("INF-80 Responses and non-auto tools on Anthropic and Gemin
     ];
   }),
   agentTeardown("INF-80"),
+]);
+
+// ================================================================ tools whose arguments are a root-level union
+
+// FETCH_REPORT declares its arguments as a root-level oneOf, as schema generators emit for a tagged union (allowed by
+// the 2026-07-28 spec). Bifrost must keep the union for clients and providers and flatten it only where one parameter
+// list is needed: code-mode stubs and providers that reject a root union.
+const FETCH_REPORT = {
+  name: "fetch_report",
+  description: "Fetch a report.",
+  inputSchema: {
+    type: "object",
+    oneOf: [
+      { type: "object", properties: { kind: { type: "string", const: "sales" }, region: { type: "string" } }, required: ["kind"] },
+      { type: "object", properties: { kind: { type: "string", const: "inventory" }, warehouse: { type: "string" } }, required: ["kind"] },
+    ],
+  },
+};
+const FETCH_REPORT_TEXT = "fetch_report, whose arguments are a root-level oneOf of {kind: \"sales\", region} and {kind: \"inventory\", warehouse}";
+const FETCH_REPORT_STUB = 'def fetch_report(kind: Literal["sales", "inventory"], region: str = None, warehouse: str = None) -> dict';
+
+const INF81 = folder("INF-81 Code-mode stubs flatten a root-level union", `Setup: cm serves ${FETCH_REPORT_TEXT}; cm registered as a code-mode client, auth none, per call, tools_to_execute ["*"].`, [
+  ...serveTools("INF-81", "cm", [FETCH_REPORT], FETCH_REPORT_TEXT),
+  createClient("INF-81", httpClient("inf-81-cm", "cm", "cm", { tools_to_execute: ["*"], is_code_mode_client: true }), "setup: register cm as a code-mode client"),
+  meta("INF-81", "readToolFile servers/cm.pyi", "readToolFile", { fileName: "servers/cm.pyi" }, [A.status(200), noIsError(), contentHas(FETCH_REPORT_STUB)]),
+  meta("INF-81", "getToolDocs cm/fetch_report", "getToolDocs", { server: "cm", tool: "fetch_report" }, [A.status(200), noIsError(), contentHas(FETCH_REPORT_STUB),
+    contentHas('kind (Literal["sales", "inventory"]): kind parameter (required)'), contentHas("warehouse (str): warehouse parameter (optional)"),
+    contentHas('cm.fetch_report(kind="...")')]),
+  cmTeardown("INF-81"),
+]);
+
+// FETCH_DECL finds alpha-fetch_report among request 1's declared tools as `decl`, in each provider's own shape.
+const FETCH_DECL = {
+  openai: "var decl = (reqs[0].json.tools || []).filter(function (t) { return t.function && t.function.name === 'alpha-fetch_report'; })[0];",
+  anthropic: "var decl = (reqs[0].json.tools || []).filter(function (t) { return t.name === 'alpha-fetch_report'; })[0];",
+  gemini: "var decl = (((reqs[0].json.tools || [])[0] || {}).functionDeclarations || []).filter(function (d) { return d.name === 'alpha-fetch_report'; })[0];",
+};
+const FETCH_SHAPE = {
+  openai: A.custom("OpenAI receives the root oneOf as declared: two branches, each with its kind, its own field and required kind", [REQS, FETCH_DECL.openai,
+    "pm.expect(decl, JSON.stringify(reqs[0].json.tools)).to.be.an('object');",
+    "var branches = (decl.function.parameters || {}).oneOf;",
+    "pm.expect(branches, 'the root oneOf: ' + JSON.stringify(decl)).to.be.an('array').with.lengthOf(2);",
+    "pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
+    "pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
+    "pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
+    "branches.forEach(function (b) { pm.expect(b.required).to.eql(['kind']); });",
+  ]),
+  anthropic: A.custom("Anthropic receives one flattened object: no root oneOf, kind (sales or inventory) required, region and warehouse optional", [REQS, FETCH_DECL.anthropic,
+    "pm.expect(decl, JSON.stringify(reqs[0].json.tools)).to.be.an('object');",
+    "pm.expect(decl.input_schema).to.not.have.property('oneOf');",
+    "pm.expect(Object.keys(decl.input_schema.properties).sort()).to.eql(['kind', 'region', 'warehouse']);",
+    "pm.expect(decl.input_schema.required).to.eql(['kind']);",
+    "var kinds = (decl.input_schema.properties.kind.anyOf || []).map(function (m) { return m.const; });",
+    "pm.expect(kinds, 'kind: ' + JSON.stringify(decl.input_schema.properties.kind)).to.eql(['sales', 'inventory']);",
+  ]),
+  gemini: A.custom("Gemini receives the root oneOf as declared: two branches, each with its kind, its own field and required kind", [REQS, FETCH_DECL.gemini,
+    "pm.expect(decl, JSON.stringify(reqs[0].json.tools)).to.be.an('object');",
+    "var branches = (decl.parametersJsonSchema || {}).oneOf;",
+    "pm.expect(branches, 'the root oneOf: ' + JSON.stringify(decl)).to.be.an('array').with.lengthOf(2);",
+    "pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
+    "pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
+    "pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
+    "branches.forEach(function (b) { pm.expect(b.required).to.eql(['kind']); });",
+  ]),
+};
+
+const INF82 = folder("INF-82 A root-level union reaches /mcp clients and models intact", `Setup: alpha serves ${FETCH_REPORT_TEXT}; alpha registered as client alpha, per call, tools_to_execute ["*"]; ${LLM_TEXT}; a chat to openai/mock-model, anthropic/mock-model, then gemini/mock-model.`, [
+  ...serveTools("INF-82", "alpha", [FETCH_REPORT], FETCH_REPORT_TEXT),
+  alphaClient("INF-82"),
+  list("INF-82", "/mcp lists alpha-fetch_report with its root oneOf", "/mcp", [], [A.status(200), A.custom("the inputSchema keeps both alternatives, each with its kind, its own field and required kind", [
+    "var tool = pm.response.json().result.tools.filter(function (t) { return t.name === 'alpha-fetch_report'; })[0];",
+    "pm.expect(tool, 'body: ' + pm.response.text()).to.be.an('object');",
+    "var branches = tool.inputSchema.oneOf;",
+    "pm.expect(branches, 'body: ' + pm.response.text()).to.be.an('array').with.lengthOf(2);",
+    "pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
+    "pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
+    "pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
+    "branches.forEach(function (b) { pm.expect(b.required).to.eql(['kind']); });",
+  ])]),
+  ...["openai", "anthropic", "gemini"].flatMap((prov) => [
+    llmScript("INF-82", `inf82-${prov}`, TEXT_OK),
+    infPost("INF-82", `${prov}: chat that declares alpha's tools`, "/v1/chat/completions", { model: `${prov}/mock-model`, messages: [userMsg(`inf82-${prov}`)] }, [A.status(200)]),
+    llmCaptured("INF-82", `${prov}: the model request carries alpha-fetch_report's arguments`, `inf82-${prov}`, [reqCount(1), FETCH_SHAPE[prov]]),
+  ]),
+  deleteClient("INF-82", "inf-82-alpha"),
 ]);
 
 // ================================================================ client metadata documents
@@ -12036,6 +12194,173 @@ const AUTH64 = folder("AUTH-64 One caller's code cannot finish another caller's 
   restoreConfig("AUTH-64"),
 ]);
 
+// ================================================================ AUTH-66 OAuth client credentials
+
+// AUTH-66: OAuth client credentials (MCP OAuth Client Credentials extension). The mock's authorization server knows C1
+// (secret S1) and K1 (an EC P-256 public key; AUTH66_KEY is its test-only private half).
+const AUTH66_KEY = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgyx0jlWdhbygG4oJv\nTT/0av7h+1sxqiXkf+ozz+RClxihRANCAAR7n0nv5s5a0YsfiFMjQ++qBtl+dkwa\n3810rpmAag8thuSDXY2ttYJikwX1Qh67tTiOJBhGF9feGDNalClC+zfP\n-----END PRIVATE KEY-----\n";
+const AUTH66_PUB = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEe59J7+bOWtGLH4hTI0PvqgbZfnZM\nGt/NdK6ZgGoPLYbkg12NrbWCYpMF9UIeu7U4jiQYRhfX3hgzWpQpQvs3zw==\n-----END PUBLIC KEY-----\n";
+const ccBody = (clientId, name, server, cc) => httpClient(clientId, name, server, { auth_type: "client_credentials", client_credentials: cc, tools_to_execute: ["*"] });
+// ccTokens checks clientId's client_credentials token requests sent with clientAuth: at least one, each 200, each
+// with resource the mock path resourcePath ("" for none).
+const ccTokens = (clientId, clientAuth, resourcePath) => A.custom(`${clientId}'s ${clientAuth} token requests succeeded, resource ${resourcePath === "" ? "omitted" : resourcePath}`, [
+  `var want = ${resourcePath === "" ? "''" : `pm.variables.get('chaos_url') + ${lit(resourcePath)}`};`,
+  `var r = pm.response.json().oauth.log.filter(function (e) { return e.endpoint === 'token' && e.grant_type === 'client_credentials' && e.client_id === ${lit(clientId)} && e.client_auth === ${lit(clientAuth)}; });`,
+  "pm.expect(r.length, 'log: ' + JSON.stringify(r)).to.be.at.least(1);",
+  "r.forEach(function (e) { pm.expect(e.status, JSON.stringify(e)).to.equal(200); pm.expect(e.resource || '', JSON.stringify(e)).to.equal(want); });",
+]);
+const saveCCTokens = (id, server, p) => mockGet(id, server, `setup: record ${server}'s client_credentials token count`, [], [
+  `pm.collectionVariables.set('${p}_cc', pm.response.json().oauth.counters.token_client_credentials);`,
+]);
+const AUTH66 = folder("AUTH-66 OAuth client credentials", `Setup: ${ALLOWLIST_TEXT}; fleet servers auth66 and auth66n (echo_tool, add_tool) as OAuth protected resources. auth66's authorization server accepts the client_credentials grant (private_key_jwt with ES256/RS256 advertised) and knows C1 (secret S1) and K1 (an EC P-256 public key); auth66n's knows C1 but does not offer the grant. Clients with auth_type client_credentials and no token_url are created on them.`, [
+  ...allowlistOn("AUTH-66"),
+  ...asServer("AUTH-66", "auth66", { client_credentials: true, clients: [{ client_id: "C1", client_secret: "S1" }, { client_id: "K1", public_key_pem: AUTH66_PUB }] }),
+  ...asServer("AUTH-66", "auth66n", { clients: [{ client_id: "C1", client_secret: "S1" }] }),
+  createExpect("AUTH-66", "create with a client secret: the token endpoint is discovered and one token is requested", ccBody("auth66-s", "auth66s", "auth66", { client_id: "C1", client_secret: "S1" }), [A.status(200)]),
+  getClient("AUTH-66", "auth66-s", "the discovered token endpoint is stored, Basic was chosen, and the secret is masked", [A.custom("token_url, auth_method and a masked client_secret", [
+    "var cc = pm.response.json().clients[0].config.client_credentials;",
+    "pm.expect(cc.token_url, 'body: ' + pm.response.text()).to.equal(pm.variables.get('chaos_url') + '/s/auth66/as/token');",
+    "pm.expect(cc.auth_method).to.equal('client_secret_basic');",
+    "pm.expect(cc.client_secret.value).to.not.equal('S1');",
+  ])]),
+  execTool("AUTH-66", "execute auth66s-echo_tool", "auth66s-echo_tool", [A.status(200)]),
+  mockGet("AUTH-66", "auth66", "the call ran as C1, on a token minted with HTTP Basic for the MCP server's resource", [identityCalls("C1", 1), ccTokens("C1", "client_secret_basic", "/s/auth66/mcp")]),
+  saveCCTokens("AUTH-66", "auth66", "auth66a"),
+  mockPost("AUTH-66", "auth66", "oauth/expire", "setup: expire C1's access token, which Bifrost still believes is good", { identity: "C1" }),
+  execTool("AUTH-66", "execute after the upstream rejects the cached token", "auth66s-echo_tool", [A.status(200)]),
+  mockGet("AUTH-66", "auth66", "a new token was minted for the rejected one", [A.custom("token_client_credentials grew", [
+    "pm.expect(pm.response.json().oauth.counters.token_client_credentials, 'body: ' + pm.response.text()).to.be.above(Number(pm.collectionVariables.get('auth66a_cc')));",
+  ])]),
+  clientPut("AUTH-66", "an update that drops token_url keeps a masked secret only if resent", "auth66-s", { client_credentials: { client_id: "C1", client_secret: "<redacted>" } }, [A.status(400), A.msgContains("must be resent explicitly")]),
+  clientPut("AUTH-66", "an update with the same token endpoint keeps the masked secret", "auth66-s", { client_credentials: { token_url: `${CHAOS}/s/auth66/as/token`, client_id: "C1", client_secret: "<redacted>", auth_method: "client_secret_basic" } }, [A.status(200)]),
+  execTool("AUTH-66", "execute after the update", "auth66s-echo_tool", [A.status(200)]),
+  createExpect("AUTH-66", "create with auth_method client_secret_post", ccBody("auth66-p", "auth66p", "auth66", { client_id: "C1", client_secret: "S1", auth_method: "client_secret_post", resource: "" }), [A.status(200)]),
+  execTool("AUTH-66", "execute auth66p-echo_tool", "auth66p-echo_tool", [A.status(200)]),
+  mockGet("AUTH-66", "auth66", "client_secret_post sends the secret in the body, and an empty resource is not sent", [ccTokens("C1", "client_secret_post", "")]),
+  createExpect("AUTH-66", "create with a private key: ES256 is chosen from the P-256 key", ccBody("auth66-k", "auth66k", "auth66", { client_id: "K1", private_key: AUTH66_KEY }), [A.status(200)]),
+  getClient("AUTH-66", "auth66-k", "signing_algorithm ES256 was stored", [A.custom("signing_algorithm is ES256", [
+    "pm.expect(pm.response.json().clients[0].config.client_credentials.signing_algorithm, 'body: ' + pm.response.text()).to.equal('ES256');",
+  ])]),
+  execTool("AUTH-66", "execute auth66k-echo_tool", "auth66k-echo_tool", [A.status(200)]),
+  mockGet("AUTH-66", "auth66", "the call ran as K1, authenticated with a verified private_key_jwt assertion", [identityCalls("K1", 1), ccTokens("K1", "private_key_jwt", "/s/auth66/mcp")]),
+  request("AUTH-66", "a secret the authorization server refuses fails the create", "POST", "/api/mcp/client", { body: ccBody("auth66-w", "auth66w", "auth66", { client_id: "C1", client_secret: "wrong" }), asserts: [A.status(400), A.msgContains("the token endpoint refused the client credentials: invalid_client")] }),
+  request("AUTH-66", "an authorization server that does not offer the grant fails the create", "POST", "/api/mcp/client", { body: ccBody("auth66-n", "auth66n", "auth66n", { client_id: "C1", client_secret: "S1" }), asserts: [A.status(400), A.msgContains("does not advertise the client_credentials grant")] }),
+  mockGet("AUTH-66", "auth66n", "no token was requested from the server without the grant", [oauthCountsAre({ token_client_credentials: 0 })]),
+  deleteClient("AUTH-66", "auth66-s"), deleteClient("AUTH-66", "auth66-p"), deleteClient("AUTH-66", "auth66-k"),
+  restoreConfig("AUTH-66"),
+]);
+
+// ================================================================ AUTH-67 AWS SigV4 (IAM)
+
+// AUTH-67: aws_sigv4 signs every request with Bifrost's own AWS identity. The runner points Bifrost's default AWS
+// credential chain at the fleet's fake Pod Identity endpoint and STS (/aws/...), and a SigV4 server verifies each
+// signature against that account: "pod" is Bifrost's own identity, and an assumed role is
+// "assumed-role/<role>/<session>". A role named *external* needs external ID chaos-external-id.
+const AUTH67_ROLE = "arn:aws:iam::123456789012:role/auth67-external-gateway";
+const AUTH67_ROLE_ID = "assumed-role/auth67-external-gateway/bifrost-auth67";
+const sigv4Client = (clientId, name, server, sigv4, over = {}) => httpClient(clientId, name, server, { auth_type: "aws_sigv4", aws_sigv4: sigv4, tools_to_execute: ["*"], ...over });
+const sigv4Auth = (id, server, sigv4) => mockAuth(id, server, `setup: ${server} accepts only SigV4 for ${sigv4.region}/${sigv4.service}${sigv4.allow ? ` from ${sigv4.allow.join(", ")}` : ""}`, { sigv4 });
+const awsReset = (id) => request(id, "setup: reset the fake AWS account's counters", "POST", "/aws/reset", { base: CHAOS, noAuth: true, body: {}, asserts: [A.status(200)] });
+const awsState = (id, title, asserts) => request(id, title, "GET", "/aws/state", { base: CHAOS, noAuth: true, asserts: [A.status(200), ...asserts] });
+// sigv4Verified checks a server's SigV4 log: nothing refused, every request signed by accessKey for region/service,
+// with the session token signed.
+const sigv4Verified = (accessKey, region, service) => A.custom(`every request was verified, signed by ${accessKey} for ${region}/${service} with its session token signed`, [
+  "var s = pm.response.json().sigv4 || {}, log = s.log || [];",
+  "pm.expect(s.rejected, 'sigv4: ' + JSON.stringify(s)).to.equal(0);",
+  "pm.expect(log.length, 'sigv4: ' + JSON.stringify(s)).to.be.above(0);",
+  `log.forEach(function (e) { pm.expect(e.result, JSON.stringify(e)).to.equal('ok'); pm.expect(e.region, JSON.stringify(e)).to.equal(${lit(region)}); pm.expect(e.service, JSON.stringify(e)).to.equal(${lit(service)}); pm.expect(e.session_token, JSON.stringify(e)).to.equal(true); pm.expect(e.signed_headers.split(';'), JSON.stringify(e)).to.include('x-amz-security-token'); ${accessKey === "*" ? "" : `pm.expect(e.access_key_id, JSON.stringify(e)).to.equal(${lit(accessKey)});`} });`,
+]);
+// sigv4Failure checks the client's last_failure message carries the SigV4 refusal.
+const sigv4Failure = (text) => A.custom(`last_failure says ${lit(text)}`, [
+  `pm.expect(((pm.response.json().clients[0].last_failure || {}).message || ''), 'body: ' + pm.response.text()).to.include(${lit(text)});`,
+]);
+const AUTH67 = folder("AUTH-67 AWS SigV4 (IAM) auth", "Setup: Bifrost's default AWS credential chain is the fleet's fake account (Pod Identity endpoint and STS); fleet servers auth67 (echo_tool, add_tool) accepting only SigV4 for us-east-1/bedrock-agentcore, auth67r accepting only the role session " + AUTH67_ROLE_ID + ", and auth67o whose REST surface accepts only SigV4 for us-east-1/execute-api; auth67d serves an OpenAPI document with no auth. Clients with auth_type aws_sigv4 are created on them.", [
+  awsReset("AUTH-67"),
+  ...freshServer("AUTH-67", "auth67", ["echo_tool", "add_tool"]),
+  sigv4Auth("AUTH-67", "auth67", { region: "us-east-1", service: "bedrock-agentcore" }),
+  createExpect("AUTH-67", "create with Bifrost's own identity: the connection is signed", sigv4Client("auth67-p", "auth67p", "auth67", { region: "us-east-1" }), [A.status(200)]),
+  getClient("AUTH-67", "auth67-p", "the aws_sigv4 block is stored and read back", [A.custom("aws_sigv4.region is us-east-1", [
+    "pm.expect(pm.response.json().clients[0].config.aws_sigv4.region.value, 'body: ' + pm.response.text()).to.equal('us-east-1');",
+  ])]),
+  execTool("AUTH-67", "execute auth67p-echo_tool", "auth67p-echo_tool", [A.status(200)]),
+  execTool("AUTH-67", "execute auth67p-echo_tool again", "auth67p-echo_tool", [A.status(200)]),
+  execTool("AUTH-67", "execute auth67p-add_tool", "auth67p-add_tool", [A.status(200)]),
+  mockGet("AUTH-67", "auth67", "the calls ran as the pod, every request signed by its Pod Identity credentials", [identityCalls("pod", 3), sigv4Verified("AKIDCHAOSPOD", "us-east-1", "bedrock-agentcore")]),
+  awsState("AUTH-67", "the Pod Identity credentials were fetched once for the create and every call", [A.custom("credential_fetches is 1", [
+    "pm.expect(pm.response.json().credential_fetches, 'body: ' + pm.response.text()).to.equal(1);",
+  ])]),
+  createExpect("AUTH-67", "create with a persistent connection", sigv4Client("auth67-s", "auth67s", "auth67", { region: "us-east-1" }, { needs_session_stickiness: true }), [A.status(200)]),
+  execTool("AUTH-67", "execute auth67s-echo_tool over the persistent connection", "auth67s-echo_tool", [A.status(200)]),
+  mockGet("AUTH-67", "auth67", "the persistent connection's requests were signed too", [identityCalls("pod", 4), sigv4Verified("AKIDCHAOSPOD", "us-east-1", "bedrock-agentcore")]),
+  clientPut("AUTH-67", "add a header to the persistent client", "auth67-s", { headers: { "X-Auth67-Edit": "v2" } }, [A.status(200)]),
+  execTool("AUTH-67", "execute auth67s-echo_tool after the header edit", "auth67s-echo_tool", [A.status(200)]),
+  mockGet("AUTH-67", "auth67", "the live connection now sends and signs the new header", [A.custom("the latest signed POST carries x-auth67-edit", [
+    "var log = ((pm.response.json().sigv4 || {}).log || []).filter(function (e) { return e.method === 'POST' && e.result === 'ok'; });",
+    "pm.expect(log.length, JSON.stringify(log)).to.be.above(0);",
+    "pm.expect(log[log.length - 1].signed_headers.split(';'), JSON.stringify(log[log.length - 1])).to.include('x-auth67-edit');",
+  ])]),
+  createExpect("AUTH-67", "create an SSE client", sseClient("auth67-sse", "auth67sse", "auth67", { auth_type: "aws_sigv4", aws_sigv4: { region: "us-east-1" }, tools_to_execute: ["*"] }), [A.status(200)]),
+  execTool("AUTH-67", "execute auth67sse-echo_tool over SSE", "auth67sse-echo_tool", [A.status(200)]),
+  mockGet("AUTH-67", "auth67", "the SSE stream and its message posts were signed", [identityCalls("pod", 6), sigv4Verified("AKIDCHAOSPOD", "us-east-1", "bedrock-agentcore"), A.custom("the SSE GET and a message POST were verified", [
+    "var log = (pm.response.json().sigv4 || {}).log || [];",
+    "pm.expect(log.some(function (e) { return e.method === 'GET' && /\\/sse$/.test(e.path) && e.result === 'ok'; }), JSON.stringify(log)).to.equal(true);",
+    "pm.expect(log.some(function (e) { return e.method === 'POST' && /\\/sse\\/message$/.test(e.path) && e.result === 'ok'; }), JSON.stringify(log)).to.equal(true);",
+  ])]),
+  deleteClient("AUTH-67", "auth67-sse"),
+  createExpect("AUTH-67", "a per-call client signing for the wrong region is created, but its discovery is refused", sigv4Client("auth67-w", "auth67w", "auth67", { region: "us-west-2" }), [A.status(200)]),
+  getClient("AUTH-67", "auth67-w", "its health is unstable with the server's reason", [clientState("unstable"), sigv4Failure("refused the signed request with HTTP 403: credential scope is for us-west-2/bedrock-agentcore, expected us-east-1/bedrock-agentcore")]),
+  deleteClient("AUTH-67", "auth67-w"),
+  request("AUTH-67", "a persistent connection signing for the wrong region fails the create with the server's reason", "POST", "/api/mcp/client", { body: sigv4Client("auth67-ws", "auth67ws", "auth67", { region: "us-west-2" }, { needs_session_stickiness: true }), asserts: [A.status(500), A.msgContains("refused the signed request with HTTP 403: credential scope is for us-west-2/bedrock-agentcore, expected us-east-1/bedrock-agentcore")] }),
+  request("AUTH-67", "a service outside the allowlist is refused before anything is signed", "POST", "/api/mcp/client", { body: sigv4Client("auth67-x", "auth67x", "auth67", { region: "us-east-1", service: "s3" }), asserts: [A.status(400), A.msgContains("aws_sigv4.service must be one of bedrock-agentcore, aws-mcp, lambda, execute-api")] }),
+  request("AUTH-67", "a role from an unset env var is refused rather than signing as Bifrost's own identity", "POST", "/api/mcp/client", { body: sigv4Client("auth67-u", "auth67u", "auth67", { region: "us-east-1", role_arn: "env.BIFROST_AUTH67_UNSET_ROLE" }), asserts: [A.status(400), A.msgContains("aws_sigv4.role_arn references env.BIFROST_AUTH67_UNSET_ROLE, which does not resolve to an IAM role ARN")] }),
+  request("AUTH-67", "an Authorization header on an aws_sigv4 client is refused", "POST", "/api/mcp/client", { body: sigv4Client("auth67-h", "auth67h", "auth67", { region: "us-east-1" }, { headers: { Authorization: "Bearer x" } }), asserts: [A.status(400), A.msgContains("is set by the SigV4 signer and cannot be configured")] }),
+  // auth67-s keeps signing for us-east-1 in the background, so it goes before the server moves to us-west-2.
+  deleteClient("AUTH-67", "auth67-s"),
+  sigv4Auth("AUTH-67", "auth67", { region: "us-west-2", service: "bedrock-agentcore" }),
+  clientPut("AUTH-67", "an update to the region re-signs the client's requests", "auth67-p", { aws_sigv4: { region: "us-west-2" } }, [A.status(200)]),
+  execTool("AUTH-67", "execute after the region update", "auth67p-echo_tool", [A.status(200)]),
+  mockGet("AUTH-67", "auth67", "the latest request was signed for us-west-2", [A.custom("the last SigV4 entry is ok for us-west-2", [
+    "var log = (pm.response.json().sigv4 || {}).log || [], e = log[log.length - 1] || {};",
+    "pm.expect(e.result, JSON.stringify(e)).to.equal('ok');",
+    "pm.expect(e.region, JSON.stringify(e)).to.equal('us-west-2');",
+  ])]),
+
+  ...freshServer("AUTH-67", "auth67r", ["echo_tool", "add_tool"]),
+  sigv4Auth("AUTH-67", "auth67r", { region: "us-east-1", service: "bedrock-agentcore", allow: [AUTH67_ROLE_ID] }),
+  createExpect("AUTH-67", "create with an assumed role, external ID and session name", sigv4Client("auth67-r", "auth67r", "auth67r", { region: "us-east-1", role_arn: AUTH67_ROLE, external_id: "chaos-external-id", session_name: "bifrost-auth67" }), [A.status(200)]),
+  getClient("AUTH-67", "auth67-r", "the external ID reads back masked; the session name as set", [A.custom("external_id is masked", [
+    "var c = pm.response.json().clients[0].config.aws_sigv4;",
+    "pm.expect(c.external_id.value, 'body: ' + pm.response.text()).to.not.equal('chaos-external-id');",
+    "pm.expect(c.external_id.value, 'body: ' + pm.response.text()).to.match(/\\*/);",
+    "pm.expect(c.session_name.value, 'body: ' + pm.response.text()).to.equal('bifrost-auth67');",
+  ])]),
+  execTool("AUTH-67", "execute auth67r-echo_tool", "auth67r-echo_tool", [A.status(200)]),
+  mockGet("AUTH-67", "auth67r", "the call ran as the assumed role session", [identityCalls(AUTH67_ROLE_ID, 1), sigv4Verified("*", "us-east-1", "bedrock-agentcore")]),
+  awsState("AUTH-67", "STS was asked once for the role, by the pod, with the external ID and session name", [A.custom("one ok AssumeRole for the role", [
+    `var r = (pm.response.json().assume_role || []).filter(function (e) { return e.role_arn === ${lit(AUTH67_ROLE)} && e.result === 'ok'; });`,
+    "pm.expect(r.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(r[0].external_id).to.equal('chaos-external-id');",
+    "pm.expect(r[0].session_name).to.equal('bifrost-auth67');",
+    "pm.expect(r[0].caller).to.equal('pod');",
+  ])]),
+  request("AUTH-67", "an identity IAM does not allow fails the create with AccessDenied", "POST", "/api/mcp/client", { body: sigv4Client("auth67-d", "auth67d", "auth67r", { region: "us-east-1" }, { needs_session_stickiness: true }), asserts: [A.status(500), A.msgContains("refused the signed request with HTTP 403: AccessDenied: pod is not authorized")] }),
+  request("AUTH-67", "a role whose trust policy needs an external ID fails the create without one", "POST", "/api/mcp/client", { body: sigv4Client("auth67-e", "auth67e", "auth67r", { region: "us-east-1", role_arn: AUTH67_ROLE, session_name: "no-external-id" }, { needs_session_stickiness: true }), asserts: [A.status(500), A.msgContains("could not get AWS credentials"), A.msgContains("requires the external ID")] }),
+
+  ...freshServer("AUTH-67", "auth67o", ["echo_tool"]),
+  sigv4Auth("AUTH-67", "auth67o", { region: "us-east-1", service: "execute-api" }),
+  ...freshServer("AUTH-67", "auth67d", ["echo_tool"]),
+  mockPost("AUTH-67", "auth67d", "routes/add", "setup: auth67d serves the document at GET /openapi.json", { route: { method: "GET", path: "/openapi.json", json: JSON.parse(PETS) } }),
+  createExpect("AUTH-67", "create an OpenAPI client whose spec_url is on another host", oasClient("auth67-o", "auth67o", "auth67o", { auth_type: "aws_sigv4", aws_sigv4: { region: "us-east-1", service: "execute-api" } }, { spec: undefined, spec_url: `${REST("auth67d")}/openapi.json` }), [A.status(200)]),
+  execArgs("AUTH-67", "execute getPetById: the API call is signed", "auth67o-getPetById", { petId: "7" }, [A.status(200), toolContent(echoOf("GET", "/pets/7", "", ""))]),
+  mockGet("AUTH-67", "auth67o", "the API call was verified for us-east-1/execute-api", [sigv4Verified("AKIDCHAOSPOD", "us-east-1", "execute-api")]),
+  mockGet("AUTH-67", "auth67d", "the spec was fetched without a signature", [A.custom("GET /openapi.json carried no Authorization", [
+    REST_CALLS,
+    "pm.expect(calls.length, 'body: ' + pm.response.text()).to.be.above(0);",
+    "calls.forEach(function (c) { pm.expect(c.headers.Authorization, JSON.stringify(c)).to.equal(undefined); pm.expect(c.headers['X-Amz-Date'], JSON.stringify(c)).to.equal(undefined); });",
+  ])]),
+  deleteClient("AUTH-67", "auth67-p"), deleteClient("AUTH-67", "auth67-r"), deleteClient("AUTH-67", "auth67-o"),
+]);
+
 // ================================================================ PUD on 2026-07-28, upstream failures, Bifrost tokens and injected tools
 
 // waitAcked polls driven clients, 250ms apart for up to 10s each, until each has its subscriptions/acknowledged.
@@ -13290,6 +13615,69 @@ const OAS46 = folder("OAS-46 A server cap below 2025-11-25 turns off Client ID M
   request("OAS-46", "auto: metadata documents are advertised again", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), cimdFlag(true)] }),
 ]));
 
+// OAS-47: a second issuer on another hostname. TUNNEL_HOST stands in for a client that reaches Bifrost only
+// through a private tunnel; requests carrying it reach the same server.
+const TUNNEL_ISS = "http://bifrost-tunnel.mcp-harness.example";
+const TUNNEL_HOST = { key: "Host", value: "bifrost-tunnel.mcp-harness.example" };
+const issuedBy = (iss) => A.custom(`the access token's iss is ${iss}, its aud ${iss}/mcp`, [
+  CLAIMS_FN,
+  "var c = claims((pm.response.json() || {}).access_token);",
+  `pm.expect(c.iss, 'claims: ' + JSON.stringify(c)).to.equal(${lit(iss)});`,
+  `pm.expect([].concat(c.aud), 'claims: ' + JSON.stringify(c)).to.include(${lit(iss + "/mcp")});`,
+]);
+const OAS47 = folder("OAS-47 Additional issuers on other hostnames", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on, additional_issuer_urls [${TUNNEL_ISS}]. Requests with Host ${TUNNEL_HOST.value} play a hosted client that only reaches the tunnel; the user's browser stays on the base URL. Two grants are started through the tunnel resource; the first is exchanged and refreshed, then the tunnel issuer is removed with the second grant's code still unexchanged.`, [
+  ...fleetGrantSetup("OAS-47"),
+  oauthConfig("OAS-47", "both", [`cc.oauth2_server_config.additional_issuer_urls = [${lit(TUNNEL_ISS)}];`], `setup: ${BOTH}, temp-token auth on, additional_issuer_urls [${TUNNEL_ISS}]`),
+  request("OAS-47", "authorization server metadata on the tunnel hostname", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, headers: [TUNNEL_HOST], asserts: [A.status(200), A.custom("issuer and endpoints are the tunnel's", [
+    "var b = pm.response.json();",
+    `pm.expect(b.issuer, 'body: ' + pm.response.text()).to.equal(${lit(TUNNEL_ISS)});`,
+    `pm.expect(b.token_endpoint).to.equal(${lit(TUNNEL_ISS + "/oauth2/token")});`,
+    `pm.expect(b.registration_endpoint).to.equal(${lit(TUNNEL_ISS + "/oauth2/register")});`,
+    `pm.expect(b.authorization_endpoint).to.equal(${lit(TUNNEL_ISS + "/oauth2/authorize")});`,
+  ])] }),
+  request("OAS-47", "authorization server metadata on an unlisted hostname is the primary's", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, headers: [EVIL], asserts: [A.status(200), A.custom("issuer is the base URL", ["pm.expect(pm.response.json().issuer, 'body: ' + pm.response.text()).to.equal(pm.variables.get('base_url'));"])] }),
+  request("OAS-47", "protected resource metadata on the tunnel hostname", "GET", "/.well-known/oauth-protected-resource/mcp", { noAuth: true, headers: [TUNNEL_HOST], asserts: [A.status(200), A.custom("resource and authorization server are the tunnel's", [
+    "var b = pm.response.json();",
+    `pm.expect(b.resource, 'body: ' + pm.response.text()).to.equal(${lit(TUNNEL_ISS + "/mcp")});`,
+    `pm.expect(b.authorization_servers).to.deep.equal([${lit(TUNNEL_ISS)}]);`,
+  ])] }),
+  request("OAS-47", "/mcp on the tunnel hostname with an unverifiable token", "POST", "/mcp", { noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, TUNNEL_HOST, { key: "Authorization", value: "Bearer eyJhbGciOiJub25lIn0.e30.unverifiable" }], asserts: [A.status(401), A.custom("WWW-Authenticate points at the tunnel's resource metadata", [
+    `pm.expect(pm.response.headers.get('WWW-Authenticate'), 'headers').to.equal('Bearer resource_metadata="' + ${lit(TUNNEL_ISS)} + '/.well-known/oauth-protected-resource/mcp"');`,
+  ])] }),
+  request("OAS-47", "register through the tunnel", "POST", "/oauth2/register", {
+    noAuth: true, headers: [TUNNEL_HOST], body: { client_name: "OAS-47 client", redirect_uris: [LOOPBACK_CB], grant_types: REFRESHABLE }, asserts: [A.status(201)],
+    extraTests: ["pm.collectionVariables.set('oas47_client', pm.response.json().client_id);"],
+  }),
+  ...["oas47_f", "oas47_g"].flatMap((flow, i) => {
+    const label = i === 0 ? "the first grant" : "the second grant";
+    return [
+      request("OAS-47", `authorize ${label} on the base URL with the tunnel's resource`, "GET", goodAuthorize("oas47_client", { resource: `${TUNNEL_ISS}/mcp` }), {
+        noAuth: true, noRedirect: true, asserts: [A.status(302), consentLocation()],
+        extraTests: [
+          "var loc = pm.response.headers.get('Location') || '';",
+          "var m = /[?&]flow=([^#&]+)#t=(.+)$/.exec(loc);",
+          `pm.collectionVariables.set(${lit(flow + "_id")}, m ? decodeURIComponent(m[1]) : '');`,
+          `pm.collectionVariables.set(${lit(flow + "_tt")}, m ? decodeURIComponent(m[2]) : '');`,
+        ],
+      }),
+      consent("OAS-47", flow, `consent ${label} with the full-access VK`, "temp", vkBody("OAS-47"), [A.status(200), codeIssued(), A.custom("the redirect's iss is the tunnel issuer (RFC 9207)", [
+        "var u = (pm.response.json() || {}).redirect_url || '';",
+        "var m = /[?&]iss=([^&]+)/.exec(u);",
+        `pm.expect(m && decodeURIComponent(m[1]), 'redirect_url: ' + u).to.equal(${lit(TUNNEL_ISS)});`,
+      ])], { extraTests: saveCode(flow) }),
+    ];
+  }),
+  tokenReq("OAS-47", "exchange the first grant's code through the tunnel", codeParams("oas47_f", "oas47_client"), [A.status(200), tokensIssued(), issuedBy(TUNNEL_ISS)], { headers: [TUNNEL_HOST], extraTests: saveTokens("oas47_f") }),
+  mcpWithToken("OAS-47", "the tunnel's access token lists every tool on the base URL", "oas47_f_at", [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  request("OAS-47", "the tunnel's access token lists every tool on the tunnel hostname", "POST", "/mcp", { noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, TUNNEL_HOST, { key: "Authorization", value: "Bearer {{oas47_f_at}}" }], asserts: [A.status(200), toolNamesInList(ALL_TOOLS)] }),
+  tokenReq("OAS-47", "refresh on the base URL keeps the tunnel issuer", refreshParams("oas47_f_rt", "oas47_client"), [A.status(200), tokensIssued(), issuedBy(TUNNEL_ISS)], { extraTests: saveTokens("oas47_r") }),
+  oauthConfig("OAS-47", "both", [], `setup: remove the tunnel issuer (${BOTH}, temp-token auth on)`),
+  mcpWithToken("OAS-47", "the tunnel's access token is refused once the issuer is removed", "oas47_r_at", [A.status(401), A.msgContains("invalid issuer")]),
+  tokenReq("OAS-47", "its refresh token is refused", refreshParams("oas47_r_rt", "oas47_client"), [A.status(400), O.error("invalid_grant"), O.desc("no longer serves")]),
+  tokenReq("OAS-47", "the second grant's code is refused rather than exchanged", codeParams("oas47_g", "oas47_client"), [A.status(400), O.error("invalid_grant"), O.desc("no longer serves")]),
+  ...fleetGrantTeardown("OAS-47"),
+]);
+
 // ================================================================ network paths
 
 // The fleet is reached under a *.proxy.test name that only the mock's forward proxy resolves, so a request
@@ -13583,13 +13971,13 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64, AUTH65]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64, AUTH65, AUTH66, AUTH67]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, EP83, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, EP83, EP84, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46, OAS47]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80, INF81, INF82]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),

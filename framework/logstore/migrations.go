@@ -358,6 +358,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_model_routing_suggestion_tables"}, run: migrationAddComplexitySuggestionTables},
 	{IDs: []string{"logs_add_model_routing_columns"}, run: migrationAddModelRoutingColumns},
 	{IDs: []string{"logs_tune_retention_autovacuum"}, run: migrationTuneRetentionAutovacuum},
+	{IDs: []string{"relay_logs_add_job_debug_widen_job_status"}, run: migrationRelayLogJobColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -6225,6 +6226,36 @@ func migrationAddRelayLogSessionID(ctx context.Context, db *gorm.DB, logger sche
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("relay_logs_add_session_id is non-rollbackable: dropping the column would lose the session identity recorded on existing rows")
+		},
+	}})
+	return m.Migrate()
+}
+
+// migrationRelayLogJobColumns adds job_debug (how a job row's job was polled) and widens job_status
+// to text (a job's status is any string the upstream reports; one past 64 characters failed the job
+// row's insert, so the job was polled again forever). Both are metadata-only on Postgres: a nullable
+// column with no default or index, and varchar to text with no rewrite. One migration, so
+// relay_logs is locked once. SQLite does not enforce the length, so only the column is added there.
+func migrationRelayLogJobColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "relay_logs_add_job_debug_widen_job_status",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &RelayLog{}, "JobDebug"); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			return tx.Exec("ALTER TABLE relay_logs ALTER COLUMN job_status TYPE TEXT").Error
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("relay_logs_add_job_debug_widen_job_status is non-rollbackable: dropping job_debug or narrowing job_status would lose recorded job details")
 		},
 	}})
 	return m.Migrate()

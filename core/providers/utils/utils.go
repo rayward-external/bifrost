@@ -4523,6 +4523,11 @@ func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schem
 	if ctx == nil || bifrostErr == nil {
 		return
 	}
+	// A stored run the stream started goes on without it and is settled once, so nothing is billed here.
+	if job, ok := ctx.Value(schemas.BifrostContextKeyStreamProviderJob).(*schemas.BifrostPassthroughJob); ok && job != nil {
+		bifrostErr.ExtraFields.ProviderJob = job
+		return
+	}
 	usage, ok := ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage).(*schemas.BifrostLLMUsage)
 	if !ok || usage == nil {
 		return
@@ -4681,28 +4686,8 @@ func ProcessAndSendError(
 	// A read error (an idle timeout, a dropped connection) ends the stream like a
 	// cancel does, so it bills the usage the provider already reported.
 	attachBilledUsageFromContext(ctx, bifrostError)
-	processedResponse, processedError := postHookRunner(ctx, nil, bifrostError)
-
-	if HandleStreamControlSkip(processedError) {
-		return
-	}
-
-	streamResponse := &schemas.BifrostStreamChunk{}
-	if processedResponse != nil {
-		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
-		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
-		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
-		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
-		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
-	}
-	if processedError != nil {
-		streamResponse.BifrostError = processedError
-	}
-
-	GateSendChunk(ctx, streamResponse, responseChan)
-	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
-		markStreamTerminalHandled(ctx)
-	}
+	// Completes the span as failed before CloseStream, whose safety net would end it OK.
+	ProcessAndSendBifrostError(ctx, postHookRunner, bifrostError, responseChan, logger, postHookSpanFinalizer)
 }
 
 // SendStreamTruncatedError surfaces an upstream stream that ended without a

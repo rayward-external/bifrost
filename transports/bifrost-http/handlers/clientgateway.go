@@ -377,7 +377,7 @@ func (ep *clientGatewayEndpoint) handleDeviceAuthorization(ctx *fasthttp.Request
 		}
 	}
 
-	verificationURI := clientGatewayDeviceVerificationURL(oauth2IssuerURL(ctx, ep.store))
+	verificationURI := clientGatewayDeviceVerificationURL(oauth2BrowserBaseURL(ctx, ep.store))
 	data, err := providerUtils.MarshalSorted(map[string]any{
 		"device_code":               deviceCode,
 		"user_code":                 userCode,
@@ -612,7 +612,7 @@ func (h *ClientGatewayHandler) handleDeviceVerify(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	consentURL := fmt.Sprintf("%s/oauth/consent?flow=%s", oauth2IssuerURL(ctx, h.store), url.QueryEscape(req.ID))
+	consentURL := fmt.Sprintf("%s/oauth/consent?flow=%s", oauth2BrowserBaseURL(ctx, h.store), url.QueryEscape(req.ID))
 	if h.tempTokens != nil {
 		tok, err := h.tempTokens.Mint(ctx, temptoken.OAuth2ConsentScopeName, req.ID, time.Until(req.ExpiresAt))
 		if err != nil {
@@ -688,6 +688,11 @@ func (ep *clientGatewayEndpoint) authenticate(ctx *fasthttp.RequestCtx) (int, st
 	resource := ep.resourceURL(ctx)
 	now := time.Now()
 	claims := ep.tokens.get(rawJWT, resource, now)
+	// A token from another configured issuer is cached under this hostname's resource, which
+	// removing that issuer does not move, so its issuer is checked again on every hit.
+	if claims != nil && !resourceUnderIssuer(resource, claims.Issuer) && !oauth2IssuerAccepted(ep.store, "", claims.Issuer) {
+		claims = nil
+	}
 	if claims == nil {
 		signingKey, err := ep.store.GetOAuth2SigningKey(ctx)
 		if err != nil {
@@ -820,6 +825,12 @@ func normalizeGatewayUserCode(code string) string {
 	return b.String()
 }
 
+// resourceUnderIssuer reports whether resource is a path under issuer, without
+// building issuer+"/", which would allocate on every cached request.
+func resourceUnderIssuer(resource, issuer string) bool {
+	return len(resource) > len(issuer) && resource[len(issuer)] == '/' && strings.HasPrefix(resource, issuer)
+}
+
 // --- Verified token cache ---
 
 // clientGatewayTokenCacheMaxEntries caps the verified-token cache. An entry is the
@@ -834,7 +845,8 @@ const clientGatewayTokenCacheMaxEntries = 4096
 // lifetime and audience were verified, keyed by the raw token, until each one
 // expires. An entry only answers for the resource it was verified against, so
 // an issuer_url change (which moves the resource) sends every token back
-// through full verification, which then refuses it. Access tokens have no
+// through full verification, which then refuses it; a token from a removed
+// additional issuer is caught by authenticate's issuer re-check. Access tokens have no
 // revocation of their own (refresh tokens do); the identity a token names is
 // re-checked by the caller on every request, cached or not.
 type gatewayTokenCache struct {

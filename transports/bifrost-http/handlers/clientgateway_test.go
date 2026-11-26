@@ -61,6 +61,12 @@ func oauthErrorCode(t *testing.T, ctx *fasthttp.RequestCtx) string {
 // surface=claude_code, no client_id) and returns the device and user codes.
 func startDeviceSignIn(t *testing.T, h *clientGatewayEndpoint) (deviceCode, userCode string) {
 	t.Helper()
+	return startDeviceSignInAt(t, h, testIssuer)
+}
+
+// startDeviceSignInAt is startDeviceSignIn with the verification page expected on browserBase.
+func startDeviceSignInAt(t *testing.T, h *clientGatewayEndpoint, browserBase string) (deviceCode, userCode string) {
+	t.Helper()
 	ctx := formPostCtx("surface=claude_code")
 	h.handleDeviceAuthorization(ctx)
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -69,8 +75,8 @@ func startDeviceSignIn(t *testing.T, h *clientGatewayEndpoint) (deviceCode, user
 	userCode, _ = body["user_code"].(string)
 	require.NotEmpty(t, deviceCode)
 	require.Regexp(t, `^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$`, userCode)
-	assert.Equal(t, testIssuer+"/oauth/device", body["verification_uri"])
-	assert.Equal(t, testIssuer+"/oauth/device?user_code="+url.QueryEscape(userCode), body["verification_uri_complete"])
+	assert.Equal(t, browserBase+"/oauth/device", body["verification_uri"])
+	assert.Equal(t, browserBase+"/oauth/device?user_code="+url.QueryEscape(userCode), body["verification_uri_complete"])
 	assert.EqualValues(t, 600, body["expires_in"])
 	assert.EqualValues(t, 5, body["interval"])
 	return deviceCode, userCode
@@ -86,16 +92,23 @@ func pollDeviceToken(h *clientGatewayEndpoint, deviceCode string) *fasthttp.Requ
 // using a virtual key, and returns the consent redirect.
 func approveWithVK(t *testing.T, h *clientGatewayEndpoint, consent *OAuth2ConsentHandler, userCode, vkValue string) string {
 	t.Helper()
+	return submitDeviceConsent(t, h, consent, testIssuer, userCode, `{"mode":"vk","value":"`+vkValue+`","user_code":"`+userCode+`"}`)
+}
+
+// submitDeviceConsent runs the verification page for userCode, expects the consent
+// page on browserBase, submits body there and returns the consent redirect.
+func submitDeviceConsent(t *testing.T, h *clientGatewayEndpoint, consent *OAuth2ConsentHandler, browserBase, userCode, body string) string {
+	t.Helper()
 	verify := jsonPostCtx(`{"user_code":"` + strings.ToLower(userCode) + `"}`)
 	h.handleDeviceVerify(verify)
 	require.Equal(t, fasthttp.StatusOK, verify.Response.StatusCode(), string(verify.Response.Body()))
 	consentURL, _ := jsonBody(t, verify)["consent_url"].(string)
-	require.True(t, strings.HasPrefix(consentURL, testIssuer+"/oauth/consent?flow="), consentURL)
+	require.True(t, strings.HasPrefix(consentURL, browserBase+"/oauth/consent?flow="), consentURL)
 	parsed, err := url.Parse(consentURL)
 	require.NoError(t, err)
 	flowID := parsed.Query().Get("flow")
 
-	submit := jsonPostCtx(`{"mode":"vk","value":"` + vkValue + `","user_code":"` + userCode + `"}`)
+	submit := jsonPostCtx(body)
 	submit.SetUserValue("id", flowID)
 	consent.flowSubmit(submit)
 	require.Equal(t, fasthttp.StatusOK, submit.Response.StatusCode(), string(submit.Response.Body()))
@@ -580,6 +593,74 @@ func TestClientGateway_DeviceVerifyNeedsNoCredentials(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeGateway_BrowserBaseURL pins that browser_base_url moves every
+// page of a device sign-in the user opens (verification, consent, approved and
+// denied), while the gateway's own metadata stays on the issuer.
+func TestClaudeCodeGateway_BrowserBaseURL(t *testing.T) {
+	h, consent, store, cfg := newClaudeCodeGateway(t, false)
+	cfg.ClientConfig.OAuth2ServerConfig.BrowserBaseURL = schemas.NewSecretVar(testBrowserBase)
+	vk := seedGatewayVK(t, store, "vk-browser", "sk-bf-browser")
+
+	_, approveCode := startDeviceSignInAt(t, h, testBrowserBase)
+	assert.Equal(t, testBrowserBase+"/oauth/device?approved=1", submitDeviceConsent(t, h, consent, testBrowserBase, approveCode,
+		`{"mode":"vk","value":"`+vk.Value.GetValue()+`","user_code":"`+approveCode+`"}`))
+	_, denyCode := startDeviceSignInAt(t, h, testBrowserBase)
+	assert.Equal(t, testBrowserBase+"/oauth/device?denied=1", submitDeviceConsent(t, h, consent, testBrowserBase, denyCode, `{"deny":true}`))
+
+	meta := &fasthttp.RequestCtx{}
+	h.handleMetadata(meta)
+	require.Equal(t, fasthttp.StatusOK, meta.Response.StatusCode())
+	assert.Equal(t, testClaudeCodeResource, jsonBody(t, meta)["issuer"])
+}
+
+// TestClaudeCodeGateway_AdditionalIssuer pins the gateway on an additional
+// issuer's hostname: its metadata names that issuer, a sign-in started there gets
+// tokens naming it, and those tokens are honoured on the primary's hostname.
+func TestClaudeCodeGateway_AdditionalIssuer(t *testing.T) {
+	h, consent, store, cfg := newClaudeCodeGateway(t, false)
+	withTunnelIssuer(cfg)
+	vk := seedGatewayVK(t, store, "vk-tunnel", "sk-bf-tunnel")
+	onTunnel := func(ctx *fasthttp.RequestCtx) *fasthttp.RequestCtx {
+		ctx.Request.Header.SetHost("bifrost-tunnel.test")
+		return ctx
+	}
+	gatewayResource := testTunnelIssuer + "/gateway/claude-code"
+
+	meta := onTunnel(&fasthttp.RequestCtx{})
+	h.handleMetadata(meta)
+	assert.Equal(t, gatewayResource, jsonBody(t, meta)["issuer"])
+
+	start := onTunnel(formPostCtx("surface=claude_code"))
+	h.handleDeviceAuthorization(start)
+	require.Equal(t, fasthttp.StatusOK, start.Response.StatusCode(), string(start.Response.Body()))
+	deviceCode, _ := jsonBody(t, start)["device_code"].(string)
+	userCode, _ := jsonBody(t, start)["user_code"].(string)
+	submitDeviceConsent(t, h, consent, testIssuer, userCode, `{"mode":"vk","value":"`+vk.Value.GetValue()+`","user_code":"`+userCode+`"}`)
+
+	poll := onTunnel(formPostCtx(url.Values{"grant_type": {deviceCodeGrantType}, "device_code": {deviceCode}}.Encode()))
+	h.handleToken(poll)
+	require.Equal(t, fasthttp.StatusOK, poll.Response.StatusCode(), string(poll.Response.Body()))
+	access, _ := jsonBody(t, poll)["access_token"].(string)
+	claims := jwt.MapClaims{}
+	_, _, err := jwt.NewParser().ParseUnverified(access, claims)
+	require.NoError(t, err)
+	assert.Equal(t, testTunnelIssuer, claims["iss"])
+	assert.Equal(t, []any{gatewayResource}, claims["aud"])
+
+	called := false
+	onPrimary := bearerCtx(access)
+	h.BearerMiddleware(func(*fasthttp.RequestCtx) { called = true })(onPrimary)
+	assert.True(t, called, "a tunnel-issued gateway token on the primary's hostname: %s", onPrimary.Response.Body())
+
+	// The token is now cached against the primary's resource, which removing the tunnel issuer does not move.
+	cfg.ClientConfig.OAuth2ServerConfig.AdditionalIssuerURLs = nil
+	called = false
+	afterRemoval := bearerCtx(access)
+	h.BearerMiddleware(func(*fasthttp.RequestCtx) { called = true })(afterRemoval)
+	assert.False(t, called, "a removed issuer's cached token must not pass")
+	assert.Equal(t, fasthttp.StatusUnauthorized, afterRemoval.Response.StatusCode(), string(afterRemoval.Response.Body()))
+}
+
 // TestClaudeCodeGateway_DeniedSignIn pins the consent page's Deny on a device sign-in: the
 // browser is sent to the denied page, the device's next poll is answered access_denied (RFC
 // 8628 §3.5) instead of polling until the code expires, and the refused sign-in cannot then be
@@ -735,7 +816,7 @@ func (c staticVKCache) GetVirtualKeyByID(_ context.Context, id string) (*configt
 // RS256 verification against the cached signing key, the identity re-check
 // (a warm virtual-key cache hit, or the user resolver), and the header rewrite.
 func BenchmarkClaudeCodeGatewayBearerMiddleware(b *testing.B) {
-	h, _, store, _ := newClaudeCodeGateway(b, true)
+	h, _, store, cfg := newClaudeCodeGateway(b, true)
 	vk := seedGatewayVK(b, store, "vk-bench", "sk-bf-bench")
 	h.vkCache = staticVKCache{vk.ID: vk}
 	h.identityResolver = &fakeResolver{userModeAvailable: true}
@@ -747,16 +828,23 @@ func BenchmarkClaudeCodeGatewayBearerMiddleware(b *testing.B) {
 	_, err = h.store.GetOAuth2SigningKey(bgCtx())
 	require.NoError(b, err)
 
+	withTunnelIssuer(cfg)
 	for _, mode := range []struct {
 		name string
 		sub  string
 		bf   schemas.MCPAuthMode
+		iss  string // empty: the primary issuer
 	}{
-		{"vk", vk.ID, schemas.MCPAuthModeVK},
-		{"user", "user-bench", schemas.MCPAuthModeUser},
+		{"vk", vk.ID, schemas.MCPAuthModeVK, ""},
+		{"user", "user-bench", schemas.MCPAuthModeUser, ""},
+		{"vk, tunnel token on the primary host", vk.ID, schemas.MCPAuthModeVK, testTunnelIssuer},
 	} {
 		token := "Bearer " + mintTestToken(b, priv, signingKey.KID, func(c jwt.MapClaims) {
 			c["aud"] = jwt.ClaimStrings{testClaudeCodeResource}
+			if mode.iss != "" {
+				c["iss"] = mode.iss
+				c["aud"] = jwt.ClaimStrings{mode.iss + "/gateway/claude-code"}
+			}
 			c["bf_mode"] = string(mode.bf)
 			c["sub"] = mode.sub
 		})

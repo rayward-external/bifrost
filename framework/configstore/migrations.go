@@ -615,6 +615,9 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
 	{IDs: []string{"add_key_service_tier_column"}, run: migrationAddKeyServiceTierColumn},
+	{IDs: []string{"widen_batch_jobs_provider_status_and_endpoint"}, run: migrationWidenProviderJobColumns},
+	{IDs: []string{"add_mcp_client_client_credentials_json_column"}, run: migrationAddMCPClientClientCredentialsJSONColumn},
+	{IDs: []string{"add_mcp_client_aws_sigv4_json_column"}, run: migrationAddMCPClientAWSSigV4JSONColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -14498,6 +14501,40 @@ func migrationDropLegacyOauthUserFKConstraints(ctx context.Context, db *gorm.DB,
 // batch_id). The replacement is strictly weaker than the index it replaces, so it
 // can never fail to build on existing data, and it is created before the old one
 // is dropped so uniqueness is never briefly unenforced.
+// migrationWidenProviderJobColumns makes batch_jobs.provider_status and endpoint TEXT. A relay job's
+// status is whatever field the admin points at and its endpoint is the route glob, so either can pass
+// varchar(50) or varchar(255), and on postgres that failed the save. varchar to text is metadata-only
+// on postgres (no rewrite); sqlite never enforced the lengths, so it is left alone.
+func migrationWidenProviderJobColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "widen_batch_jobs_provider_status_and_endpoint"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range []string{"provider_status", "endpoint"} {
+				if !tx.Migrator().HasColumn(&tables.TableProviderJob{}, column) {
+					continue
+				}
+				if err := tx.Exec(`ALTER TABLE batch_jobs ALTER COLUMN ` + column + ` TYPE TEXT`).Error; err != nil {
+					return fmt.Errorf("failed to widen batch_jobs.%s: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: narrowing the columns would cut stored relay job statuses and routes", migrationName)
+		},
+	})
+}
+
 func migrationAddProviderJobKindColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_provider_job_kind_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -17969,6 +18006,75 @@ func migrationAddKeyServiceTierColumn(ctx context.Context, db *gorm.DB, logger s
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("failed to run migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientClientCredentialsJSONColumn adds the client_credentials_json
+// column to config_mcp_clients: the encrypted client_credentials grant block for
+// auth_type='client_credentials' clients. NULL for every existing client.
+func migrationAddMCPClientClientCredentialsJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_client_credentials_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "ClientCredentialsJSON"); err != nil {
+				return fmt.Errorf("failed to add client_credentials_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "client_credentials_json"); err != nil {
+				return fmt.Errorf("failed to drop client_credentials_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientAWSSigV4JSONColumn adds the aws_sigv4_json column to
+// config_mcp_clients: the encrypted SigV4 signing block for auth_type='aws_sigv4'
+// clients. NULL for every existing client.
+func migrationAddMCPClientAWSSigV4JSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_aws_sigv4_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "AWSSigV4JSON"); err != nil {
+				return fmt.Errorf("failed to add aws_sigv4_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "aws_sigv4_json"); err != nil {
+				return fmt.Errorf("failed to drop aws_sigv4_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
 }

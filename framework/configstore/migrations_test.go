@@ -6084,6 +6084,36 @@ func TestMigrationAddAnthropicWorkloadIdentityColumn(t *testing.T) {
 	assert.Equal(t, "svac_01def", found.AnthropicKeyConfig.WorkloadIdentity.ServiceAccountID.GetValue())
 }
 
+func TestMigrationAddMCPClientClientCredentialsJSONColumn(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	const column = "client_credentials_json"
+
+	require.NoError(t, db.AutoMigrate(&tables.TableMCPClient{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableMCPClient{}, column))
+	require.False(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column), "precondition: the column must be absent")
+
+	require.NoError(t, migrationAddMCPClientClientCredentialsJSONColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column))
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_mcp_client_client_credentials_json_column").Error)
+	require.NoError(t, migrationAddMCPClientClientCredentialsJSONColumn(ctx, db, testMigrationLogger), "a replay with the column present must not fail")
+}
+
+func TestMigrationAddMCPClientAWSSigV4JSONColumn(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	const column = "aws_sigv4_json"
+
+	require.NoError(t, db.AutoMigrate(&tables.TableMCPClient{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableMCPClient{}, column))
+	require.False(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column), "precondition: the column must be absent")
+
+	require.NoError(t, migrationAddMCPClientAWSSigV4JSONColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column))
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_mcp_client_aws_sigv4_json_column").Error)
+	require.NoError(t, migrationAddMCPClientAWSSigV4JSONColumn(ctx, db, testMigrationLogger), "a replay with the column present must not fail")
+}
+
 // Postgres silently truncates identifiers past 63 bytes, so a longer column is
 // created under a different name than GORM reads and writes.
 func TestTableModelPricing_ColumnNamesFitPostgresLimit(t *testing.T) {
@@ -6141,4 +6171,26 @@ func TestMigrationAddModelRoutersTable(t *testing.T) {
 	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger))
 	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger), "it runs once")
 	require.True(t, db.Migrator().HasTable(&tables.TableModelRouter{}))
+}
+func TestMigrationWidenProviderJobColumns(t *testing.T) {
+	db, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Skip("postgres not available")
+	}
+	if sqlDB, err := db.DB(); err != nil || sqlDB.Ping() != nil {
+		t.Skip("postgres not available")
+	}
+	require.NoError(t, db.Exec("CREATE SCHEMA IF NOT EXISTS "+pgTestSchema).Error)
+	db.Exec("DROP TABLE IF EXISTS batch_jobs CASCADE")
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS batch_jobs CASCADE") })
+	require.NoError(t, db.Exec(`CREATE TABLE batch_jobs (id VARCHAR(255) PRIMARY KEY, provider_status VARCHAR(50), endpoint VARCHAR(255))`).Error)
+	db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`)
+	db.Exec(`DELETE FROM migrations WHERE id = 'widen_batch_jobs_provider_status_and_endpoint'`)
+
+	long := strings.Repeat("x", 400)
+	insert := `INSERT INTO batch_jobs (id, provider_status, endpoint) VALUES ('a', ?, ?)`
+	require.Error(t, db.Exec(insert, long, long).Error, "the varchar columns refuse it before the migration")
+	require.NoError(t, migrationWidenProviderJobColumns(context.Background(), db, testMigrationLogger))
+	require.NoError(t, db.Exec(insert, long, long).Error)
+	require.NoError(t, migrationWidenProviderJobColumns(context.Background(), db, testMigrationLogger), "running it again is a no-op")
 }

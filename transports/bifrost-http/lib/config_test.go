@@ -359,6 +359,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -383,6 +386,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -2950,6 +2954,82 @@ func TestValidateClientConfig_AllowedRedirectURIsWildcard(t *testing.T) {
 	}
 }
 
+// TestValidateClientConfig_BrowserBaseURL pins that a malformed browser_base_url
+// stops startup rather than falling back to the issuer, which on a split network
+// would send browsers to a hostname they cannot resolve.
+func TestValidateClientConfig_BrowserBaseURL(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		wantErr bool
+	}{
+		{"", false},
+		{"https://bifrost.corp.example.com", false},
+		{"https://bifrost.corp.example.com/bifrost/", false},
+		{"bifrost.corp.example.com", true},
+		{"ftp://bifrost.corp.example.com", true},
+		{"https://bifrost.corp.example.com?x=1", true},
+		{"https://user:pass@bifrost.corp.example.com", true},
+	} {
+		err := validateClientConfig(&configstore.ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{BrowserBaseURL: schemas.NewSecretVar(tc.value)}})
+		if tc.wantErr {
+			require.Error(t, err, tc.value)
+			require.Contains(t, err.Error(), "browser_base_url")
+			require.NotContains(t, err.Error(), tc.value, "the error must not echo a value that may come from a secret")
+		} else {
+			require.NoError(t, err, tc.value)
+		}
+	}
+
+	t.Setenv("BIFROST_TEST_BROWSER_URL", "")
+	err := validateClientConfig(&configstore.ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{BrowserBaseURL: schemas.NewSecretVar("env.BIFROST_TEST_BROWSER_URL")}})
+	require.ErrorContains(t, err, "browser_base_url references env.BIFROST_TEST_BROWSER_URL, which resolves to an empty value")
+}
+
+// TestValidateClientConfig_AdditionalIssuers pins the rules that keep issuer
+// selection unambiguous: each entry needs the primary, is an absolute URL, and
+// has a hostname no other issuer uses, since the hostname picks the issuer.
+func TestValidateClientConfig_AdditionalIssuers(t *testing.T) {
+	t.Setenv("BIFROST_TEST_TUNNEL_ISSUER", "")
+	cfg := func(primary string, extra ...string) *configstore.ClientConfig {
+		oc := &tables.OAuth2ServerConfig{}
+		if primary != "" {
+			oc.IssuerURL = schemas.NewSecretVar(primary)
+		}
+		for _, e := range extra {
+			oc.AdditionalIssuerURLs = append(oc.AdditionalIssuerURLs, schemas.NewSecretVar(e))
+		}
+		return &configstore.ClientConfig{OAuth2ServerConfig: oc}
+	}
+	tooMany := make([]string, configstore.MaxAdditionalIssuerURLs+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("https://tunnel-%d.example.com", i)
+	}
+	for name, tc := range map[string]struct {
+		cc      *configstore.ClientConfig
+		wantErr string
+	}{
+		"none":                     {cfg("https://corp.example.com"), ""},
+		"one, with a base path":    {cfg("https://corp.example.com", "https://tunnel.example.com/bifrost/"), ""},
+		"without a primary":        {cfg("", "https://tunnel.example.com"), "requires issuer_url"},
+		"not absolute":             {cfg("https://corp.example.com", "tunnel.example.com"), "additional_issuer_urls[0] must be an absolute"},
+		"empty entry":              {cfg("https://corp.example.com", ""), "additional_issuer_urls[0] is empty"},
+		"unresolved reference":     {cfg("https://corp.example.com", "env.BIFROST_TEST_TUNNEL_ISSUER"), "additional_issuer_urls[0] references env.BIFROST_TEST_TUNNEL_ISSUER, which resolves to an empty value"},
+		"primary's hostname":       {cfg("https://corp.example.com", "https://CORP.example.com:443/other"), "repeats the hostname"},
+		"IPv6 zone identifier":     {cfg("https://corp.example.com", "https://[fe80::1%25eth0]"), "additional_issuer_urls[0] host must not be percent-encoded"},
+		"percent-encoded hostname": {cfg("https://corp.example.com", "https://tunn%65l.example.com"), "additional_issuer_urls[0] must be an absolute"},
+		"IPv6 with a port":         {cfg("https://corp.example.com", "https://[2001:db8::1]:8443"), ""},
+		"another entry's hostname": {cfg("https://corp.example.com", "https://tunnel.example.com", "http://tunnel.example.com:80"), "additional_issuer_urls[1] repeats the hostname"},
+		"over the limit":           {cfg("https://corp.example.com", tooMany...), "at most"},
+	} {
+		err := validateClientConfig(tc.cc)
+		if tc.wantErr == "" {
+			require.NoError(t, err, name)
+		} else {
+			require.ErrorContains(t, err, tc.wantErr, name)
+		}
+	}
+}
+
 // TestValidateClientConfig_IssuerURLRequiredForDiscovery locks in that OAuth
 // discovery (mode oauth|both) cannot be enabled without a pinned issuer_url -
 // left unset, every issuer reference would derive from the unauthenticated,
@@ -3969,6 +4049,211 @@ func TestLoadMCPConfig_RefusesAuthTypesCreateRefuses(t *testing.T) {
 	require.NotNil(t, cfg.MCPConfig)
 	assert.Equal(t, []string{"plain_http"}, mcpClientNames(cfg.MCPConfig.ClientConfigs), "the runtime")
 	assert.Equal(t, []string{"plain_http"}, mcpClientNames(store.mcpConfigsCreated), "the store")
+}
+
+// TestLoadMCPConfig_ClientCredentialsResolvesTokenEndpoint: a config.json
+// client_credentials client without token_url has it discovered and stored on
+// load, the way the API does on save; one whose endpoint cannot be resolved, or
+// that runs over STDIO, is skipped.
+func TestLoadMCPConfig_ClientCredentialsResolvesTokenEndpoint(t *testing.T) {
+	initTestLogger()
+	var upstream *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+upstream.URL+`/prm"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/prm", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": upstream.URL + "/mcp", "authorization_servers": []string{upstream.URL}})
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": upstream.URL, "token_endpoint": upstream.URL + "/token", "grant_types_supported": []string{"client_credentials"}})
+	})
+	upstream = httptest.NewServer(mux)
+	t.Cleanup(upstream.Close)
+	bare := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(bare.Close)
+	// The discovery client refuses loopback addresses outside tests.
+	oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+	t.Cleanup(func() { oauth2.SetDiscoveryDialContextForTests(nil) })
+
+	cc := func() *schemas.MCPClientCredentialsConfig {
+		return &schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("bifrost"), ClientSecret: schemas.NewSecretVar("s")}
+	}
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	configData := &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		{Name: "cc_discovered", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(upstream.URL + "/mcp"), AuthType: schemas.MCPAuthTypeClientCredentials, ClientCredentials: cc()},
+		{Name: "cc_no_metadata", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(bare.URL + "/mcp"), AuthType: schemas.MCPAuthTypeClientCredentials, ClientCredentials: cc()},
+		{Name: "cc_on_stdio", ConnectionType: schemas.MCPConnectionTypeSTDIO, StdioConfig: &schemas.MCPStdioConfig{Command: "true"}, AuthType: schemas.MCPAuthTypeClientCredentials, ClientCredentials: cc()},
+	}}}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.NotNil(t, cfg.MCPConfig)
+	assert.Equal(t, []string{"cc_discovered"}, mcpClientNames(cfg.MCPConfig.ClientConfigs))
+	require.Len(t, store.mcpConfigsCreated, 1)
+	stored := store.mcpConfigsCreated[0].ClientCredentials
+	require.NotNil(t, stored)
+	assert.Equal(t, upstream.URL+"/token", stored.TokenURL, "the discovered endpoint is stored")
+	assert.Equal(t, schemas.ClientSecretBasic, stored.AuthMethod)
+}
+
+// ccMetadataUpstream is an MCP server whose authorization server, on the same
+// host, advertises the client_credentials grant at <host>/token.
+func ccMetadataUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	var upstream *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+upstream.URL+`/prm"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/prm", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": upstream.URL + "/mcp", "authorization_servers": []string{upstream.URL}})
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": upstream.URL, "token_endpoint": upstream.URL + "/token", "grant_types_supported": []string{"client_credentials"}})
+	})
+	upstream = httptest.NewServer(mux)
+	t.Cleanup(upstream.Close)
+	return upstream
+}
+
+// TestLoadMCPConfig_ClientCredentialsStoredClient: a config.json entry for a
+// stored client_credentials client is prepared against what will run: the stored
+// connection string (connection_string is pinned), and the stored block when the
+// entry omits one. A new client without the block is still skipped.
+func TestLoadMCPConfig_ClientCredentialsStoredClient(t *testing.T) {
+	for _, sourceOfTruth := range []string{"", SourceOfTruthConfigJSON} {
+		t.Run("source_of_truth="+sourceOfTruth, func(t *testing.T) { testLoadMCPConfigClientCredentialsStoredClient(t, sourceOfTruth) })
+	}
+}
+
+func testLoadMCPConfigClientCredentialsStoredClient(t *testing.T, sourceOfTruth string) {
+	initTestLogger()
+	stored := ccMetadataUpstream(t)
+	other := ccMetadataUpstream(t)
+	// The real dialer with loopback allowlisted: reachable unless a client must stay public.
+	require.NoError(t, ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
+	t.Cleanup(func() { require.NoError(t, ApplyMCPOAuthPrivateAllowlist(nil)) })
+	sot := sourceOfTruth == SourceOfTruthConfigJSON
+
+	storedBlock := &schemas.MCPClientCredentialsConfig{TokenURL: stored.URL + "/token", ClientID: schemas.NewSecretVar("bifrost"), ClientSecret: schemas.NewSecretVar("s"), AuthMethod: schemas.ClientSecretBasic}
+	storedClient := func(name string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID: name + "-id", Name: name, ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(stored.URL + "/mcp"),
+			AuthType: schemas.MCPAuthTypeClientCredentials, ClientCredentials: storedBlock, ToolsToExecute: []string{"old"}, ConfigHash: "stored-hash",
+		}
+	}
+	publicOnly := storedClient("cc_public")
+	publicOnly.RequirePublicTarget = true
+	fileBlock := func() *schemas.MCPClientCredentialsConfig {
+		return &schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("bifrost"), ClientSecret: schemas.NewSecretVar("s")}
+	}
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		storedClient("cc_no_block"), storedClient("cc_moved"), publicOnly, storedClient("cc_no_auth_type"), storedClient("cc_old_a"), storedClient("cc_old_b"),
+		storedClient("cc_unset_ref"),
+	}}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	configData := &ConfigData{SourceOfTruth: sourceOfTruth, MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		// Discovered under the stored public-only rule, so the loopback server is refused.
+		{Name: "cc_public", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(stored.URL + "/mcp"), AuthType: schemas.MCPAuthTypeClientCredentials, ClientCredentials: fileBlock()},
+		// auth_type omitted: the stored client_credentials type runs, so the block is prepared.
+		{Name: "cc_no_auth_type", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(stored.URL + "/mcp"), ClientCredentials: fileBlock()},
+		// A credential reference that resolves to nothing is refused, for a stored client and a new one.
+		{Name: "cc_unset_ref", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(stored.URL + "/mcp"), AuthType: schemas.MCPAuthTypeClientCredentials,
+			ClientCredentials: &schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("bifrost"), ClientSecret: schemas.NewSecretVar("env.BIFROST_TEST_UNSET_CC_SECRET")}},
+		{Name: "cc_new_unset_ref", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(stored.URL + "/mcp"), AuthType: schemas.MCPAuthTypeClientCredentials,
+			ClientCredentials: &schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("env.BIFROST_TEST_UNSET_CC_ID"), ClientSecret: schemas.NewSecretVar("s")}},
+		// Renamed, matched by client_id where config.json is the source of truth.
+		{ID: "cc_old_a-id", Name: "cc_renamed_a", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(stored.URL + "/mcp"), AuthType: schemas.MCPAuthTypeClientCredentials, ToolsToExecute: []string{"new"}},
+		{ID: "cc_old_b-id", Name: "cc_renamed_b", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(stored.URL + "/mcp"), AuthType: schemas.MCPAuthTypeClientCredentials,
+			ClientCredentials: &schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("bifrost")}},
+		{Name: "cc_no_block", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(stored.URL + "/mcp"), AuthType: schemas.MCPAuthTypeClientCredentials, ToolsToExecute: []string{"new"}},
+		{Name: "cc_moved", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(other.URL + "/mcp"), AuthType: schemas.MCPAuthTypeClientCredentials,
+			ClientCredentials: &schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("bifrost"), ClientSecret: schemas.NewSecretVar("s")}},
+		{Name: "cc_new_no_block", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(stored.URL + "/mcp"), AuthType: schemas.MCPAuthTypeClientCredentials},
+	}}}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	// The rows written to the store; the mock rewrites its runtime copies lossily.
+	written := map[string]tables.TableMCPClient{}
+	for _, u := range store.mcpClientConfigUpdates {
+		written[u.Config.Name] = u.Config
+	}
+	require.Contains(t, written, "cc_no_block", "the entry is applied, not skipped")
+	assert.Equal(t, schemas.WhiteList{"new"}, written["cc_no_block"].ToolsToExecute, "the entry's other changes apply")
+	require.NotNil(t, written["cc_no_block"].ClientCredentials, "the stored block is kept")
+	assert.True(t, storedBlock.Equal(written["cc_no_block"].ClientCredentials), "the stored block is kept")
+	require.Contains(t, written, "cc_moved")
+	assert.Equal(t, stored.URL+"/mcp", written["cc_moved"].ConnectionString.GetValue(), "connection_string stays pinned")
+	require.NotNil(t, written["cc_moved"].ClientCredentials)
+	assert.Equal(t, stored.URL+"/token", written["cc_moved"].ClientCredentials.TokenURL, "the token endpoint is discovered from the stored server")
+	assert.NotContains(t, mcpClientNames(store.mcpConfigsCreated), "cc_new_no_block", "a new client still needs the block")
+
+	assert.NotContains(t, written, "cc_public", "discovery keeps the stored public-only rule, so the entry is skipped")
+	require.Contains(t, written, "cc_no_auth_type")
+	require.NotNil(t, written["cc_no_auth_type"].ClientCredentials)
+	assert.Equal(t, stored.URL+"/token", written["cc_no_auth_type"].ClientCredentials.TokenURL, "the block is prepared for the stored type")
+
+	storedIDs := map[string]bool{}
+	for _, c := range store.mcpConfig.ClientConfigs {
+		storedIDs[c.ID] = true
+	}
+	assert.True(t, storedIDs["cc_public-id"], "a skipped entry keeps its stored client")
+	assert.NotContains(t, written, "cc_unset_ref", "an unresolved credential does not replace the stored block")
+	assert.True(t, storedIDs["cc_unset_ref-id"], "an unresolved credential keeps the stored client")
+	assert.NotContains(t, mcpClientNames(store.mcpConfigsCreated), "cc_new_unset_ref", "a new client with an unresolved credential is not created")
+	if !sot {
+		return
+	}
+	byID := map[string]tables.TableMCPClient{}
+	for _, u := range store.mcpClientConfigUpdates {
+		byID[u.ID] = u.Config
+	}
+	require.Contains(t, byID, "cc_old_a-id", "the renamed entry is matched by client_id and applied")
+	assert.Equal(t, schemas.WhiteList{"new"}, byID["cc_old_a-id"].ToolsToExecute)
+	require.NotNil(t, byID["cc_old_a-id"].ClientCredentials)
+	assert.True(t, storedBlock.Equal(byID["cc_old_a-id"].ClientCredentials), "the stored block is kept")
+	assert.True(t, storedIDs["cc_old_b-id"], "a rejected renamed entry keeps the client it matched by client_id")
+}
+
+// TestMCPClientConfigToTable_CarriesClientCredentials: the config.json row keeps
+// the client_credentials block, so it is hashed and stored on sync.
+func TestMCPClientConfigToTable_CarriesClientCredentials(t *testing.T) {
+	cc := &schemas.MCPClientCredentialsConfig{TokenURL: "https://as.example.com/token", ClientID: schemas.NewSecretVar("bifrost"), ClientSecret: schemas.NewSecretVar("s")}
+	row, err := mcpClientConfigToTable(&schemas.MCPClientConfig{Name: "cc", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeClientCredentials, ClientCredentials: cc})
+	require.NoError(t, err)
+	require.NotNil(t, row.ClientCredentials)
+	assert.True(t, row.ClientCredentials.Equal(cc))
+}
+
+// TestMCPClientConfigToTable_CarriesAWSSigV4: the config.json row keeps the
+// aws_sigv4 block, so it is hashed and stored on sync.
+func TestMCPClientConfigToTable_CarriesAWSSigV4(t *testing.T) {
+	cfg := &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-east-1"), RoleARN: schemas.NewSecretVar("arn:aws:iam::123456789012:role/r")}
+	row, err := mcpClientConfigToTable(&schemas.MCPClientConfig{Name: "gateway", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeAWSSigV4, AWSSigV4: cfg})
+	require.NoError(t, err)
+	require.NotNil(t, row.AWSSigV4)
+	assert.True(t, row.AWSSigV4.Equal(cfg))
+}
+
+// TestResolveMCPClientAuthType_AWSSigV4: aws_sigv4 signs an HTTP request, so it is
+// accepted for http, sse and openapi, and refused for STDIO.
+func TestResolveMCPClientAuthType_AWSSigV4(t *testing.T) {
+	for _, connectionType := range []schemas.MCPConnectionType{schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE, schemas.MCPConnectionTypeOpenAPI} {
+		got, err := ResolveMCPClientAuthType(schemas.MCPAuthTypeAWSSigV4, connectionType)
+		require.NoError(t, err, connectionType)
+		assert.Equal(t, schemas.MCPAuthTypeAWSSigV4, got)
+	}
+	_, err := ResolveMCPClientAuthType(schemas.MCPAuthTypeAWSSigV4, schemas.MCPConnectionTypeSTDIO)
+	require.ErrorContains(t, err, `auth_type "aws_sigv4" is not supported for connection_type 'stdio'`)
+	_, err = ResolveMCPClientAuthType("aws_iam", schemas.MCPConnectionTypeHTTP)
+	require.ErrorContains(t, err, "client_credentials, aws_sigv4")
 }
 
 // TestLoadMCPConfig_OmittedAuthTypeLoadsAsHeaders pins that a config.json client
@@ -24475,6 +24760,27 @@ func TestPinMCPClientImmutableFields_MaxProtocolVersion(t *testing.T) {
 }
 
 // TestLoadMCPConfig_FileReloadKeepsSavedMaxProtocolVersion: a cap saved through the UI or API survives a
+// TestPinMCPClientImmutableFields_AWSSigV4: a file entry that omits an aws_sigv4 client's signing block
+// keeps the stored one, which the client cannot run without; a declared block wins.
+func TestPinMCPClientImmutableFields_AWSSigV4(t *testing.T) {
+	initTestLogger()
+	stored := &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-east-1")}
+	declared := &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-gov-west-1")}
+	for _, tc := range []struct {
+		name       string
+		file, want *schemas.MCPAWSSigV4Config
+	}{
+		{"omitted keeps the stored block", nil, stored},
+		{"declared wins", declared, declared},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := &schemas.MCPClientConfig{Name: "gateway", AuthType: schemas.MCPAuthTypeAWSSigV4, AWSSigV4: tc.file}
+			pinMCPClientImmutableFields(file, &schemas.MCPClientConfig{Name: "gateway", AuthType: schemas.MCPAuthTypeAWSSigV4, AWSSigV4: stored})
+			assert.Same(t, tc.want, file.AWSSigV4)
+		})
+	}
+}
+
 // TestPinMCPClientImmutableFields_ExposeLists: a file entry that omits an allow-list keeps the stored one
 // (omitted would otherwise expose everything); a declared list wins.
 func TestPinMCPClientImmutableFields_ExposeLists(t *testing.T) {
@@ -24530,6 +24836,50 @@ func TestLoadMCPConfig_FileReloadKeepsSavedExposeLists(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, schemas.WhiteList{}, stored.PromptsToExpose, "stored row keeps expose-none")
 	assert.Equal(t, schemas.WhiteList{"file:///handbook.md"}, stored.ResourcesToExpose)
+}
+
+// TestLoadMCPConfig_FileReloadKeepsStoredAWSSigV4: a file entry that omits an aws_sigv4 client's
+// signing block keeps the stored one in the stored row, not only in the running config, and a
+// changed block is stored.
+func TestLoadMCPConfig_FileReloadKeepsStoredAWSSigV4(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func(tools schemas.WhiteList, block *schemas.MCPAWSSigV4Config) *schemas.MCPConfig {
+		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name:             "gateway",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("https://gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"),
+			AuthType:         schemas.MCPAuthTypeAWSSigV4,
+			AWSSigV4:         block,
+			ToolsToExecute:   tools,
+		}}}
+	}
+	region := func(r string) *schemas.MCPAWSSigV4Config {
+		return &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar(r)}
+	}
+	storedRegion := func(t *testing.T, store configstore.ConfigStore, id string) string {
+		t.Helper()
+		row, err := store.GetMCPClientByID(ctx, id)
+		require.NoError(t, err)
+		require.NotNil(t, row.AWSSigV4, "the stored row must keep a signing block")
+		return row.AWSSigV4.Region.GetValue()
+	}
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{MCP: fileMCP(schemas.WhiteList{"*"}, region("us-east-1"))})
+	require.Len(t, first.MCPConfig.ClientConfigs, 1)
+	id := first.MCPConfig.ClientConfigs[0].ID
+
+	omitted := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, omitted, &ConfigData{MCP: fileMCP(schemas.WhiteList{"search"}, nil)})
+	require.Len(t, omitted.MCPConfig.ClientConfigs, 1)
+	require.NotNil(t, omitted.MCPConfig.ClientConfigs[0].AWSSigV4)
+	assert.Equal(t, "us-east-1", omitted.MCPConfig.ClientConfigs[0].AWSSigV4.Region.GetValue(), "running config keeps the block")
+	assert.Equal(t, "us-east-1", storedRegion(t, store, id), "stored row keeps the block")
+
+	changed := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, changed, &ConfigData{MCP: fileMCP(schemas.WhiteList{"*"}, region("us-west-2"))})
+	assert.Equal(t, "us-west-2", storedRegion(t, store, id), "a changed block is stored")
 }
 
 // staleMCPReadStore answers GetMCPConfig with what a node read before a peer's insert committed.
@@ -27745,7 +28095,8 @@ func TestLoadRelaysConfig(t *testing.T) {
 	configData := parseConfigData(t, `{
 		"relays": [
 			{"name": "tavily", "base_url": "https://search.example.com", "auth": {"type": "bearer"}, "credential": {"value": "env.TAVILY_KEY"},
-			 "usage": {"cost_per_request": 0.001}, "routes": [{"method": "POST", "path": "/search", "usage": {"units_path": "usage.credits", "cost_per_unit": 0.008}}]},
+			 "usage": {"cost_per_request": 0.001}, "body_overrides": {"include_usage": true},
+			 "routes": [{"method": "POST", "path": "/search", "usage": {"units_path": "usage.credits", "cost_per_unit": 0.008}, "body_overrides": {"search_depth": "advanced"}}]},
 			{"name": "broken", "enabled": true, "base_url": "not a url"}
 		]
 	}`)
@@ -27757,6 +28108,8 @@ func TestLoadRelaysConfig(t *testing.T) {
 	assert.Equal(t, "tvly-from-env", tavily.Credential.Value.GetValue(), "an env reference resolves")
 	assert.True(t, tavily.Credential.Value.IsFromEnv(), "and stays a reference")
 	require.Len(t, tavily.Routes, 1)
+	assert.JSONEq(t, `true`, string(tavily.BodyOverrides["include_usage"]), "relay body_overrides are stored")
+	assert.JSONEq(t, `"advanced"`, string(tavily.Routes[0].BodyOverrides["search_depth"]), "route body_overrides are stored")
 
 	hashes, err := store.GetRelayConfigHashes(context.Background())
 	require.NoError(t, err)

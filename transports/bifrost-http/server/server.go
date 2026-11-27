@@ -6,6 +6,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"math/rand"
 	"net"
 	"net/http"
@@ -184,6 +185,10 @@ type ServerCallbacks interface {
 	// auth type, connection type, and needs_session_stickiness into account
 	// together.
 	RequiresPerCallConnection(config *schemas.MCPClientConfig) bool
+	// IsMCPAllowedForUser reports whether the user may call the MCP client named mcpClientName.
+	IsMCPAllowedForUser(ctx context.Context, mcpClientName, userID string) bool
+	// IsMCPCredentialActionAllowedOnOthers reports whether the caller may take action on a per-user MCP credential that is not their own.
+	IsMCPCredentialActionAllowedOnOthers(ctx *fasthttp.RequestCtx, action handlers.MCPCredentialAction) bool
 	ReconnectMCPClient(ctx context.Context, id string) error
 	// RefreshMCPClientTools re-discovers a client's tools from its upstream
 	// server on demand and reports how many it serves afterwards. Unlike
@@ -387,6 +392,11 @@ type BifrostHTTPServer struct {
 	endpointSweeperCancel  context.CancelFunc
 	endpointSweeperMu      sync.Mutex // serializes sweeper restarts from concurrent plugin reloads
 	agentGatewayGRPCServer *handlers.AgentGatewayGRPCServer
+
+	// virtualKeyReloads serializes reloads of one virtual key across its database
+	// read and in-memory install, so an older read cannot install last and restore a
+	// rotated value. Striped by key ID; see lockVirtualKeyReloads.
+	virtualKeyReloads [64]sync.Mutex
 }
 
 var logger schemas.Logger
@@ -736,6 +746,23 @@ func (s *BifrostHTTPServer) ReloadPromptCache(ctx context.Context) error {
 	return reloader.Reload(ctx)
 }
 
+// IsMCPAllowedForUser asks the governance plugin whether userID may call the MCP
+// client named mcpClientName. Without a governance plugin nobody may.
+func (s *BifrostHTTPServer) IsMCPAllowedForUser(ctx context.Context, mcpClientName, userID string) bool {
+	plugin, err := s.getGovernancePlugin()
+	if err != nil || plugin == nil {
+		return false
+	}
+	return plugin.IsMCPAllowedForUser(ctx, mcpClientName, userID)
+}
+
+// IsMCPCredentialActionAllowedOnOthers reports whether the caller may refresh or revoke a
+// per-user MCP credential that is not their own: whoever reaches those routes may
+// act on every credential.
+func (s *BifrostHTTPServer) IsMCPCredentialActionAllowedOnOthers(_ *fasthttp.RequestCtx, _ handlers.MCPCredentialAction) bool {
+	return true
+}
+
 // getGovernancePlugin safely retrieves the governance plugin with proper locking.
 // It acquires a read lock, finds the plugin, releases the lock, performs type assertion,
 // and returns the BaseGovernancePlugin implementation or an error.
@@ -744,8 +771,31 @@ func (s *BifrostHTTPServer) getGovernancePlugin() (governance.BaseGovernancePlug
 	return lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
 }
 
+// virtualKeyReloadSeed makes a key's reload stripe stable for the process lifetime.
+var virtualKeyReloadSeed = maphash.MakeSeed()
+
+// lockVirtualKeyReloads locks the reload stripes of ids and returns their unlock.
+// Stripes are taken in index order so overlapping batches cannot deadlock.
+func (s *BifrostHTTPServer) lockVirtualKeyReloads(ids ...string) func() {
+	stripes := make([]int, 0, len(ids))
+	for _, id := range ids {
+		stripes = append(stripes, int(maphash.String(virtualKeyReloadSeed, id)%uint64(len(s.virtualKeyReloads))))
+	}
+	slices.Sort(stripes)
+	stripes = slices.Compact(stripes)
+	for _, stripe := range stripes {
+		s.virtualKeyReloads[stripe].Lock()
+	}
+	return func() {
+		for _, stripe := range stripes {
+			s.virtualKeyReloads[stripe].Unlock()
+		}
+	}
+}
+
 // ReloadVirtualKey reloads a virtual key from the in-memory store
 func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
+	defer s.lockVirtualKeyReloads(id)()
 	// Load relationships for response
 	preloadedVk, err := s.Config.ConfigStore.RetryOnNotFound(ctx, func(ctx context.Context) (any, error) {
 		preloadedVk, err := s.Config.ConfigStore.GetVirtualKey(ctx, id)
@@ -849,6 +899,7 @@ func (s *BifrostHTTPServer) ReloadVirtualKeys(ctx context.Context, ids []string)
 	if err != nil {
 		return err
 	}
+	defer s.lockVirtualKeyReloads(unique...)()
 	virtualKeys, err := loader.GetVirtualKeysByIDs(ctx, unique)
 	if err != nil {
 		return fmt.Errorf("failed to load virtual keys: %w", err)
@@ -1112,7 +1163,7 @@ func (s *BifrostHTTPServer) ModelConfigIndexKey(model string, provider *string) 
 const modelConfigReloadReadTimeout = 30 * time.Second
 
 // ReloadModelConfig reloads a model config from the database into in-memory store
-// If usage was modified (e.g., reset due to config change), syncs it back to DB
+// Usage persistence stays with the accounting paths, which guard writes against resets.
 func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error) {
 	// The reload loads the row it was told to load, whoever triggered it, so it reads on the
 	// server's own context: the caller's row-visibility scope must not stop a config the caller
@@ -1132,30 +1183,6 @@ func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*
 	updatedMC := governancePlugin.GetGovernanceStore().UpdateModelConfigInMemory(ctx, preloadedMC)
 	if updatedMC == nil {
 		return preloadedMC, nil
-	}
-
-	// Sync updated budget usage values back to database if they changed (per budget ID,
-	// since a model config may own multiple budgets).
-	preloadedUsage := make(map[string]float64, len(preloadedMC.Budgets))
-	for i := range preloadedMC.Budgets {
-		preloadedUsage[preloadedMC.Budgets[i].ID] = preloadedMC.Budgets[i].CurrentUsage
-	}
-	for i := range updatedMC.Budgets {
-		b := &updatedMC.Budgets[i]
-		if old, ok := preloadedUsage[b.ID]; ok && old != b.CurrentUsage {
-			if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, b.ID, b.CurrentUsage); err != nil {
-				logger.Error("failed to sync budget usage to database: %v", err)
-			}
-		}
-	}
-	if updatedMC.RateLimit != nil && preloadedMC.RateLimit != nil {
-		tokenUsageChanged := updatedMC.RateLimit.TokenCurrentUsage != preloadedMC.RateLimit.TokenCurrentUsage
-		requestUsageChanged := updatedMC.RateLimit.RequestCurrentUsage != preloadedMC.RateLimit.RequestCurrentUsage
-		if tokenUsageChanged || requestUsageChanged {
-			if err := s.Config.ConfigStore.UpdateRateLimitUsage(ctx, updatedMC.RateLimit.ID, updatedMC.RateLimit.TokenCurrentUsage, updatedMC.RateLimit.RequestCurrentUsage); err != nil {
-				logger.Error("failed to sync rate limit usage to database: %v", err)
-			}
-		}
 	}
 
 	return updatedMC, nil
@@ -1196,7 +1223,7 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	// Initialize updatedProvider
 	updatedProvider := providerInfo
 
-	// Sync model level budgets in governance plugin (if governance is enabled)
+	// Refresh provider governance config. Accounting persists usage with reset guards.
 	if s.Config.IsPluginLoaded(s.getGovernancePluginName()) {
 		governancePlugin, err := s.getGovernancePlugin()
 		if err != nil {
@@ -1206,24 +1233,6 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 			govUpdated := governancePlugin.GetGovernanceStore().UpdateProviderInMemory(ctx, providerInfo)
 			if govUpdated != nil {
 				updatedProvider = govUpdated
-			}
-
-			// Sync updated usage values back to database if they changed
-			if updatedProvider.Budget != nil && providerInfo.Budget != nil {
-				if updatedProvider.Budget.CurrentUsage != providerInfo.Budget.CurrentUsage {
-					if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, updatedProvider.Budget.ID, updatedProvider.Budget.CurrentUsage); err != nil {
-						logger.Error("failed to sync budget usage to database: %v", err)
-					}
-				}
-			}
-			if updatedProvider.RateLimit != nil && providerInfo.RateLimit != nil {
-				tokenUsageChanged := updatedProvider.RateLimit.TokenCurrentUsage != providerInfo.RateLimit.TokenCurrentUsage
-				requestUsageChanged := updatedProvider.RateLimit.RequestCurrentUsage != providerInfo.RateLimit.RequestCurrentUsage
-				if tokenUsageChanged || requestUsageChanged {
-					if err := s.Config.ConfigStore.UpdateRateLimitUsage(ctx, updatedProvider.RateLimit.ID, updatedProvider.RateLimit.TokenCurrentUsage, updatedProvider.RateLimit.RequestCurrentUsage); err != nil {
-						logger.Error("failed to sync rate limit usage to database: %v", err)
-					}
-				}
 			}
 		}
 	}
@@ -3192,6 +3201,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.NotificationService == nil {
 		s.NotificationService = handlers.NewNotificationService(s.Config.ConfigStore, s.WebSocketHandler)
 		s.Config.NotificationPublisher = s.NotificationService.Publish
+		s.Config.NotificationResolver = s.NotificationService.Resolve
 		s.NotificationService.Start(s.Ctx)
 	}
 	if s.RSSFeedsHandler == nil {
@@ -3716,6 +3726,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Config.EventBroadcaster = s.WebSocketHandler.BroadcastEvent
 	s.NotificationService = handlers.NewNotificationService(s.Config.ConfigStore, s.WebSocketHandler)
 	s.Config.NotificationPublisher = s.NotificationService.Publish
+	s.Config.NotificationResolver = s.NotificationService.Resolve
 	s.NotificationService.Start(s.Ctx)
 	// Warp is built once, in RegisterAPIRoutes below (called from this same
 	// Bootstrap, before it returns): that is the first point the logging
@@ -4037,6 +4048,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.TracingMiddleware = handlers.NewTracingMiddleware(tracer)
 	// Wire the settlement tracer now that it exists (WireBatchAccountingSweeper ran earlier, before it did).
 	s.setSettlementTracer()
+	// The relay sweeper waits for the tracer, so a job settled at boot still reports its cost.
+	s.startEndpointJobSweeper(s.endpointUsageReporter())
 	// TransportInterceptor runs AFTER the auth middlewares so HTTPTransportPreHook observes an
 	// authenticated request, and inside TracingMiddleware so the tracing defer runs AFTER
 	// transport post-hooks (capturing HTTPTransportPostHook plugin logs).

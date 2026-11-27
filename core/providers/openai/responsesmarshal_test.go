@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -2535,6 +2536,61 @@ func TestToOpenAIResponsesRequest_RequestLevelCacheTTL(t *testing.T) {
 }
 
 // TestToOpenAIResponsesRequest_PreGPT56DropsPromptCacheOptions pins that every host
+// A dropped prewarm turns a cache-warming request into a billed generation, and a dropped
+// background_options runs a discounted 2h/8h request at the standard rate.
+func TestToOpenAIResponsesRequest_PrewarmAndBackgroundOptionsReachWire(t *testing.T) {
+	const body = `{"model":"%s","input":"hi","background":true,` +
+		`"background_options":{"completion_window":"2h","continuation_id":"run-1"},` +
+		`"prompt_cache_options":{"prewarm":true,"comparison_response_id":"resp_123","ttl":"30m"}}`
+	for _, model := range []string{"openai/gpt-6.2-sol", "openai/gpt-6.2-astra", "azure/gpt-6.2-sol"} {
+		t.Run(model, func(t *testing.T) {
+			var wire OpenAIResponsesRequest
+			if err := sonic.UnmarshalString(fmt.Sprintf(body, model), &wire); err != nil {
+				t.Fatal(err)
+			}
+			_, raw := marshalResponses(t, wire.ToBifrostResponsesRequest(nil))
+			for path, want := range map[string]string{
+				"prompt_cache_options.prewarm":                "true",
+				"prompt_cache_options.comparison_response_id": "resp_123",
+				"prompt_cache_options.ttl":                    "30m",
+				"background_options.completion_window":        "2h",
+				"background_options.continuation_id":          "run-1",
+			} {
+				if got := gjson.Get(raw, path).String(); got != want {
+					t.Errorf("%s = %q, want %q; raw=%s", path, got, want, raw)
+				}
+			}
+		})
+	}
+
+	t.Run("datasheet can mark background_options unsupported", func(t *testing.T) {
+		installCapabilityRecord(t, "gpt-6.2-sol", &schemas.ModelCapabilities{UnsupportedFields: map[string]bool{"background_options": true}})
+		var wire OpenAIResponsesRequest
+		if err := sonic.UnmarshalString(fmt.Sprintf(body, "openai/gpt-6.2-sol"), &wire); err != nil {
+			t.Fatal(err)
+		}
+		bifrostReq := wire.ToBifrostResponsesRequest(nil)
+		_, raw := marshalResponses(t, bifrostReq)
+		if gjson.Get(raw, "background_options").Exists() {
+			t.Errorf("background_options must be dropped; raw=%s", raw)
+		}
+		if caller, _ := sonic.MarshalString(bifrostReq.Params); !gjson.Get(caller, "background_options").Exists() {
+			t.Error("caller params must not be mutated")
+		}
+	})
+
+	t.Run("absent stays absent", func(t *testing.T) {
+		var wire OpenAIResponsesRequest
+		if err := sonic.UnmarshalString(`{"model":"openai/gpt-6.2-sol","input":"hi"}`, &wire); err != nil {
+			t.Fatal(err)
+		}
+		_, raw := marshalResponses(t, wire.ToBifrostResponsesRequest(nil))
+		if gjson.Get(raw, "background_options").Exists() || gjson.Get(raw, "prompt_cache_options").Exists() {
+			t.Errorf("nothing may be synthesized; raw=%s", raw)
+		}
+	})
+}
+
 // drops prompt_cache_options below gpt-5.6, the first generation documented to accept
 // it, and keeps it on any host serving gpt-5.6 or later.
 func TestToOpenAIResponsesRequest_PreGPT56DropsPromptCacheOptions(t *testing.T) {
@@ -2616,9 +2672,10 @@ func TestToOpenAIResponsesRequest_PromptCacheOptionsCatalogRow(t *testing.T) {
 }
 
 // TestToOpenAIResponsesRequest_OpenRouterOmitsImplicitCacheMode pins that OpenRouter's
-// Responses endpoint, which accepts only mode "explicit" (live 400 "expected
-// \"explicit\""), never receives mode "implicit". Implicit is OpenAI's default when
-// mode is absent, so omitting it is lossless; ttl and explicit mode still pass through.
+// Responses endpoint, which accepts prompt_cache_options only with mode "explicit" (live
+// 400 "expected \"explicit\"" for implicit, for no mode with ttl or prewarm, 2026-11-26),
+// receives the object only in explicit mode. Implicit caching is what OpenRouter does when
+// the object is absent, so dropping it degrades the request instead of failing it.
 func TestToOpenAIResponsesRequest_OpenRouterOmitsImplicitCacheMode(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -2626,8 +2683,13 @@ func TestToOpenAIResponsesRequest_OpenRouterOmitsImplicitCacheMode(t *testing.T)
 		want string
 	}{
 		{"implicit only", &schemas.PromptCacheOptions{Mode: new("implicit")}, ""},
-		{"implicit with ttl", &schemas.PromptCacheOptions{Mode: new("implicit"), TTL: new("30m")}, `{"ttl":"30m"}`},
+		{"implicit with ttl", &schemas.PromptCacheOptions{Mode: new("implicit"), TTL: new("30m")}, ""},
+		{"implicit with prewarm", &schemas.PromptCacheOptions{Mode: new("implicit"), Prewarm: new(true)}, ""},
+		{"implicit with comparison id", &schemas.PromptCacheOptions{Mode: new("implicit"), ComparisonResponseID: new("resp_1")}, ""},
+		{"no mode with ttl", &schemas.PromptCacheOptions{TTL: new("5m")}, ""},
+		{"no mode with prewarm", &schemas.PromptCacheOptions{Prewarm: new(true)}, ""},
 		{"explicit", &schemas.PromptCacheOptions{Mode: new("explicit")}, `{"mode":"explicit"}`},
+		{"explicit with prewarm and ttl", &schemas.PromptCacheOptions{Mode: new("explicit"), TTL: new("5m"), Prewarm: new(true)}, `{"mode":"explicit","ttl":"5m","prewarm":true}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := &schemas.BifrostResponsesRequest{
@@ -2636,12 +2698,20 @@ func TestToOpenAIResponsesRequest_OpenRouterOmitsImplicitCacheMode(t *testing.T)
 				Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
 				Params:   &schemas.ResponsesParameters{PromptCacheOptions: tc.opts},
 			}
+			before, err := json.Marshal(tc.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
 			_, raw := marshalResponses(t, req)
 			if got := gjson.Get(raw, "prompt_cache_options").Raw; got != tc.want {
 				t.Errorf("prompt_cache_options = %s, want %s; raw=%s", got, tc.want, raw)
 			}
-			if req.Params.PromptCacheOptions != tc.opts || tc.opts.Mode == nil {
-				t.Error("caller PromptCacheOptions must not be mutated")
+			after, err := json.Marshal(req.Params.PromptCacheOptions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if req.Params.PromptCacheOptions != tc.opts || string(after) != string(before) {
+				t.Errorf("caller PromptCacheOptions must not be mutated: before %s, after %s", before, after)
 			}
 		})
 	}

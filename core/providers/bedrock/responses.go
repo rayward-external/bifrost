@@ -2166,6 +2166,9 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 	}
 
 	// Convert messages using the new conversion method
+	if err := validateBedrockToolResultContent(request.Messages); err != nil {
+		return nil, err
+	}
 	convertedMessages := ConvertBedrockMessagesToBifrostMessages(ctx, request.Messages, request.System, false)
 	bifrostReq.Input = convertedMessages
 
@@ -2917,6 +2920,11 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
 							return nil, err
 						}
+					} else {
+						// Nova answers 424 and Kimi K2.5 invents arguments for a root union that carries
+						// every parameter; a schema with root properties is sent as declared.
+						parameters = schemas.FlattenRootCompositionIf(parameters, parameters.Properties.Len() == 0 &&
+							!caps.SupportsRootSchemaComposition(schemas.ModelSupportsRootSchemaComposition(capModel)))
 					}
 					schemaObject = parameters
 				} else {
@@ -4459,9 +4467,13 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 			lastMsg := &bedrockMessages[len(bedrockMessages)-1]
 			lastMsg.Content = append(pendingReasoningContentBlocks, lastMsg.Content...)
 			pendingReasoningContentBlocks = nil
+		} else if isConverseResponseRendering(ctx) {
+			// A response cut off mid-reasoning holds only reasoning; render it as returned.
+			bedrockMessages = append(bedrockMessages, BedrockMessage{Role: BedrockMessageRoleAssistant, Content: pendingReasoningContentBlocks})
+			pendingReasoningContentBlocks = nil
 		}
-		// If no assistant message to merge into, discard the reasoning blocks
-		// (they cannot exist alone in Bedrock without violating the constraint)
+		// A request has no assistant message to merge into, so the reasoning is discarded
+		// (it cannot exist alone in Bedrock without violating the constraint)
 	}
 
 	// Merge consecutive messages with the same role
@@ -4516,6 +4528,61 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 	}
 
 	return bedrockMessages, systemMessages, nil
+}
+
+// bedrockToolResultNeedsBlocks reports whether a tool result must be carried as structured
+// output blocks. A lone text or json member stays a plain string, so the common case costs
+// nothing extra; cache points are markers, not members.
+func bedrockToolResultNeedsBlocks(content []BedrockContentBlock) bool {
+	members := 0
+	for _, c := range content {
+		if c.CachePoint != nil {
+			continue
+		}
+		if c.AnthropicToolReference != nil || c.Document != nil || c.Image != nil {
+			return true
+		}
+		members++
+	}
+	return members > 1
+}
+
+// validateBedrockToolResultContent refuses a tool_result member the ingress cannot forward,
+// so the caller gets a 400 instead of a 200 whose result silently lacks the member. A result
+// holding a searchResult or video is carried whole by the envelope and is not checked.
+func validateBedrockToolResultContent(messages []BedrockMessage) error {
+	for mi := range messages {
+		for _, block := range messages[mi].Content {
+			if block.ToolResult == nil {
+				continue
+			}
+			if slices.ContainsFunc(block.ToolResult.Content, func(c BedrockContentBlock) bool {
+				return c.SearchResult != nil || c.Video != nil
+			}) {
+				continue
+			}
+			for ci, c := range block.ToolResult.Content {
+				var problem string
+				switch {
+				case c.Text != nil, c.JSON != nil, c.CachePoint != nil, c.AnthropicToolReference != nil:
+				case c.Image != nil:
+					if c.Image.Source.Bytes == nil {
+						problem = "an image must carry inline bytes"
+					}
+				case c.Document != nil:
+					if src := c.Document.Source; src == nil || (src.Bytes == nil && src.Text == nil && src.URL == nil) {
+						problem = "a document must carry inline bytes, text or a url"
+					}
+				default:
+					problem = "only text, json, image and document blocks are supported"
+				}
+				if problem != "" {
+					return providerUtils.InvalidRequestErrorf("messages[%d] tool_result content[%d]: %s", mi, ci, problem)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // ConvertBedrockMessagesToBifrostMessages converts an array of Bedrock messages to Bifrost ResponsesMessage format
@@ -5220,59 +5287,7 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			// Document content
 			role := convertBedrockRoleToBifrostRole(msg.Role)
 
-			// Convert document to file block
-			fileBlock := schemas.ResponsesMessageContentBlock{
-				Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
-				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{},
-			}
-
-			// Set filename from document name
-			if block.Document.Name != "" {
-				fileBlock.ResponsesInputMessageContentBlockFile.Filename = &block.Document.Name
-			}
-
-			fileType := "application/pdf"
-			// Set file type based on format
-			if block.Document.Format != "" {
-				switch block.Document.Format {
-				case "pdf":
-					fileType = "application/pdf"
-				case "txt":
-					fileType = "text/plain"
-				case "md":
-					fileType = "text/markdown"
-				case "html":
-					fileType = "text/html"
-				case "csv":
-					fileType = "text/csv"
-				case "doc":
-					fileType = "application/msword"
-				case "docx":
-					fileType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-				case "xls":
-					fileType = "application/vnd.ms-excel"
-				case "xlsx":
-					fileType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-				default:
-					fileType = "application/pdf" // Default to PDF
-				}
-				fileBlock.ResponsesInputMessageContentBlockFile.FileType = &fileType
-			}
-
-			// Convert document source data
-			if block.Document.Source != nil {
-				if block.Document.Source.Text != nil {
-					// Plain text content
-					fileBlock.ResponsesInputMessageContentBlockFile.FileData = block.Document.Source.Text
-				} else if block.Document.Source.Bytes != nil {
-					// Base64 encoded bytes (PDF)
-					fileDataURL := *block.Document.Source.Bytes
-					if !strings.HasPrefix(fileDataURL, "data:") {
-						fileDataURL = fmt.Sprintf("data:%s;base64,%s", fileType, fileDataURL)
-					}
-					fileBlock.ResponsesInputMessageContentBlockFile.FileData = &fileDataURL
-				}
-			}
+			fileBlock := bedrockDocumentToFileBlock(block.Document)
 
 			bifrostMsg := schemas.ResponsesMessage{
 				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
@@ -5324,15 +5339,20 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				}
 			}
 
-			// A tool_reference comes only from the InvokeModel ingress, whose UnmarshalJSON yields
-			// just text, image, tool_use and tool_reference inside a tool_result, so these output
-			// blocks hold everything that can be decoded. The envelope above is no fallback here: it
-			// drops the json:"-" reference and only the Converse egress decodes it. If that ingress
-			// learns document or search_result, map them here as well.
+			// A result with more than one member, or with an image, document or tool_reference,
+			// cannot be flattened to a string without silently dropping what the model was meant
+			// to see, so it is carried member by member. A tool_reference comes only from the
+			// InvokeModel ingress, whose UnmarshalJSON yields just text, image, document, tool_use
+			// and tool_reference inside a tool_result. The envelope above is no fallback here: it
+			// drops the json:"-" reference and only the Converse egress decodes it. A member this
+			// loop cannot map was already refused by validateBedrockToolResultContent on the
+			// request path; a response never reaches that check, so it is skipped here.
 			var outputBlocks []schemas.ResponsesMessageContentBlock
-			if slices.ContainsFunc(block.ToolResult.Content, func(c BedrockContentBlock) bool { return c.AnthropicToolReference != nil }) {
+			if !hasUnrepresentableBlock && bedrockToolResultNeedsBlocks(block.ToolResult.Content) {
 				for _, c := range block.ToolResult.Content {
-					if c.AnthropicToolReference != nil {
+					if c.Document != nil {
+						outputBlocks = append(outputBlocks, bedrockDocumentToFileBlock(c.Document))
+					} else if c.AnthropicToolReference != nil {
 						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
 							Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
 							ToolName: c.AnthropicToolReference,
@@ -5341,6 +5361,11 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
 							Type: schemas.ResponsesInputMessageContentBlockTypeText,
 							Text: c.Text,
+						})
+					} else if c.JSON != nil {
+						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr(string(c.JSON)),
 						})
 					} else if c.Image != nil && c.Image.Source.Bytes != nil {
 						dataURL := bedrockImageDataURL(c.Image.Format, *c.Image.Source.Bytes)
@@ -5654,19 +5679,30 @@ func dropNonBlobRedactedContent(blocks []BedrockContentBlock) []BedrockContentBl
 
 func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, shape schemas.BedrockReasoningShape, requireSigned, stripBlockSignatures bool) []BedrockContentBlock {
 	if shape == schemas.BedrockReasoningShapeRedacted {
-		// These models reject reasoningText in every form -- with a signature,
-		// without one, empty or not -- with an opaque 500. Only the blob carried
-		// on EncryptedContent is replayable; emitting nothing beats emitting a
-		// shape the model cannot accept.
-		if msg.ResponsesReasoning == nil || msg.ResponsesReasoning.EncryptedContent == nil ||
-			*msg.ResponsesReasoning.EncryptedContent == "" {
-			return nil
+		var encrypted *string
+		if msg.ResponsesReasoning != nil && msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != "" {
+			encrypted = msg.ResponsesReasoning.EncryptedContent
 		}
-		return []BedrockContentBlock{{
-			ReasoningContent: &BedrockReasoningContent{
-				RedactedContent: msg.ResponsesReasoning.EncryptedContent,
-			},
-		}}
+		isBlob := encrypted != nil && isConverseBlob(*encrypted)
+		var reasoningBlocks []BedrockContentBlock
+		if requireSigned {
+			// A model that also verifies signatures (Grok) answers with signed reasoningText,
+			// on Content or, when streamed, as Summary plus the signature in EncryptedContent.
+			// The text path replays it verbatim; a blob on the same item is not a signature.
+			textMsg := *msg
+			if isBlob {
+				textMsg.ResponsesReasoning = nil
+			}
+			reasoningBlocks = convertBifrostReasoningToBedrockReasoning(&textMsg, schemas.BedrockReasoningShapeText, true, false)
+		}
+		// Unsigned text carries nothing these models can use. The blob replays as
+		// redactedContent; a non-blob token too, unless it was read as a signature above.
+		if encrypted != nil && (isBlob || !requireSigned) {
+			reasoningBlocks = append(reasoningBlocks, BedrockContentBlock{
+				ReasoningContent: &BedrockReasoningContent{RedactedContent: encrypted},
+			})
+		}
+		return reasoningBlocks
 	}
 
 	var reasoningBlocks []BedrockContentBlock
@@ -5807,9 +5843,11 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					}
 				}
 			case schemas.ResponsesOutputMessageContentTypeReasoning:
-				// Redacted-shape models carry their blob on the reasoning message,
-				// never on a content block, so there is nothing here to replay.
-				if !isConverseResponseRendering(ctx) && converseReasoningShape(model) == schemas.BedrockReasoningShapeRedacted {
+				// Redacted-shape models carry their blob on the reasoning message, so a
+				// content block replays only to one that also verifies signatures (Grok),
+				// through the signed-text handling below.
+				if !isConverseResponseRendering(ctx) && converseReasoningShape(model) == schemas.BedrockReasoningShapeRedacted &&
+					!converseRequiresSignedReasoning(model) {
 					continue
 				}
 				if block.Text != nil {
@@ -5915,4 +5953,65 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 	}
 
 	return blocks, nil
+}
+
+// bedrockDocumentToFileBlock converts a Converse document block into the neutral file content
+// block. It is shared by top-level documents and documents nested in a tool_result.
+func bedrockDocumentToFileBlock(doc *BedrockDocumentSource) schemas.ResponsesMessageContentBlock {
+	fileBlock := schemas.ResponsesMessageContentBlock{
+		Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+		ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{},
+	}
+
+	// Set filename from document name
+	if doc.Name != "" {
+		fileBlock.ResponsesInputMessageContentBlockFile.Filename = &doc.Name
+	}
+
+	fileType := "application/pdf"
+	// Set file type based on format
+	if doc.Format != "" {
+		switch doc.Format {
+		case "pdf":
+			fileType = "application/pdf"
+		case "txt":
+			fileType = "text/plain"
+		case "md":
+			fileType = "text/markdown"
+		case "html":
+			fileType = "text/html"
+		case "csv":
+			fileType = "text/csv"
+		case "doc":
+			fileType = "application/msword"
+		case "docx":
+			fileType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+		case "xls":
+			fileType = "application/vnd.ms-excel"
+		case "xlsx":
+			fileType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+		default:
+			fileType = "application/pdf" // Default to PDF
+		}
+		fileBlock.ResponsesInputMessageContentBlockFile.FileType = &fileType
+	}
+
+	// Convert document source data
+	if doc.Source != nil {
+		if doc.Source.URL != nil {
+			// An Anthropic url source from the invoke ingress; the Converse egress fetches it.
+			fileBlock.ResponsesInputMessageContentBlockFile.FileURL = doc.Source.URL
+		} else if doc.Source.Text != nil {
+			// Plain text content
+			fileBlock.ResponsesInputMessageContentBlockFile.FileData = doc.Source.Text
+		} else if doc.Source.Bytes != nil {
+			// Base64 encoded bytes (PDF)
+			fileDataURL := *doc.Source.Bytes
+			if !strings.HasPrefix(fileDataURL, "data:") {
+				fileDataURL = fmt.Sprintf("data:%s;base64,%s", fileType, fileDataURL)
+			}
+			fileBlock.ResponsesInputMessageContentBlockFile.FileData = &fileDataURL
+		}
+	}
+	return fileBlock
 }

@@ -212,6 +212,7 @@ export interface RelayOpenAPISpecResponse {
 export interface UsagePreview {
 	route_index: number | null;
 	route_allowed: boolean;
+	status_check: boolean; // a caller's status check for one of the relay's jobs: relayed free
 	billable: boolean;
 	streams: boolean;
 	counted: boolean;
@@ -239,7 +240,8 @@ export type RelayLogStatus = "success" | "error" | "cancelled" | "processing";
 
 /** How a job row's job was polled (job_debug); poll replies are never stored. */
 export interface RelayJobDebug {
-	outcome?: "succeeded" | "failed" | "unpriced";
+	// untracked: on a start call whose reply named no usable job id; last_error says why.
+	outcome?: "succeeded" | "failed" | "unpriced" | "untracked";
 	polls: number;
 	last_status?: string;
 	last_http_status?: number;

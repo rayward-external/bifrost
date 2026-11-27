@@ -1,9 +1,7 @@
 package jobaccounting
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -12,6 +10,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/core/schemas"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -30,6 +29,9 @@ const (
 	UnpriceableReasonRelayJobRefused    = "relay_job_rejected"
 	UnpriceableReasonRelayJobNoUsage    = "relay_job_no_usage"
 	UnpriceableReasonRelayJobRowMissing = "relay_job_row_missing"
+	// UnpriceableReasonRelayDeleted ends a job whose relay was deleted, or could not be loaded, before
+	// it finished.
+	UnpriceableReasonRelayDeleted = "relay_job_relay_deleted"
 )
 
 // endpointJobLogNamespace is the UUIDv5 namespace for relay settlement row ids.
@@ -70,23 +72,27 @@ type RelayUsageReporter interface {
 }
 
 // NewRelayJobSweeper runs relay jobs on the shared sweeper. reporter may be nil when governance is off.
-func NewRelayJobSweeper(store SweepStore, poller RelayJobPoller, logs RelayJobLogStore, reporter RelayUsageReporter, config SweeperConfig) *Sweeper {
+func NewRelayJobSweeper(store SweepStore, poller RelayJobPoller, logs RelayJobLogStore, reporter RelayUsageReporter, emitter RelaySettlementEmitter, config SweeperConfig) *Sweeper {
 	if config.ClaimedBy == "" {
 		config.ClaimedBy = RunnerID("relay-sweeper", "")
 	}
 	settler := &RelaySettler{store: store, poller: poller, logs: logs, hasReporter: reporter != nil, logger: config.Logger}
-	return newSweeper(store, relayLogsRecorder{logs: logs, reporter: reporter}, nil, settler, nil, nil, config)
+	return newSweeper(store, relayLogsRecorder{logs: logs, reporter: reporter, emitter: emitter}, nil, settler, nil, nil, config)
 }
 
 // MaxRelayJobGenerations bounds how many times one upstream job id is reused after settlement
 // before a start is keyed by its own request instead (reused_id_is_new_job).
 const MaxRelayJobGenerations = 64
 
+// ErrRelayStartRowPending is a settlement waiting for its start call's Relay Logs row, which is
+// written in batches; the job is settled on the next sweep, so it is no failure to report.
+var ErrRelayStartRowPending = errors.New("its start call's log row is not written yet; it settles on the next sweep")
+
 // RelayJobRowID is the coordination row id of a relay job, and its scoped job id, for generation
 // gen of an upstream id: the first start takes generation 1, a reused id after settlement the next.
 func RelayJobRowID(relayName, routeKey, upstreamID string, gen int) (id, scoped string) {
-	// The start route is part of the key, so two job routes whose upstreams hand out the same ids
-	// (each counting 1, 2, 3) never share a row.
+	// The status check is part of the key, so two job families whose upstreams hand out the same ids
+	// (each counting 1, 2, 3) never share a row, and editing a start route keeps its running jobs.
 	prefix := routeKey
 	if gen > 1 {
 		prefix += "g" + strconv.Itoa(gen)
@@ -102,11 +108,12 @@ type RelayStatusCheckPayload struct {
 	Body        []byte
 	RequestID   string    // the caller's Relay Logs row
 	SentAt      time.Time // when the caller's check started, to tell which generation it asked about
-	// Matches are the open jobs' routes whose templates the caller's check matched. A job settles
-	// only from its own route and template, so another job's check with the same id, or one from a
-	// template changed since the start, does not.
+	// Matches are the status checks the caller's check matched. A job settles only from its own
+	// status check (compared normalized), so another job family's check with the same id, or one
+	// from a template changed since the start, does not.
 	Matches []schemas.RelayJobMatch
-	Logger  schemas.Logger // optional; where a settlement problem is reported
+	Logger  schemas.Logger         // optional; where a settlement problem is reported
+	Emitter RelaySettlementEmitter // optional; reports the settled job to trace-fed metrics
 }
 
 // AccountRelayJob settles a relay job a caller's status check found finished, as AccountVideoJob
@@ -133,7 +140,7 @@ func AccountRelayJob(ctx context.Context, stateStore JobStore, logs RelayJobLogS
 			continue
 		}
 		snap, err := relaySnapshot(job)
-		if err != nil || !samePoll(match.Poll, snap.Job.Poll) {
+		if err != nil || relay.JobPollKey(match.Poll) != relay.JobPollKey(snap.Job.Poll) {
 			continue
 		}
 		if done, _ := snap.Outcome(snap.Status(load.Body)); !done {
@@ -157,7 +164,7 @@ func AccountRelayJob(ctx context.Context, stateStore JobStore, logs RelayJobLogS
 		req.Job = polled.Job
 		req.ProviderJobID = polled.Job.JobID
 		req.Payload = polled.Payload
-		return accountJob(ctx, stateStore, relayLogsRecorder{logs: logs, reporter: reporter}, nil, settler, req)
+		return accountJob(ctx, stateStore, relayLogsRecorder{logs: logs, reporter: reporter, emitter: load.Emitter}, nil, settler, req)
 	}
 	return nil, nil
 }
@@ -168,8 +175,8 @@ type pollCounter interface {
 	IncrementProviderJobPollAttempts(ctx context.Context, jobID string) error
 }
 
-// HasRelayJob reports whether a relay started a job with this upstream id on the route routeKey
-// names, open or settled, for the gateway to relay only a real job's status check free: a caller
+// HasRelayJob reports whether a relay started a job with this upstream id, read by the status check
+// routeKey names, open or settled, for the gateway to relay only a real job's status check free: a caller
 // still reads a finished job's results with it. One primary-key read, the job's first row.
 // A store error is returned as it is, so the caller can tell its own not-found error from a failed
 // lookup.
@@ -183,13 +190,6 @@ func HasRelayJob(ctx context.Context, store JobStore, relayName, routeKey, upstr
 		return false, err
 	}
 	return job != nil, nil
-}
-
-// samePoll compares two poll templates as they are stored, so an unset and an empty header map agree.
-func samePoll(a, b schemas.RelayJobPoll) bool {
-	ja, errA := json.Marshal(a)
-	jb, errB := json.Marshal(b)
-	return errA == nil && errB == nil && bytes.Equal(ja, jb)
 }
 
 // openRelayJob is the open job row for an upstream id: the generation a start recorded and no
@@ -222,7 +222,7 @@ type relayVerdict struct {
 	settledBy   string // the caller's request whose status check settled the job, "" for a poll
 
 	usage   *schemas.RelayUsage // the priced usage, set by Settle
-	written bool                // the settlement row already exists
+	written *logstore.RelayLog  // the settlement row, when it already exists
 }
 
 // RelaySettler polls a relay job with its route's request and prices it with its route's usage.
@@ -290,6 +290,11 @@ func (s *RelaySettler) Poll(ctx context.Context, listed *cstables.TableProviderJ
 	}
 	if snapErr != nil {
 		return settle(&relayVerdict{reason: UnpriceableReasonRelayJobParams, reasonErr: snapErr})
+	}
+	// A job checked before its start call's Relay Logs row is written waits for it (see
+	// relayStartRowWait) before sending anything, so it costs no extra status check upstream.
+	if s.startRowPending(ctx, &job) {
+		return &PollResult{Job: &job, Retry: true}, nil
 	}
 
 	// Past its timeout a job still gets one last poll, so a job that finished just before the
@@ -380,8 +385,10 @@ func relayJobBusyOrDone(job *cstables.TableProviderJob) bool {
 // relayPollFailure names why a job's last poll failed.
 func relayPollFailure(bErr *schemas.BifrostError) (string, error) {
 	if bErr.Error != nil && errors.Is(bErr.Error.Error, relay.ErrRelayNotFound) {
-		// A relay missing from the live set (mid reload, or pruned) is not the upstream forgetting the job.
-		return UnpriceableReasonRelayJobTimeout, bErr.Error.Error
+		// The job was retried until its timeout (a relay can be missing for a moment mid reload), so a
+		// relay still missing then was deleted or fails to load, which is not the upstream forgetting
+		// the job.
+		return UnpriceableReasonRelayDeleted, bErr.Error.Error
 	}
 	err := NewProviderCallError(bErr)
 	switch ClassifyProviderCall(err) {
@@ -406,7 +413,7 @@ func (s *RelaySettler) Settle(ctx context.Context, _ PricingManager, req JobRequ
 	row, err := s.logs.FindRelayLog(ctx, relayRowID(job))
 	switch {
 	case err == nil:
-		v.written = true
+		v.written = row
 		if row.Cost == nil {
 			// A row with no cost records a job that ended unpriced; a retry keeps that ending.
 			reason, reasonErr := relayRowReason(row)
@@ -467,10 +474,18 @@ func relayRowID(job *cstables.TableProviderJob) string {
 	return AccountingLogID(ProviderJobKindRelay, schemas.ModelProvider(job.Provider), job.JobID)
 }
 
+// RelaySettlementEmitter reports a settled relay job's row to the trace-fed connectors (OTel,
+// Prometheus), as a batch or video settlement is: the sweeper runs outside the request pipeline,
+// so this is the only way a job's charge reaches them.
+type RelaySettlementEmitter interface {
+	EmitRelaySettlement(ctx context.Context, entry *logstore.RelayLog, dims map[string]string)
+}
+
 // relayLogsRecorder logs a settled job in the Relay Logs and bills it through the relay reporter.
 type relayLogsRecorder struct {
 	logs     RelayJobLogStore
 	reporter RelayUsageReporter
+	emitter  RelaySettlementEmitter
 }
 
 func (l relayLogsRecorder) Ready() bool { return l.logs != nil }
@@ -483,15 +498,17 @@ func (l relayLogsRecorder) MirrorSettled(context.Context, Settler, *Outcome) {}
 
 func (l relayLogsRecorder) Entry(req JobRequest, _ *Settlement, _ *Outcome, _ time.Time, _ string) LogsRecord {
 	v, _ := req.Payload.(*relayVerdict)
-	return &relayLogsRecord{logs: l.logs, reporter: l.reporter, job: req.Job, verdict: v}
+	return &relayLogsRecord{logs: l.logs, reporter: l.reporter, emitter: l.emitter, job: req.Job, verdict: v}
 }
 
 type relayLogsRecord struct {
 	logs     RelayJobLogStore
 	reporter RelayUsageReporter
+	emitter  RelaySettlementEmitter
 	job      *cstables.TableProviderJob
 	verdict  *relayVerdict
 	unpriced bool
+	written  *logstore.RelayLog // the row Write recorded, for Emit
 }
 
 // ClearCost leaves the row's cost blank: the job ended without a price, which is not $0.
@@ -503,7 +520,10 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 	if e.verdict == nil {
 		return fmt.Errorf("relay job %s has no poll verdict", e.job.ID)
 	}
-	if e.verdict.written {
+	if e.verdict.written != nil {
+		// An earlier attempt saved the row but not its marker, so it never emitted; this attempt
+		// emits that row. Emit runs only after the marker is saved, so it cannot emit twice.
+		e.written = e.verdict.written
 		return nil
 	}
 	usage := e.verdict.usage
@@ -546,6 +566,7 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 		OutputTokens:       usage.OutputTokens,
 		TotalTokens:        usage.TotalTokens,
 	}
+	// A job row is recorded with no status, so this is only ever one the upstream reported.
 	entry.JobDebugParsed = &logstore.RelayJobDebug{Polls: job.PollAttempts, LastStatus: job.ProviderStatus, LastHTTPStatus: e.verdict.httpStatus,
 		SettledByRequestID: e.verdict.settledBy, SettledAt: time.Now().UTC()}
 	if e.verdict.status != "" {
@@ -565,21 +586,34 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 		entry.ErrorDetailsParsed = &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(e.verdict.reason), Message: message}}
 		entry.JobDebugParsed.LastError = message
 	}
+	// The start call's row carries the model, route and names, as an LLM job row's source log does.
+	// A job a caller's check settles within moments of its start can beat that row to the store,
+	// since logs are written in batches, so the settlement waits for it.
 	if job.SourceLogID != nil {
-		// The start call's row is gone only if a user or retention removed it; the job row stands alone then.
-		if start, err := e.logs.FindRelayLog(ctx, *job.SourceLogID); err == nil {
+		start, err := e.logs.FindRelayLog(ctx, *job.SourceLogID)
+		switch {
+		case err == nil:
 			copyStartAttribution(entry, start)
+		case !errors.Is(err, logstore.ErrNotFound):
+			return fmt.Errorf("read start row: %w", err)
+		case time.Since(job.CreatedAt) < relayStartRowWait:
+			return fmt.Errorf("relay job %s: %w", job.ID, ErrRelayStartRowPending)
 		}
 	}
-	_, err := e.logs.BatchCreateRelayLogsIfNotExists(ctx, []*logstore.RelayLog{entry})
-	return err
+	if entry.RoutePath == "" {
+		entry.RoutePath = job.Endpoint
+	}
+	if _, err := e.logs.BatchCreateRelayLogsIfNotExists(ctx, []*logstore.RelayLog{entry}); err != nil {
+		return err
+	}
+	e.written = entry
+	return nil
 }
 
 // copyStartAttribution gives a job row what its start call's row resolved at request time, as an
 // LLM job row copies its source log: the model, the route and the display names behind the ids.
 func copyStartAttribution(entry, start *logstore.RelayLog) {
-	entry.Model = start.Model
-	entry.RoutePath = start.RoutePath
+	entry.Model, entry.RoutePath = start.Model, start.RoutePath
 	entry.UserName, entry.UserEmail = start.UserName, start.UserEmail
 	entry.VirtualKeyName = start.VirtualKeyName
 	entry.TeamName, entry.CustomerName = start.TeamName, start.CustomerName
@@ -592,7 +626,65 @@ func copyStartAttribution(entry, start *logstore.RelayLog) {
 	entry.BusinessUnitIDsParsed, entry.BusinessUnitNamesParsed = start.BusinessUnitIDsParsed, start.BusinessUnitNamesParsed
 }
 
-func (e *relayLogsRecord) Emit(context.Context) {}
+// relayStartRowWait is how long a settlement waits for its start call's Relay Logs row, which is
+// written in batches a second or so after the call. A job settled sooner by a caller's own status
+// check is retried on the next sweep rather than written without the start call's details; past
+// it the row is taken as gone (retention, or a write that failed), as an LLM job row takes it.
+const relayStartRowWait = time.Minute
+
+// startRowPending reports a job younger than relayStartRowWait whose start call's Relay Logs row is
+// not written yet. Only then is the row read, so an older job's poll costs nothing extra.
+func (s *RelaySettler) startRowPending(ctx context.Context, job *cstables.TableProviderJob) bool {
+	if s.logs == nil || job.SourceLogID == nil || time.Since(job.CreatedAt) >= relayStartRowWait {
+		return false
+	}
+	_, err := s.logs.FindRelayLog(ctx, *job.SourceLogID)
+	return errors.Is(err, logstore.ErrNotFound)
+}
+
+// relayJobDimensionsKey is where a job's params keep its start call's x-bf-dim-* values, beside the
+// relay's snapshot. The start call's row mixes them into its metadata, so they are kept apart for
+// the settlement's metrics labels. Nothing else from the start call is stored with the job.
+const relayJobDimensionsKey = "dimensions"
+
+// WithRelayJobDimensions returns a job's params with its start call's x-bf-dim-* values added; the
+// snapshot reader ignores the extra key. On failure, or with none, the params are returned unchanged.
+func WithRelayJobDimensions(params string, dims map[string]string) string {
+	if len(dims) == 0 {
+		return params
+	}
+	raw, err := providerUtils.MarshalSorted(dims)
+	if err != nil {
+		return params
+	}
+	out, err := providerUtils.SetRawJSONField([]byte(params), relayJobDimensionsKey, raw)
+	if err != nil {
+		return params
+	}
+	return string(out)
+}
+
+// relayJobDimensions reads the x-bf-dim-* values stored with a job at its start.
+func relayJobDimensions(job *cstables.TableProviderJob) map[string]string {
+	if job.Params == nil {
+		return nil
+	}
+	raw := providerUtils.GetJSONField([]byte(*job.Params), relayJobDimensionsKey)
+	if !raw.IsObject() {
+		return nil
+	}
+	var dims map[string]string
+	_ = sonic.UnmarshalString(raw.Raw, &dims)
+	return dims
+}
+
+// Emit reports the settled row to the trace-fed connectors. It runs once, after the row and its
+// marker are saved, with the start call's dimensions so the cost keeps its custom labels.
+func (e *relayLogsRecord) Emit(ctx context.Context) {
+	if e.emitter != nil && e.written != nil {
+		e.emitter.EmitRelaySettlement(ctx, e.written, relayJobDimensions(e.job))
+	}
+}
 
 func (e *relayLogsRecord) CanReport() bool { return e.reporter != nil }
 

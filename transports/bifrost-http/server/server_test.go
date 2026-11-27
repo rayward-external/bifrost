@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"io"
 	"math"
 	"mime/multipart"
@@ -3202,4 +3203,154 @@ func TestGatewayServerOversizedBodyAnswered413BeforeBody(t *testing.T) {
 	if handlerRan {
 		t.Error("handler ran for an oversized body")
 	}
+}
+
+// rotatingKeyConfigStore holds the first key read open after it has captured its row,
+// so a test can commit a rotation while that read is still in flight.
+type rotatingKeyConfigStore struct {
+	reloadVirtualKeyConfigStore
+	value   atomic.Pointer[string]
+	reads   atomic.Int32
+	reading chan struct{}
+	release chan struct{}
+}
+
+// row returns the committed key, holding the first read open.
+func (s *rotatingKeyConfigStore) row() configstoreTables.TableVirtualKey {
+	row := configstoreTables.TableVirtualKey{ID: "vk-id", Name: "key", Value: *schemas.NewSecretVar(*s.value.Load())}
+	if s.reads.Add(1) == 1 {
+		close(s.reading)
+		<-s.release
+	}
+	return row
+}
+
+// GetVirtualKey serves the single-key reload.
+func (s *rotatingKeyConfigStore) GetVirtualKey(context.Context, string) (*configstoreTables.TableVirtualKey, error) {
+	row := s.row()
+	return &row, nil
+}
+
+// GetVirtualKeysByIDs serves the batched reload.
+func (s *rotatingKeyConfigStore) GetVirtualKeysByIDs(context.Context, []string) ([]configstoreTables.TableVirtualKey, error) {
+	return []configstoreTables.TableVirtualKey{s.row()}, nil
+}
+
+// TestOverlappingKeyReloadsKeepTheRotatedValue checks that a reload which read the key
+// before a rotation cannot install it after the rotation's own reload.
+func TestOverlappingKeyReloadsKeepTheRotatedValue(t *testing.T) {
+	handlers.SetLogger(noopTestLogger{})
+	previousLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = previousLogger })
+	single := func(ctx context.Context, server *BifrostHTTPServer) error {
+		_, err := server.ReloadVirtualKey(ctx, "vk-id")
+		return err
+	}
+	batch := func(ctx context.Context, server *BifrostHTTPServer) error {
+		return server.ReloadVirtualKeys(ctx, []string{"vk-id", "vk-other"})
+	}
+	for name, reloads := range map[string][2]func(context.Context, *BifrostHTTPServer) error{
+		"single then single": {single, single},
+		"batch then single":  {batch, single},
+		"single then batch":  {single, batch},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			store, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
+			require.NoError(t, err)
+			store.CreateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "key", Value: *schemas.NewSecretVar("sk-bf-old")})
+			db := &rotatingKeyConfigStore{reading: make(chan struct{}), release: make(chan struct{})}
+			before, after := "sk-bf-old", "sk-bf-rotated"
+			db.value.Store(&before)
+			config := &lib.Config{ConfigStore: db, ClientConfig: &configstore.ClientConfig{}}
+			plugins := []schemas.BasePlugin{&reloadVirtualKeyPlugin{store: store}}
+			config.BasePlugins.Store(&plugins)
+			server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config}
+
+			older, newer := make(chan error, 1), make(chan error, 1)
+			go func() { older <- reloads[0](ctx, server) }()
+			<-db.reading
+			db.value.Store(&after)
+			// The older reload must hold the key's stripe while its read is in flight,
+			// or the newer reload could install first and then be overwritten. Checked
+			// directly so the result does not depend on how goroutines get scheduled.
+			stripe := &server.virtualKeyReloads[maphash.String(virtualKeyReloadSeed, "vk-id")%uint64(len(server.virtualKeyReloads))]
+			stripeHeld := !stripe.TryLock()
+			if !stripeHeld {
+				stripe.Unlock()
+			}
+			go func() { newer <- reloads[1](ctx, server) }()
+			close(db.release)
+			require.NoError(t, <-older)
+			require.NoError(t, <-newer)
+			require.True(t, stripeHeld, "the older reload must hold the key's reload stripe across its read")
+
+			_, stale := store.GetVirtualKey(ctx, before)
+			require.False(t, stale, "the rotated-out value must not authenticate")
+			_, live := store.GetVirtualKey(ctx, after)
+			require.True(t, live, "the committed value must authenticate")
+		})
+	}
+}
+
+// usageWriteConfigStore serves one persisted model config and records every
+// unguarded usage write a reload makes.
+type usageWriteConfigStore struct {
+	configstore.ConfigStore
+	mc          *configstoreTables.TableModelConfig
+	usageWrites atomic.Int32
+}
+
+// GetModelConfigByID returns a copy of the persisted model config.
+func (s *usageWriteConfigStore) GetModelConfigByID(context.Context, string) (*configstoreTables.TableModelConfig, error) {
+	mc := *s.mc
+	mc.Budgets = slices.Clone(s.mc.Budgets)
+	rateLimit := *s.mc.RateLimit
+	mc.RateLimit = &rateLimit
+	return &mc, nil
+}
+
+// UpdateBudgetUsage records an unguarded budget usage write.
+func (s *usageWriteConfigStore) UpdateBudgetUsage(context.Context, string, float64, ...*gorm.DB) error {
+	s.usageWrites.Add(1)
+	return nil
+}
+
+// UpdateRateLimitUsage records an unguarded rate-limit usage write.
+func (s *usageWriteConfigStore) UpdateRateLimitUsage(context.Context, string, int64, int64, ...*gorm.DB) error {
+	s.usageWrites.Add(1)
+	return nil
+}
+
+// TestReloadModelConfigLeavesUsagePersistenceToAccounting checks that a model
+// config reload never writes in-memory usage to the database. Those writes had
+// no last_reset guard, so a reload racing a reset could put the old window's
+// usage into the new window's row.
+func TestReloadModelConfigLeavesUsagePersistenceToAccounting(t *testing.T) {
+	ctx := context.Background()
+	store, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
+	require.NoError(t, err)
+	hour := "1h"
+	persisted := &configstoreTables.TableModelConfig{
+		ID:        "mc-id",
+		ModelName: "gpt-4o",
+		Budgets:   []configstoreTables.TableBudget{{ID: "budget", MaxLimit: 100, ResetDuration: "1M", LastReset: time.Now()}},
+		RateLimit: &configstoreTables.TableRateLimit{ID: "rate", TokenResetDuration: &hour, RequestResetDuration: &hour, TokenLastReset: time.Now(), RequestLastReset: time.Now()},
+	}
+	store.UpdateModelConfigInMemory(ctx, persisted)
+	require.NoError(t, store.BumpBudgetUsageBy(ctx, "budget", 5))
+	require.NoError(t, store.BumpRateLimitUsageBy(ctx, "rate", 7, 1))
+
+	db := &usageWriteConfigStore{mc: persisted}
+	config := &lib.Config{ConfigStore: db, ClientConfig: &configstore.ClientConfig{}}
+	plugins := []schemas.BasePlugin{&reloadVirtualKeyPlugin{store: store}}
+	config.BasePlugins.Store(&plugins)
+	server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config}
+
+	updated, err := server.ReloadModelConfig(ctx, persisted.ID)
+	require.NoError(t, err)
+	require.Equal(t, 5.0, updated.Budgets[0].CurrentUsage, "the reload keeps live usage in memory")
+	require.Equal(t, int64(7), updated.RateLimit.TokenCurrentUsage)
+	require.Zero(t, db.usageWrites.Load(), "the reload must not write usage to the database")
 }

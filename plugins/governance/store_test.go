@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1280,7 +1281,7 @@ func TestGovernanceStoreUpsertBudgetConfigRefreshesOverride(t *testing.T) {
 
 	refreshed := buildBudgetWithUsage(live.ID, 120, 0, "2h")
 	require.NoError(t, refreshed.SetOverride(30, configstoreTables.BudgetOverrideModeCycles, 3))
-	store.UpsertBudgetConfig(context.Background(), live.ID, refreshed)
+	store.UpsertBudgetConfig(context.Background(), live.ID, refreshed, false)
 
 	got := store.LoadBudget(context.Background(), live.ID)
 	require.NotNil(t, got)
@@ -3101,4 +3102,855 @@ func TestGovernanceStore_ResetDoesNotRevertAConcurrentTeamEdit(t *testing.T) {
 	final := got.(*configstoreTables.TableTeam)
 	assert.Equal(t, "customer-b", *final.CustomerID, "the edit is kept")
 	assert.Zero(t, final.Budgets[0].CurrentUsage, "and the reset still applies")
+}
+
+// TestModelConfigRefreshPreservesRateLimitResetBoundaries checks that a stale
+// model-config refresh keeps the live usage and reset boundaries of its rate
+// limit while still applying the new limits.
+func TestModelConfigRefreshPreservesRateLimitResetBoundaries(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	rate := buildRateLimit("rate", 1000, 1000)
+	rate.TokenLastReset = time.Now().UTC().Truncate(time.Hour)
+	rate.RequestLastReset = rate.TokenLastReset.Add(-time.Hour)
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+
+	incoming := buildRateLimit(rate.ID, 2000, 3000)
+	incoming.TokenLastReset = rate.TokenLastReset.Add(-24 * time.Hour)
+	incoming.RequestLastReset = incoming.TokenLastReset
+	model := &configstoreTables.TableModelConfig{ID: "model", RateLimit: incoming}
+	updated := store.UpdateModelConfigInMemory(ctx, model)
+	live := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, live, updated.RateLimit)
+	require.Equal(t, incoming.TokenMaxLimit, live.TokenMaxLimit)
+	require.Equal(t, incoming.RequestMaxLimit, live.RequestMaxLimit)
+	require.Equal(t, rate.TokenCurrentUsage, live.TokenCurrentUsage)
+	require.Equal(t, rate.RequestCurrentUsage, live.RequestCurrentUsage)
+	require.True(t, rate.TokenLastReset.Equal(live.TokenLastReset), "token boundary rolled back")
+	require.True(t, rate.RequestLastReset.Equal(live.RequestLastReset), "request boundary rolled back")
+}
+
+// TestConfigRefreshPreservesBudgetAndProviderAccounting checks that stale
+// persisted settings can change limits without changing the live accounting
+// tuple, and without the refresh writing into the caller's structs.
+func TestConfigRefreshPreservesBudgetAndProviderAccounting(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	boundary := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	modelBudget := buildBudgetWithUsage("model-budget", 100, 7, "1M")
+	modelBudget.LastReset = boundary
+	store.UpsertBudgetConfig(ctx, modelBudget.ID, modelBudget, false)
+	staleModelBudget := buildBudgetWithUsage(modelBudget.ID, 200, 42, "1M")
+	model := &configstoreTables.TableModelConfig{
+		ID: "model", Budgets: []configstoreTables.TableBudget{*staleModelBudget},
+	}
+	updatedModel := store.UpdateModelConfigInMemory(ctx, model)
+	expectedModelBudget := *modelBudget
+	expectedModelBudget.MaxLimit = staleModelBudget.MaxLimit
+	require.Equal(t, expectedModelBudget, *store.LoadBudget(ctx, modelBudget.ID))
+	require.Equal(t, expectedModelBudget, updatedModel.Budgets[0])
+	require.Equal(t, *staleModelBudget, model.Budgets[0])
+
+	providerBudget := buildBudgetWithUsage("provider-budget", 100, 9, "1M")
+	providerBudget.LastReset = boundary
+	store.UpsertBudgetConfig(ctx, providerBudget.ID, providerBudget, false)
+	rate := buildRateLimit("provider-rate", 1000, 1000)
+	rate.TokenLastReset = boundary
+	rate.RequestLastReset = boundary.Add(-time.Hour)
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+
+	provider := &configstoreTables.TableProvider{
+		Name: "provider", Budget: buildBudgetWithUsage(providerBudget.ID, 200, 42, "1M"),
+		RateLimit: buildRateLimit(rate.ID, 2000, 3000),
+	}
+	staleBudget, staleRate := *provider.Budget, *provider.RateLimit
+	updatedProvider := store.UpdateProviderInMemory(ctx, provider)
+	expectedProviderBudget := *providerBudget
+	expectedProviderBudget.MaxLimit = staleBudget.MaxLimit
+	expectedRate := *rate
+	expectedRate.TokenMaxLimit, expectedRate.RequestMaxLimit = staleRate.TokenMaxLimit, staleRate.RequestMaxLimit
+	require.Equal(t, expectedProviderBudget, *store.LoadBudget(ctx, providerBudget.ID))
+	require.Equal(t, expectedProviderBudget, *updatedProvider.Budget)
+	require.Equal(t, expectedRate, *store.LoadRateLimit(ctx, rate.ID))
+	require.Equal(t, expectedRate, *updatedProvider.RateLimit)
+	require.Equal(t, staleBudget, *provider.Budget)
+}
+
+// TestCreateInMemoryDoesNotAliasCallerLimits checks that the create paths
+// publish their own copies of budgets and rate limits, so the caller's structs
+// are neither stamped by the create nor able to change live entries afterwards.
+func TestCreateInMemoryDoesNotAliasCallerLimits(t *testing.T) {
+	creates := map[string]func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit){
+		"virtual key": func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit) {
+			store.CreateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: true, Budgets: budgets, RateLimitID: &rate.ID, RateLimit: rate})
+		},
+		"provider config": func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit) {
+			store.CreateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: true, ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{{ID: 1, Provider: "openai", Budgets: budgets, RateLimitID: &rate.ID, RateLimit: rate}}})
+		},
+		"team": func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit) {
+			store.CreateTeamInMemory(ctx, &configstoreTables.TableTeam{ID: "owner", CalendarAligned: true, Budgets: budgets, RateLimitID: &rate.ID, RateLimit: rate})
+		},
+		"customer": func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit) {
+			store.CreateCustomerInMemory(ctx, &configstoreTables.TableCustomer{ID: "owner", CalendarAligned: true, Budgets: budgets, RateLimitID: &rate.ID, RateLimit: rate})
+		},
+	}
+	for name, create := range creates {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			budgets := []configstoreTables.TableBudget{*buildBudgetWithUsage("budget", 100, 0, "1M")}
+			rate := buildRateLimit("rate", 1000, 1000)
+			create(ctx, store, budgets, rate)
+
+			require.False(t, budgets[0].IsCalendarAligned, "create stamped the caller's budget")
+			require.False(t, rate.IsCalendarAligned, "create stamped the caller's rate limit")
+			require.True(t, store.LoadBudget(ctx, "budget").IsCalendarAligned)
+			require.True(t, store.LoadRateLimit(ctx, "rate").IsCalendarAligned)
+
+			require.NotSame(t, rate, store.LoadRateLimit(ctx, "rate"), "live rate limit is the caller's struct")
+			budgets[0].MaxLimit = 1
+			require.Equal(t, 100.0, store.LoadBudget(ctx, "budget").MaxLimit, "caller write reached the live budget")
+		})
+	}
+}
+
+// TestConfigRefreshKeepsConcurrentCharges checks that owner refreshes racing
+// with accounting never lose a charge: every refresh must merge into the live
+// counter rather than read it and store it back later.
+func TestConfigRefreshKeepsConcurrentCharges(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	hour := "1h"
+	budget := buildBudgetWithUsage("budget", 1e9, 0, "1M")
+	rate := buildRateLimit("rate", 1e9, 1e9)
+	rate.TokenResetDuration, rate.RequestResetDuration = &hour, &hour
+	team := func() *configstoreTables.TableTeam {
+		r := *rate
+		return &configstoreTables.TableTeam{ID: "team", Budgets: []configstoreTables.TableBudget{*budget}, RateLimitID: &r.ID, RateLimit: &r}
+	}
+	store.CreateTeamInMemory(ctx, team())
+
+	const workers, charges = 8, 2000
+	stop := make(chan struct{})
+	refreshed := make(chan struct{})
+	go func() {
+		defer close(refreshed)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				store.UpdateTeamInMemory(ctx, team(), nil)
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range charges {
+				require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, 1))
+				require.NoError(t, store.BumpRateLimitUsageBy(ctx, rate.ID, 1, 1))
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	<-refreshed
+
+	require.Equal(t, float64(workers*charges), store.LoadBudget(ctx, budget.ID).CurrentUsage)
+	live := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, int64(workers*charges), live.TokenCurrentUsage)
+	require.Equal(t, int64(workers*charges), live.RequestCurrentUsage)
+}
+
+// calendarOwner reloads one kind of owner holding the given limits.
+type calendarOwner func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit)
+
+// calendarOwners lists every OSS owner whose reload stamps calendar alignment.
+func calendarOwners() map[string]calendarOwner {
+	return map[string]calendarOwner{
+		"team": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateTeamInMemory(ctx, &configstoreTables.TableTeam{ID: "owner", CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}, nil)
+		},
+		"customer": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateCustomerInMemory(ctx, &configstoreTables.TableCustomer{ID: "owner", CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}, nil)
+		},
+		"virtual key": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}, nil, nil, nil)
+		},
+		"provider config": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: aligned, ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{{ID: 1, Provider: "openai", Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}}}, nil, nil, nil)
+		},
+		"model config": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateModelConfigInMemory(ctx, &configstoreTables.TableModelConfig{ID: "owner", ModelName: "gpt-4o", CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate})
+		},
+	}
+}
+
+// openWindow returns limits with usage in a window opened before this month's boundary.
+func openWindow() (time.Time, configstoreTables.TableBudget, configstoreTables.TableRateLimit) {
+	month, day := "1M", "1d"
+	now := time.Now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	opened := monthStart.Add(-10 * 24 * time.Hour)
+	budget := configstoreTables.TableBudget{ID: "budget", MaxLimit: 100, CurrentUsage: 7, ResetDuration: month, CreatedAt: opened, LastReset: opened}
+	rate := *buildRateLimit("rate", 100, 100)
+	rate.TokenResetDuration, rate.RequestResetDuration = &month, &day
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	rate.TokenLastReset, rate.RequestLastReset = opened, opened
+	return monthStart, budget, rate
+}
+
+// TestReloadAdoptsCalendarBeforeSweep checks that a sweep running right after the
+// reload that switches alignment on finds every window current and keeps its usage.
+func TestReloadAdoptsCalendarBeforeSweep(t *testing.T) {
+	for name, reload := range calendarOwners() {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			monthStart, budget, rate := openWindow()
+			reload(ctx, store, false, budget, rate)
+			reload(ctx, store, true, budget, rate)
+
+			require.Empty(t, store.ResetExpiredBudgetsInMemory(ctx, true, budget.ID))
+			require.Empty(t, store.ResetExpiredRateLimitsInMemory(ctx, true, rate.ID))
+			liveBudget, liveRate := store.LoadBudget(ctx, budget.ID), store.LoadRateLimit(ctx, rate.ID)
+			require.Equal(t, 7.0, liveBudget.CurrentUsage)
+			require.True(t, liveBudget.LastReset.Equal(monthStart))
+			require.Equal(t, int64(17), liveRate.TokenCurrentUsage)
+			require.Equal(t, int64(19), liveRate.RequestCurrentUsage)
+			require.True(t, liveRate.TokenLastReset.Equal(monthStart))
+		})
+	}
+}
+
+// TestReloadAdoptsCalendarWithNewDuration checks that adoption uses the duration
+// installed by the same edit, not the one it replaces.
+func TestReloadAdoptsCalendarWithNewDuration(t *testing.T) {
+	for name, reload := range calendarOwners() {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			monthStart, budget, rate := openWindow()
+			hourly := budget
+			hourly.ResetDuration = "1h"
+			reload(ctx, store, false, hourly, rate)
+			reload(ctx, store, true, budget, rate)
+
+			require.Empty(t, store.ResetExpiredBudgetsInMemory(ctx, true, budget.ID))
+			live := store.LoadBudget(ctx, budget.ID)
+			require.Equal(t, 7.0, live.CurrentUsage)
+			require.True(t, live.LastReset.Equal(monthStart))
+		})
+	}
+}
+
+// TestReloadKeepsDueCalendarReset checks that reloading an owner that was already
+// aligned does not adopt, even when its rows were loaded without the flag, as
+// startup does. The overdue window must still reset.
+func TestReloadKeepsDueCalendarReset(t *testing.T) {
+	for name, reload := range calendarOwners() {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			monthStart, budget, rate := openWindow()
+			reload(ctx, store, true, budget, rate)
+			unstampedBudget, unstampedRate := budget, rate
+			store.budgets.Store(budget.ID, &unstampedBudget)
+			store.rateLimits.Store(rate.ID, &unstampedRate)
+			reload(ctx, store, true, budget, rate)
+
+			require.True(t, store.LoadBudget(ctx, budget.ID).LastReset.Before(monthStart))
+			require.Len(t, store.ResetExpiredBudgetsInMemory(ctx, true, budget.ID), 1)
+			require.Len(t, store.ResetExpiredRateLimitsInMemory(ctx, true, rate.ID), 1)
+			require.Zero(t, store.LoadBudget(ctx, budget.ID).CurrentUsage)
+			require.Zero(t, store.LoadRateLimit(ctx, rate.ID).TokenCurrentUsage)
+		})
+	}
+}
+
+// newBaselineStore returns a store without a config store, for baseline tests.
+func newBaselineStore(t *testing.T) *LocalGovernanceStore {
+	t.Helper()
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
+	require.NoError(t, err)
+	return store
+}
+
+// TestApplyBudgetBaselineWindows pins how a cluster baseline lands relative to
+// the local window: rebased in the same window, replacing usage from a newer
+// window, and refused from an older one.
+func TestApplyBudgetBaselineWindows(t *testing.T) {
+	ctx := context.Background()
+	store := newBaselineStore(t)
+	budget := buildBudgetWithUsage("b", 1000, 102, "1d")
+	window := budget.LastReset
+	store.UpsertBudgetConfig(ctx, budget.ID, budget, false)
+	store.SetBudgetDBBaseline(budget.ID, 100)
+
+	require.True(t, store.ApplyBudgetBaseline(ctx, budget.ID, 110, window))
+	require.Equal(t, 112.0, store.LoadBudget(ctx, budget.ID).CurrentUsage, "the $2 charged on top of the old baseline survives")
+	require.Equal(t, 110.0, store.LastDBUsagesBudgets[budget.ID])
+
+	require.False(t, store.ApplyBudgetBaseline(ctx, budget.ID, 500, window.Add(-time.Hour)), "a baseline from a window this node closed is refused")
+	require.Equal(t, 112.0, store.LoadBudget(ctx, budget.ID).CurrentUsage)
+	require.True(t, store.LoadBudget(ctx, budget.ID).LastReset.Equal(window), "a refused baseline moved the window")
+	require.Equal(t, 110.0, store.LastDBUsagesBudgets[budget.ID])
+
+	next := window.Add(time.Hour)
+	require.True(t, store.ApplyBudgetBaseline(ctx, budget.ID, 7, next))
+	installed := store.LoadBudget(ctx, budget.ID)
+	require.Equal(t, 7.0, installed.CurrentUsage, "charges from the closed window do not carry into the new one")
+	require.True(t, installed.LastReset.Equal(next))
+	require.Equal(t, 7.0, store.LastDBUsagesBudgets[budget.ID])
+}
+
+// TestApplyRateLimitBaselinesPerCounter pins that each counter checks its own
+// window: a counter that already reset refuses an older baseline while the other
+// counter still takes its own.
+func TestApplyRateLimitBaselinesPerCounter(t *testing.T) {
+	ctx := context.Background()
+	store := newBaselineStore(t)
+	rate := buildRateLimitWithUsage("r", 1_000_000, 300, 1_000, 30)
+	day := "1d"
+	rate.TokenResetDuration, rate.RequestResetDuration = &day, &day
+	window := rate.RequestLastReset
+	tokenWindow := window.Add(-time.Hour)
+	rate.TokenLastReset = tokenWindow
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+	store.SetRateLimitDBBaseline(rate.ID, 200, 20)
+
+	// The token boundary is older than the request window and the request
+	// boundary is newer than the token window, so applying either boundary to
+	// the other counter flips both results.
+	acceptTokens, acceptRequests := store.ApplyRateLimitBaselines(ctx, rate.ID, 9_000, 25, window.Add(-2*time.Hour), window)
+	require.False(t, acceptTokens)
+	require.True(t, acceptRequests)
+	installed := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, int64(300), installed.TokenCurrentUsage, "the token counter already reset past this window")
+	require.True(t, installed.TokenLastReset.Equal(tokenWindow), "a refused baseline moved the token window")
+	require.True(t, installed.RequestLastReset.Equal(window))
+	require.Equal(t, int64(35), installed.RequestCurrentUsage, "10 local requests on top of the old baseline survive")
+	require.Equal(t, int64(200), store.LastDBUsagesTokensRateLimits[rate.ID], "a refused baseline changed the token baseline")
+	require.Equal(t, int64(25), store.LastDBUsagesRequestsRateLimits[rate.ID])
+}
+
+// TestApplyBudgetBaselineKeepsConcurrentCharges installs baselines while
+// requests charge the same budget. Every charge must survive: the install
+// computes the local delta and writes usage in one compare-and-swap.
+func TestApplyBudgetBaselineKeepsConcurrentCharges(t *testing.T) {
+	ctx := context.Background()
+	store := newBaselineStore(t)
+	budget := buildBudgetWithUsage("b", 1_000_000, 0, "1d")
+	window := budget.LastReset
+	store.UpsertBudgetConfig(ctx, budget.ID, budget, false)
+	store.SetBudgetDBBaseline(budget.ID, 0)
+
+	const workers, charges, installs = 4, 2_000, 500
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range charges {
+				// assert, not require: FailNow must not run off the test goroutine.
+				if !assert.NoError(t, store.BumpBudgetUsage(ctx, budget.ID, 1)) {
+					return
+				}
+			}
+		}()
+	}
+	// Non-fatal so a failed install still reaches wg.Wait below.
+	for i := 1; i <= installs; i++ {
+		assert.True(t, store.ApplyBudgetBaseline(ctx, budget.ID, float64(i), window))
+	}
+	wg.Wait()
+
+	require.Equal(t, float64(installs+workers*charges), store.LoadBudget(ctx, budget.ID).CurrentUsage)
+}
+
+// TestResetClearsBaselineInSameSwap pins that a reset zeroes the baseline as
+// part of the reset itself, so a baseline install queued behind it rebases onto
+// zero instead of a stale pre-reset baseline.
+func TestResetClearsBaselineInSameSwap(t *testing.T) {
+	ctx := context.Background()
+	store := newBaselineStore(t)
+	budget := buildBudgetWithUsage("b", 1000, 40, "1d")
+	store.UpsertBudgetConfig(ctx, budget.ID, budget, false)
+	store.SetBudgetDBBaseline(budget.ID, 30)
+	next := budget.LastReset.Add(time.Hour)
+
+	_, ok := store.ResetBudgetAt(ctx, budget.ID, next)
+	require.True(t, ok)
+	require.Zero(t, store.LastDBUsagesBudgets[budget.ID])
+	require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, 2))
+	require.True(t, store.ApplyBudgetBaseline(ctx, budget.ID, 5, next))
+	require.Equal(t, 7.0, store.LoadBudget(ctx, budget.ID).CurrentUsage)
+
+	rate := buildRateLimitWithUsage("r", 1_000_000, 300, 1_000, 30)
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+	store.SetRateLimitDBBaseline(rate.ID, 200, 20)
+	requestWindow := rate.RequestLastReset
+	tokenNext := rate.TokenLastReset.Add(time.Hour)
+	reset, ok := store.ResetRateLimitAt(ctx, rate.ID, &tokenNext, nil)
+	require.True(t, ok)
+	require.True(t, reset.TokenReset())
+	require.False(t, reset.RequestReset())
+	installedRate := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, int64(30), installedRate.RequestCurrentUsage, "a token-only reset cleared request usage")
+	require.True(t, installedRate.RequestLastReset.Equal(requestWindow), "a token-only reset moved the request window")
+	require.Zero(t, store.LastDBUsagesTokensRateLimits[rate.ID])
+	require.Equal(t, int64(20), store.LastDBUsagesRequestsRateLimits[rate.ID], "the request counter did not reset")
+}
+
+// waitForPendingWriter returns once a writer is waiting on mu. The caller holds
+// a read lock, so the writer blocks in Lock, and TryRLock fails from the moment
+// it announces itself until it unlocks. It returns an error if done closes
+// first, meaning the operation finished without taking the write lock, or if no
+// writer shows up within a few seconds. The caller releases its read lock before
+// failing on that error, so the writer is never left blocked.
+func waitForPendingWriter(mu *sync.RWMutex, done <-chan struct{}) error {
+	deadline := time.Now().Add(5 * time.Second)
+	for mu.TryRLock() {
+		mu.RUnlock()
+		select {
+		case <-done:
+			return errors.New("the operation finished without waiting for the write lock")
+		default:
+		}
+		if time.Now().After(deadline) {
+			return errors.New("no writer waited for the lock")
+		}
+		runtime.Gosched()
+	}
+	return nil
+}
+
+// TestResetPublishesWindowWithClearedBaseline tries to read under the baseline
+// lock at the first moment a reset releases it. The test holds a read lock until
+// the reset waits for the write lock, then releases it and immediately asks for
+// another read lock. When that request queues while the writer still holds the
+// lock, Go admits it at the writer's first Unlock, before any later Lock, so a
+// reset that published its window before clearing the baseline is caught. The
+// queueing is scheduler-dependent: if the reset unlocks, relocks and clears
+// before the read request arrives, a split-lock regression can slip through. On
+// correct code it fails only if the reset is not seen waiting for the lock within
+// waitForPendingWriter's five-second limit; it is a regression detector, not a
+// proof.
+func TestResetPublishesWindowWithClearedBaseline(t *testing.T) {
+	ctx := context.Background()
+	store := newBaselineStore(t)
+	budget := buildBudgetWithUsage("b", 1000, 40, "1d")
+	store.UpsertBudgetConfig(ctx, budget.ID, budget, false)
+	store.SetBudgetDBBaseline(budget.ID, 30)
+	next := budget.LastReset.Add(time.Hour)
+
+	store.LastDBUsagesBudgetsMu.RLock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		store.ResetBudgetAt(ctx, budget.ID, next)
+	}()
+	if err := waitForPendingWriter(&store.LastDBUsagesBudgetsMu, done); err != nil {
+		store.LastDBUsagesBudgetsMu.RUnlock()
+		t.Fatal(err)
+	}
+	pendingWindow := store.LoadBudget(ctx, budget.ID).LastReset
+	store.LastDBUsagesBudgetsMu.RUnlock()
+	store.LastDBUsagesBudgetsMu.RLock()
+	window := store.LoadBudget(ctx, budget.ID).LastReset
+	baseline := store.LastDBUsagesBudgets[budget.ID]
+	store.LastDBUsagesBudgetsMu.RUnlock()
+	<-done
+
+	require.Equal(t, budget.LastReset, pendingWindow, "the reset published its window before taking the baseline lock")
+	require.Equal(t, next, window)
+	require.Zero(t, baseline, "the reset published its window before clearing the baseline")
+
+	rate := buildRateLimitWithUsage("r", 1_000_000, 300, 1_000, 30)
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+	store.SetRateLimitDBBaseline(rate.ID, 200, 20)
+	tokenNext, requestNext := rate.TokenLastReset.Add(time.Hour), rate.RequestLastReset.Add(time.Hour)
+
+	// The reset takes the request lock first, so it waits there.
+	store.LastDBUsagesRateLimitsRequestsMu.RLock()
+	done = make(chan struct{})
+	go func() {
+		defer close(done)
+		store.ResetRateLimitAt(ctx, rate.ID, &tokenNext, &requestNext)
+	}()
+	if err := waitForPendingWriter(&store.LastDBUsagesRateLimitsRequestsMu, done); err != nil {
+		store.LastDBUsagesRateLimitsRequestsMu.RUnlock()
+		t.Fatal(err)
+	}
+	pending := store.LoadRateLimit(ctx, rate.ID)
+	store.LastDBUsagesRateLimitsRequestsMu.RUnlock()
+	store.LastDBUsagesRateLimitsRequestsMu.RLock()
+	store.LastDBUsagesRateLimitsTokensMu.RLock()
+	reset := store.LoadRateLimit(ctx, rate.ID)
+	tokens := store.LastDBUsagesTokensRateLimits[rate.ID]
+	requests := store.LastDBUsagesRequestsRateLimits[rate.ID]
+	store.LastDBUsagesRateLimitsTokensMu.RUnlock()
+	store.LastDBUsagesRateLimitsRequestsMu.RUnlock()
+	<-done
+
+	require.Equal(t, rate.TokenLastReset, pending.TokenLastReset, "the reset published its windows before taking the baseline locks")
+	require.Equal(t, rate.RequestLastReset, pending.RequestLastReset, "the reset published its windows before taking the baseline locks")
+	require.Equal(t, tokenNext, reset.TokenLastReset)
+	require.Equal(t, requestNext, reset.RequestLastReset)
+	require.Zero(t, tokens, "the reset published its token window before clearing the baseline")
+	require.Zero(t, requests, "the reset published its request window before clearing the baseline")
+}
+
+// errorHookLogger runs onError once, on the first Error call. The inline reset
+// logs right after loading its snapshot, so the hook lands a competing write
+// between that load and the reset's swap.
+type errorHookLogger struct {
+	*MockLogger
+	onError func()
+}
+
+// Error records the message and runs the pending hook, if any, exactly once.
+func (l *errorHookLogger) Error(format string, args ...interface{}) {
+	l.MockLogger.Error(format, args...)
+	if hook := l.onError; hook != nil {
+		l.onError = nil
+		hook()
+	}
+}
+
+// newInlineResetStore returns a store logging through logger.
+func newInlineResetStore(t *testing.T, logger *errorHookLogger) *LocalGovernanceStore {
+	t.Helper()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	require.NoError(t, err)
+	return store
+}
+
+// The entries below are stored under a key that differs from their ID, so the
+// shared reset path (which resets by ID) never converges and BumpBudgetUsage /
+// BumpRateLimitUsage fall back to their inline reset.
+
+// TestInlineBudgetResetKeepsBaselineOnLostSwap lands a fresh window between the
+// inline reset's load and its swap. The reset loses the swap and the retry
+// charges the fresh window, so the baseline that window installed must survive:
+// clearing it with the lost reset would leave usage 52 over a zero baseline,
+// and the next dump would count the 50 already persisted again.
+func TestInlineBudgetResetKeepsBaselineOnLostSwap(t *testing.T) {
+	ctx := context.Background()
+	logger := &errorHookLogger{MockLogger: NewMockLogger()}
+	store := newInlineResetStore(t, logger)
+	stale := buildBudgetWithUsage("elsewhere", 1000, 40, "1h")
+	stale.LastReset = time.Now().Add(-2 * time.Hour)
+	store.budgets.Store("b", stale)
+	store.SetBudgetDBBaseline("b", 40)
+	gen := store.budgetResetGens["b"]
+
+	logger.onError = func() {
+		store.budgets.Store("b", buildBudgetWithUsage("elsewhere", 1000, 50, "1h"))
+		store.SetBudgetDBBaseline("b", 50)
+	}
+	require.NoError(t, store.BumpBudgetUsage(ctx, "b", 2))
+
+	require.Equal(t, 52.0, store.LoadBudget(ctx, "b").CurrentUsage)
+	require.Equal(t, 50.0, store.LastDBUsagesBudgets["b"], "a lost inline reset cleared the baseline")
+	require.Equal(t, gen, store.budgetResetGens["b"], "a lost inline reset bumped the reset generation")
+}
+
+// TestInlineBudgetResetClearsBaselineWithSwap pins the winning inline reset:
+// usage restarts from the charge, and the baseline and reset generation change
+// with it.
+func TestInlineBudgetResetClearsBaselineWithSwap(t *testing.T) {
+	ctx := context.Background()
+	store := newInlineResetStore(t, &errorHookLogger{MockLogger: NewMockLogger()})
+	stale := buildBudgetWithUsage("elsewhere", 1000, 40, "1h")
+	stale.LastReset = time.Now().Add(-2 * time.Hour)
+	store.budgets.Store("b", stale)
+	store.SetBudgetDBBaseline("b", 40)
+	gen := store.budgetResetGens["b"]
+	staleWindow := stale.LastReset
+
+	require.NoError(t, store.BumpBudgetUsage(ctx, "b", 2))
+
+	installed := store.LoadBudget(ctx, "b")
+	require.Equal(t, 2.0, installed.CurrentUsage)
+	require.True(t, installed.LastReset.After(staleWindow), "the inline reset did not advance the window")
+	require.Zero(t, store.LastDBUsagesBudgets["b"])
+	require.Equal(t, gen+1, store.budgetResetGens["b"])
+}
+
+// inlineResetRateLimit returns a rate limit with both windows overdue, stored
+// under a key other than its ID.
+func inlineResetRateLimit(tokens, requests int64) *configstoreTables.TableRateLimit {
+	rateLimit := buildRateLimitWithUsage("elsewhere", 1_000_000, tokens, 1_000, requests)
+	hour := "1h"
+	rateLimit.TokenResetDuration, rateLimit.RequestResetDuration = &hour, &hour
+	rateLimit.TokenLastReset = time.Now().Add(-2 * time.Hour)
+	rateLimit.RequestLastReset = rateLimit.TokenLastReset
+	return rateLimit
+}
+
+// TestInlineRateLimitResetKeepsBaselinesOnLostSwap is the rate-limit form of
+// TestInlineBudgetResetKeepsBaselineOnLostSwap.
+func TestInlineRateLimitResetKeepsBaselinesOnLostSwap(t *testing.T) {
+	ctx := context.Background()
+	logger := &errorHookLogger{MockLogger: NewMockLogger()}
+	store := newInlineResetStore(t, logger)
+	store.rateLimits.Store("r", inlineResetRateLimit(400, 40))
+	store.SetRateLimitDBBaseline("r", 400, 40)
+	gen := store.rateLimitResetGens["r"]
+
+	logger.onError = func() {
+		store.rateLimits.Store("r", buildRateLimitWithUsage("elsewhere", 1_000_000, 500, 1_000, 50))
+		store.SetRateLimitDBBaseline("r", 500, 50)
+	}
+	require.NoError(t, store.BumpRateLimitUsage(ctx, "r", 7, true, true))
+
+	installed := store.LoadRateLimit(ctx, "r")
+	require.Equal(t, int64(507), installed.TokenCurrentUsage)
+	require.Equal(t, int64(51), installed.RequestCurrentUsage)
+	require.Equal(t, int64(500), store.LastDBUsagesTokensRateLimits["r"], "a lost inline reset cleared the token baseline")
+	require.Equal(t, int64(50), store.LastDBUsagesRequestsRateLimits["r"], "a lost inline reset cleared the request baseline")
+	require.Equal(t, gen, store.rateLimitResetGens["r"])
+}
+
+// TestInlineRateLimitResetMarksResetGeneration pins the winning inline reset:
+// it clears both baselines and bumps the reset generation, so a dump that
+// snapshotted the pre-reset usage drops its row instead of writing it back.
+func TestInlineRateLimitResetMarksResetGeneration(t *testing.T) {
+	ctx := context.Background()
+	store := newInlineResetStore(t, &errorHookLogger{MockLogger: NewMockLogger()})
+	stale := inlineResetRateLimit(400, 40)
+	store.rateLimits.Store("r", stale)
+	store.SetRateLimitDBBaseline("r", 400, 40)
+	gen := store.rateLimitResetGens["r"]
+	staleWindow := stale.TokenLastReset
+
+	require.NoError(t, store.BumpRateLimitUsage(ctx, "r", 7, true, true))
+
+	installed := store.LoadRateLimit(ctx, "r")
+	require.Equal(t, int64(7), installed.TokenCurrentUsage)
+	require.Equal(t, int64(1), installed.RequestCurrentUsage)
+	require.True(t, installed.TokenLastReset.After(staleWindow), "the inline reset did not advance the token window")
+	require.True(t, installed.RequestLastReset.After(staleWindow), "the inline reset did not advance the request window")
+	require.Zero(t, store.LastDBUsagesTokensRateLimits["r"])
+	require.Zero(t, store.LastDBUsagesRequestsRateLimits["r"])
+	require.Equal(t, gen+1, store.rateLimitResetGens["r"], "the inline reset did not mark the reset generation")
+}
+
+// TestInlineRateLimitResetKeepsCurrentRequestWindow pins a winning inline reset
+// where only the token window is overdue: the token counter restarts from the
+// charge and loses its baseline, while the request counter keeps its window and
+// baseline and simply takes the request.
+func TestInlineRateLimitResetKeepsCurrentRequestWindow(t *testing.T) {
+	ctx := context.Background()
+	store := newInlineResetStore(t, &errorHookLogger{MockLogger: NewMockLogger()})
+	stale := inlineResetRateLimit(400, 40)
+	requestWindow := time.Now()
+	stale.RequestLastReset = requestWindow
+	store.rateLimits.Store("r", stale)
+	store.SetRateLimitDBBaseline("r", 400, 40)
+	gen := store.rateLimitResetGens["r"]
+	staleWindow := stale.TokenLastReset
+
+	require.NoError(t, store.BumpRateLimitUsage(ctx, "r", 7, true, true))
+
+	installed := store.LoadRateLimit(ctx, "r")
+	require.Equal(t, int64(7), installed.TokenCurrentUsage)
+	require.True(t, installed.TokenLastReset.After(staleWindow), "the inline reset did not advance the token window")
+	require.Equal(t, int64(41), installed.RequestCurrentUsage, "the current request window lost its usage")
+	require.True(t, installed.RequestLastReset.Equal(requestWindow), "the inline reset moved the current request window")
+	require.Zero(t, store.LastDBUsagesTokensRateLimits["r"])
+	require.Equal(t, int64(40), store.LastDBUsagesRequestsRateLimits["r"], "the inline reset cleared the current request baseline")
+	require.Equal(t, gen+1, store.rateLimitResetGens["r"])
+}
+
+// TestSeedConfigPublishesUsageWithBaseline reads under the baseline locks, the
+// way a dump or delta capture does, while a limit is seeded. It must see no
+// entry, or the entry with a baseline equal to its usage, never the usage
+// without its baseline. Once seeding finishes, both entries must be there.
+func TestSeedConfigPublishesUsageWithBaseline(t *testing.T) {
+	ctx := context.Background()
+	for range 200 {
+		store := newBaselineStore(t)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			store.SeedBudgetConfig(ctx, "b", &configstoreTables.TableBudget{ID: "b", CurrentUsage: 100})
+			store.SeedRateLimitConfig(ctx, "r", &configstoreTables.TableRateLimit{ID: "r", TokenCurrentUsage: 200, RequestCurrentUsage: 20})
+		}()
+		for finished := false; !finished; {
+			select {
+			case <-done:
+				finished = true
+			default:
+			}
+			// Copy under the locks and assert after releasing them, so a failed
+			// assertion never leaves the seed blocked on a held lock.
+			store.LastDBUsagesBudgetsMu.RLock()
+			budget := store.LoadBudget(ctx, "b")
+			lastDB, held := store.LastDBUsagesBudgets["b"]
+			store.LastDBUsagesBudgetsMu.RUnlock()
+			store.LastDBUsagesRateLimitsRequestsMu.RLock()
+			store.LastDBUsagesRateLimitsTokensMu.RLock()
+			rate := store.LoadRateLimit(ctx, "r")
+			tokens, heldTokens := store.LastDBUsagesTokensRateLimits["r"]
+			requests, heldRequests := store.LastDBUsagesRequestsRateLimits["r"]
+			store.LastDBUsagesRateLimitsTokensMu.RUnlock()
+			store.LastDBUsagesRateLimitsRequestsMu.RUnlock()
+
+			if finished {
+				require.NotNil(t, budget, "the seed did not publish the budget")
+				require.NotNil(t, rate, "the seed did not publish the rate limit")
+				require.Equal(t, 100.0, budget.CurrentUsage)
+				require.Equal(t, int64(200), rate.TokenCurrentUsage)
+				require.Equal(t, int64(20), rate.RequestCurrentUsage)
+			}
+			if budget == nil {
+				require.False(t, held, "a capture saw a budget baseline without its budget")
+			} else {
+				require.True(t, held, "a capture saw seeded budget usage without its baseline")
+				require.Equal(t, budget.CurrentUsage, lastDB)
+			}
+			if rate == nil {
+				require.False(t, heldTokens || heldRequests, "a capture saw rate-limit baselines without the rate limit")
+			} else {
+				require.True(t, heldTokens && heldRequests, "a capture saw seeded rate-limit usage without its baselines")
+				require.Equal(t, rate.TokenCurrentUsage, tokens)
+				require.Equal(t, rate.RequestCurrentUsage, requests)
+			}
+		}
+	}
+}
+
+// TestSeedConfigKeepsHeldUsageAndBaseline pins seeding over a limit the store
+// already holds: like an upsert, the held usage and last resets stay, and so do
+// the held baselines, because the held usage may carry charges not yet
+// persisted that count from them. The config fields still take effect.
+func TestSeedConfigKeepsHeldUsageAndBaseline(t *testing.T) {
+	ctx := context.Background()
+	store := newBaselineStore(t)
+	budget := buildBudgetWithUsage("b", 1000, 100, "1d")
+	store.SeedBudgetConfig(ctx, budget.ID, budget)
+	require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, 7))
+	reloaded := *budget
+	reloaded.MaxLimit = 2000
+	reloaded.CurrentUsage = 300
+	reloaded.LastReset = budget.LastReset.Add(time.Hour)
+	store.SeedBudgetConfig(ctx, budget.ID, &reloaded)
+
+	held := store.LoadBudget(ctx, budget.ID)
+	require.Equal(t, 107.0, held.CurrentUsage)
+	require.Equal(t, 2000.0, held.MaxLimit)
+	require.Equal(t, budget.LastReset, held.LastReset)
+	require.Equal(t, 100.0, store.LastDBUsagesBudgets[budget.ID], "the unsaved $7 must still count as a local delta")
+
+	rate := buildRateLimitWithUsage("r", 1_000_000, 200, 1_000, 20)
+	store.SeedRateLimitConfig(ctx, rate.ID, rate)
+	require.NoError(t, store.BumpRateLimitUsageBy(ctx, rate.ID, 11, 3))
+	reloadedRate := *rate
+	reloadedRate.TokenCurrentUsage, reloadedRate.RequestCurrentUsage = 900, 90
+	tokenMaxLimit, requestMaxLimit := int64(2_000_000), int64(2_000)
+	reloadedRate.TokenMaxLimit, reloadedRate.RequestMaxLimit = &tokenMaxLimit, &requestMaxLimit
+	reloadedRate.TokenLastReset = rate.TokenLastReset.Add(time.Hour)
+	reloadedRate.RequestLastReset = rate.RequestLastReset.Add(time.Hour)
+	store.SeedRateLimitConfig(ctx, rate.ID, &reloadedRate)
+
+	heldRate := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, int64(211), heldRate.TokenCurrentUsage)
+	require.Equal(t, int64(23), heldRate.RequestCurrentUsage)
+	require.Equal(t, tokenMaxLimit, *heldRate.TokenMaxLimit)
+	require.Equal(t, requestMaxLimit, *heldRate.RequestMaxLimit)
+	require.Equal(t, rate.TokenLastReset, heldRate.TokenLastReset)
+	require.Equal(t, rate.RequestLastReset, heldRate.RequestLastReset)
+	require.Equal(t, int64(200), store.LastDBUsagesTokensRateLimits[rate.ID])
+	require.Equal(t, int64(20), store.LastDBUsagesRequestsRateLimits[rate.ID])
+}
+
+// TestDeleteConfigRacingSeedKeepsPairs races deleting a limit against seeding it
+// again. Whichever lands last decides the outcome, but the entry and its
+// baselines always go together: a delete that removed the entry before taking
+// the baseline lock could wipe the baseline of the entry seeded in between. The
+// replacement seed carries its own values, so a surviving entry shows which
+// operation produced it: a seed over the held entry keeps the held usage, so
+// only a seed after the delete leaves the replacement.
+func TestDeleteConfigRacingSeedKeepsPairs(t *testing.T) {
+	ctx := context.Background()
+	seed := func(store *LocalGovernanceStore) {
+		store.SeedBudgetConfig(ctx, "b", &configstoreTables.TableBudget{ID: "b", CurrentUsage: 100})
+		store.SeedRateLimitConfig(ctx, "r", &configstoreTables.TableRateLimit{ID: "r", TokenCurrentUsage: 200, RequestCurrentUsage: 20})
+	}
+	reseed := func(store *LocalGovernanceStore) {
+		store.SeedBudgetConfig(ctx, "b", &configstoreTables.TableBudget{ID: "b", CurrentUsage: 300})
+		store.SeedRateLimitConfig(ctx, "r", &configstoreTables.TableRateLimit{ID: "r", TokenCurrentUsage: 600, RequestCurrentUsage: 60})
+	}
+	remove := func(store *LocalGovernanceStore) {
+		store.DeleteBudget(ctx, "b")
+		store.DeleteRateLimit(ctx, "r")
+	}
+
+	// In order: the delete leaves nothing, and the seed after it the replacement.
+	store := newBaselineStore(t)
+	seed(store)
+	remove(store)
+	require.Nil(t, store.LoadBudget(ctx, "b"))
+	require.Nil(t, store.LoadRateLimit(ctx, "r"))
+	require.NotContains(t, store.LastDBUsagesBudgets, "b")
+	require.NotContains(t, store.LastDBUsagesTokensRateLimits, "r")
+	require.NotContains(t, store.LastDBUsagesRequestsRateLimits, "r")
+	reseed(store)
+	budget, rate := store.LoadBudget(ctx, "b"), store.LoadRateLimit(ctx, "r")
+	require.NotNil(t, budget, "the seed after the delete did not recreate the budget")
+	require.NotNil(t, rate, "the seed after the delete did not recreate the rate limit")
+	require.Equal(t, 300.0, budget.CurrentUsage)
+	require.Equal(t, 300.0, store.LastDBUsagesBudgets["b"])
+	require.Equal(t, int64(600), rate.TokenCurrentUsage)
+	require.Equal(t, int64(60), rate.RequestCurrentUsage)
+	require.Equal(t, int64(600), store.LastDBUsagesTokensRateLimits["r"])
+	require.Equal(t, int64(60), store.LastDBUsagesRequestsRateLimits["r"])
+
+	for range 2000 {
+		store := newBaselineStore(t)
+		seed(store)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			remove(store)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			reseed(store)
+		}()
+		close(start)
+		wg.Wait()
+
+		lastDB, held := store.LastDBUsagesBudgets["b"]
+		if budget := store.LoadBudget(ctx, "b"); budget != nil {
+			require.Equal(t, 300.0, budget.CurrentUsage, "the budget survived the delete")
+			require.True(t, held, "the seeded budget lost its baseline to the delete")
+			require.Equal(t, budget.CurrentUsage, lastDB)
+		} else {
+			require.False(t, held, "the deleted budget kept its baseline")
+		}
+		tokens, heldTokens := store.LastDBUsagesTokensRateLimits["r"]
+		requests, heldRequests := store.LastDBUsagesRequestsRateLimits["r"]
+		if rate := store.LoadRateLimit(ctx, "r"); rate != nil {
+			require.Equal(t, int64(600), rate.TokenCurrentUsage, "the rate limit survived the delete")
+			require.Equal(t, int64(60), rate.RequestCurrentUsage, "the rate limit survived the delete")
+			require.True(t, heldTokens && heldRequests, "the seeded rate limit lost its baselines to the delete")
+			require.Equal(t, rate.TokenCurrentUsage, tokens)
+			require.Equal(t, rate.RequestCurrentUsage, requests)
+		} else {
+			require.False(t, heldTokens || heldRequests, "the deleted rate limit kept its baselines")
+		}
+	}
 }

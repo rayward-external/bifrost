@@ -504,6 +504,8 @@ func routeIdentity(route RelayRouteConfig) string {
 	return string(key)
 }
 
+// Validate checks a relay's routes, usage mapping, streaming paths, async jobs and forced body
+// fields; ValidateEndpoint adds the endpoint-level fields.
 func (c *RelayConfig) Validate() error {
 	if c == nil {
 		return nil
@@ -951,14 +953,14 @@ func (c *RelayConfig) Clone() *RelayConfig {
 }
 
 // relayBodyOverrideSegmentRe is one plain object key; path syntax is refused so a path names one field.
-var relayBodyOverrideSegmentRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+var relayBodyOverrideSegmentRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // RelayBodyOverridePath splits a body override path into its object keys.
 func RelayBodyOverridePath(path string) ([]string, error) {
 	segments := strings.Split(path, ".")
 	for _, segment := range segments {
 		if !relayBodyOverrideSegmentRe.MatchString(segment) {
-			return nil, fmt.Errorf("%q is not a path of object keys: each dot-separated key must be 1-128 letters, digits, '_' or '-'", path)
+			return nil, fmt.Errorf("%q is not a path of object keys: each dot-separated key must be letters, digits, '_' or '-'", path)
 		}
 		if strings.Trim(segment, "0123456789") == "" || segment == "-1" {
 			// sjson reads an all-digit segment as an array index, and -1 as an array append.

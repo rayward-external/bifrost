@@ -358,8 +358,8 @@ func (m *Manager) Names() []string {
 	return names
 }
 
-// JobLookup reports whether relayName started a job, open or settled, on the route routeKey names,
-// with this upstream id.
+// JobLookup reports whether relayName started a job, open or settled, read by the status check
+// routeKey names, with this upstream id.
 // A lookup that could not answer (the store failed) returns its error, never a plain false, so a
 // real status check is not charged or refused over a blip.
 type JobLookup func(ctx context.Context, relayName, routeKey, jobID string) (bool, error)
@@ -484,6 +484,14 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	// A created body keeps a JSON content type the caller or operator already set (application/x-amz-json-1.1).
 	// Set before the status check test, so it sees the content type that is sent with the body.
 	if created && !isJSONBodyType(contentType) {
+		// The relay's own Content-Type wins on the wire, so a JSON body created under a non-JSON one
+		// would reach the API mislabelled; it is refused rather than sent.
+		if relayType, set := e.operatorHeaders["content-type"]; set {
+			if !p.allowed {
+				return nil, noRoute()
+			}
+			return nil, statusError(http.StatusBadRequest, fmt.Sprintf("this route creates a JSON body for its forced fields, but the relay's extra headers set Content-Type to %q", relayType))
+		}
 		in.Headers = withJSONContentType(in.Headers)
 		contentType = "application/json"
 	}
@@ -773,8 +781,11 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		// A status check never starts a job, even when its reply carries an id at the job's id path.
 		if statusJobID == "" {
 			job, err := p.route.jobHandle(reply.contentType, reply.body)
-			if err != nil && m.logger != nil {
-				m.logger.Warn("relay %s: %v; the call is billed without settling a job", req.RelayName, err)
+			if err != nil {
+				resp.Usage.JobUntracked = err.Error()
+				if m.logger != nil {
+					m.logger.Warn("relay %s: %v; the call is billed without settling a job", req.RelayName, err)
+				}
 			}
 			resp.Usage.Job = job
 		}

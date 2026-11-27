@@ -679,7 +679,7 @@ func TestConvertResponsesToolsToGemini_FunctionWithoutSchema(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tools, err := convertResponsesToolsToGemini([]schemas.ResponsesTool{tt.tool}, false, schemas.Gemini, "gemini-2.5-pro")
+			tools, err := convertResponsesToolsToGemini([]schemas.ResponsesTool{tt.tool}, false, schemas.Gemini, "gemini-2.5-pro", false)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -798,7 +798,7 @@ func TestConvertResponsesToolsToGeminiCodeExecution(t *testing.T) {
 				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
 				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{},
 			},
-		}, false, schemas.Gemini, "gemini-2.5-flash")
+		}, false, schemas.Gemini, "gemini-2.5-flash", false)
 		if err != nil {
 			t.Fatalf("convertResponsesToolsToGemini error: %v", err)
 		}
@@ -820,7 +820,7 @@ func TestConvertResponsesToolsToGeminiCodeExecution(t *testing.T) {
 				Name:                  schemas.Ptr("get_weather"),
 				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
 			},
-		}, false, schemas.Gemini, "gemini-2.5-flash")
+		}, false, schemas.Gemini, "gemini-2.5-flash", false)
 		if err != nil {
 			t.Fatalf("convertResponsesToolsToGemini error: %v", err)
 		}
@@ -2746,5 +2746,54 @@ func BenchmarkConvertGeminiContentsToResponsesMessages_FunctionCalls(b *testing.
 				_ = convertGeminiContentsToResponsesMessages(contents)
 			}
 		})
+	}
+}
+
+// Codex multi-agent v2 injects subagent replies as roleless agent_message items, and its
+// function_call items carry no role either; Vertex rejects a content whose role is empty.
+func TestConvertResponsesMessagesToGeminiContents_RolelessItemsGetRole(t *testing.T) {
+	messages := []schemas.ResponsesMessage{
+		{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("spawn a subagent")},
+		},
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    schemas.Ptr("call_1"),
+				Name:      schemas.Ptr("spawn_agent"),
+				Arguments: schemas.Ptr(`{}`),
+			},
+		},
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call_1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("agent started")},
+			},
+		},
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageType("agent_message")),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("found 3 TODOs")},
+			}},
+		},
+	}
+
+	contents, _, err := convertResponsesMessagesToGeminiContents(messages, "gemini-2.5-pro", schemas.Vertex)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantRoles := []string{"user", "model", "user", "user"}
+	if len(contents) != len(wantRoles) {
+		t.Fatalf("got %d contents, want %d", len(contents), len(wantRoles))
+	}
+	for i, c := range contents {
+		if c.Role != wantRoles[i] {
+			t.Errorf("contents[%d].Role = %q, want %q", i, c.Role, wantRoles[i])
+		}
+	}
+	if got := contents[3].Parts[0].Text; got != "found 3 TODOs" {
+		t.Errorf("agent_message text = %q, want %q", got, "found 3 TODOs")
 	}
 }

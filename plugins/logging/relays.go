@@ -262,7 +262,8 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 	if resp != nil && resp.Usage != nil && resp.Usage.Job != nil {
 		// The reply names the relay that started the job; the entry was found by the caller's
 		// x-request-id, which another relay's call in flight may share.
-		p.recordEndpointJob(entry, clampString(resp.RelayName, 64), resp.Usage.Job)
+		dims, _ := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
+		p.recordEndpointJob(entry, clampString(resp.RelayName, 64), resp.Usage.Job, dims)
 	}
 	// Only a pending entry knows when the check was sent, which tells which run of a reused job id it
 	// asked about; an evicted or unseen one is left to the sweeper.
@@ -371,6 +372,10 @@ func relayLogUpdateColumns(entry *logstore.RelayLog, dropRequestBody bool) map[s
 		"error_details":             entry.ErrorDetails,
 		"plugin_logs":               entry.PluginLogs,
 		"content_hidden":            entry.ContentHidden,
+	}
+	// A start call whose job could not be tracked says why in job_debug, so a late finish keeps it.
+	if entry.JobDebug != "" {
+		updates["job_debug"] = entry.JobDebug
 	}
 	if dropRequestBody {
 		updates["request_body"] = nil
@@ -588,6 +593,11 @@ func applyEndpointUsage(entry *logstore.RelayLog, usage *schemas.RelayUsage) {
 		entry.JobID = schemas.Ptr(usage.Job.ID)
 		entry.JobStatus = schemas.Ptr("started")
 	}
+	// A job route whose reply named no usable job id: only the fee is charged, so the row says so.
+	if usage.JobUntracked != "" {
+		entry.JobStatus = schemas.Ptr(logstore.RelayJobOutcomeUntracked)
+		entry.JobDebugParsed = &logstore.RelayJobDebug{Outcome: logstore.RelayJobOutcomeUntracked, LastError: usage.JobUntracked}
+	}
 }
 
 // accountRelayStatusCheck settles a relay job from a caller's status check that found it finished,
@@ -641,7 +651,7 @@ func (p *LoggerPlugin) accountRelayStatusCheck(entry *logstore.RelayLog, resp *s
 		ClaimedBy:     p.batchRunnerID("logging"),
 		// The body is copied: the reply goes back to the caller while Bifrost polls the job itself.
 		Payload: jobaccounting.RelayStatusCheckPayload{StatusCode: resp.StatusCode, ContentType: check.ContentType, Body: bytes.Clone(resp.Body),
-			RequestID: entry.ID, SentAt: entry.Timestamp, Matches: check.Matches, Logger: p.logger},
+			RequestID: entry.ID, SentAt: entry.Timestamp, Matches: check.Matches, Logger: p.logger, Emitter: p},
 	}
 	relayName := entry.RelayName
 	// Off the caller's path: settling means Bifrost's own poll of the upstream, which the caller
@@ -651,7 +661,8 @@ func (p *LoggerPlugin) accountRelayStatusCheck(entry *logstore.RelayLog, resp *s
 		ctx, cancel := context.WithTimeout(p.ctx, jobAccountingTimeout)
 		defer cancel()
 		outcome, err := jobaccounting.AccountRelayJob(ctx, p.batchStore, p.store, reporter, poller, req)
-		if err != nil {
+		// A job settled moments after its start waits for the start call's row; the sweeper takes it.
+		if err != nil && !errors.Is(err, jobaccounting.ErrRelayStartRowPending) {
 			p.logger.Warn("failed to account relay job from a status check relay=%s job_id=%s: %v", relayName, check.JobID, err)
 			return
 		}
@@ -666,7 +677,7 @@ func (p *LoggerPlugin) accountRelayStatusCheck(entry *logstore.RelayLog, resp *s
 // job runs or after it finished) records nothing new and is billed once. Only a job configured with
 // reused_id_is_new_job treats an id returned after settlement as new work: it takes the next
 // generation slot, so retries of that job dedupe against the same slot.
-func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, relayName string, job *schemas.RelayJobHandle) {
+func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, relayName string, job *schemas.RelayJobHandle, dims map[string]string) {
 	if p.batchStore == nil || job == nil || job.ID == "" {
 		return
 	}
@@ -702,21 +713,22 @@ func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, relayName str
 		}
 	}
 	next := time.Now().UTC().Add(time.Duration(max(job.IntervalSeconds, 1)) * time.Second)
-	params := job.Params
+	// Only the start call's x-bf-dim-* values travel with the job, for its settlement's metrics
+	// labels; its names come from the start call's own row when it settles, as for an LLM job.
+	params := jobaccounting.WithRelayJobDimensions(job.Params, dims)
 	row := &tables.TableProviderJob{
-		ID:             id,
-		Kind:           kind,
-		Provider:       relayName,
-		JobID:          scoped,
-		Endpoint:       entry.RoutePath,
-		Params:         &params,
-		ProviderStatus: "started",
-		NextCheckAt:    &next,
-		VirtualKeyID:   entry.VirtualKeyID,
-		UserID:         entry.UserID,
-		TeamID:         entry.TeamID,
-		CustomerID:     entry.CustomerID,
-		SourceLogID:    schemas.Ptr(entry.ID),
+		ID:           id,
+		Kind:         kind,
+		Provider:     relayName,
+		JobID:        scoped,
+		Endpoint:     entry.RoutePath,
+		Params:       &params,
+		NextCheckAt:  &next,
+		VirtualKeyID: entry.VirtualKeyID,
+		UserID:       entry.UserID,
+		TeamID:       entry.TeamID,
+		CustomerID:   entry.CustomerID,
+		SourceLogID:  schemas.Ptr(entry.ID),
 	}
 	if len(entry.BudgetIDsParsed) > 0 {
 		if data, err := sonic.MarshalString(entry.BudgetIDsParsed); err == nil {
@@ -779,4 +791,94 @@ func relayMatchedHeaders(req *schemas.BifrostRelayRequest) map[string]string {
 	}
 	// Values are stored whole, as LLM rows store their logging headers.
 	return schemas.RedactSensitiveHeaders(kept)
+}
+
+// EmitRelaySettlement reports a settled relay job's row as a one-span trace, so the trace-fed
+// connectors (OTel, Prometheus) count the job's charge in relay cost, as emitSettlementSpan does for
+// a batch or video row. The span is marked as a settlement, so it adds cost only and is never counted
+// as a relay call. It fires once per row, after the row is saved, so retries cannot double-count.
+func (p *LoggerPlugin) EmitRelaySettlement(ctx context.Context, entry *logstore.RelayLog, dims map[string]string) {
+	if entry == nil || entry.Cost == nil || *entry.Cost <= 0 {
+		return
+	}
+	p.mu.Lock()
+	tracer := p.settlementTracer
+	p.mu.Unlock()
+	if tracer == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	traceID := tracer.CreateTrace("")
+	if traceID == "" {
+		return
+	}
+	// The start call's x-bf-dim-* values, so the cost lands under the same custom labels as the call.
+	if len(dims) > 0 {
+		tracer.MergeTraceDimensions(traceID, dims)
+	}
+	// Shaped as a relay call's trace is: a root span with the relay span under it, as the relay
+	// readers look at the spans below the root. The root carries no cost, so nothing counts twice.
+	rootCtx := context.WithValue(ctx, schemas.BifrostContextKeyTraceID, traceID)
+	_, root := tracer.StartSpan(rootCtx, "relay.job.settlement", schemas.SpanKindUnspecified)
+	rootSpan := tracer.SpanFromHandle(root)
+	if root == nil || rootSpan == nil {
+		tracer.CompleteAndFlushTrace(traceID)
+		return
+	}
+	spanCtx := context.WithValue(rootCtx, schemas.BifrostContextKeySpanID, rootSpan.SpanID)
+	_, handle := tracer.StartSpan(spanCtx, "relay."+entry.RelayName, schemas.SpanKindRelay)
+	if handle == nil {
+		tracer.EndSpan(root, schemas.SpanStatusOk, "")
+		tracer.CompleteAndFlushTrace(traceID)
+		return
+	}
+	setStr := func(key, val string) {
+		if val != "" {
+			tracer.SetAttribute(handle, key, val)
+		}
+	}
+	setStrPtr := func(key string, val *string) {
+		if val != nil {
+			setStr(key, *val)
+		}
+	}
+	tracer.SetAttribute(handle, schemas.AttrBifrostRelayJobSettlement, true)
+	tracer.SetAttribute(handle, schemas.AttrBifrostRelayCost, *entry.Cost)
+	tracer.SetAttribute(handle, schemas.AttrBifrostRelayBillable, true)
+	tracer.SetAttribute(handle, schemas.AttrBifrostRelayCounted, true)
+	setStr(schemas.AttrBifrostRelayName, entry.RelayName)
+	setStr(schemas.AttrBifrostRelayRoutePath, entry.RoutePath)
+	setStrPtr(schemas.AttrBifrostRelayJobID, entry.JobID)
+	// The same SpanEnrichment a live relay or LLM span carries, read from the row since there is no
+	// request context at settlement time, so the settled cost filters like the relay's live calls.
+	relayRowEnrichment(entry).ApplyToSpan(tracer.SpanFromHandle(handle))
+	tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+	tracer.EndSpan(root, schemas.SpanStatusOk, "")
+	tracer.CompleteAndFlushTrace(traceID)
+}
+
+// relayRowEnrichment is the governance and identity a Relay Logs row recorded, as a SpanEnrichment.
+func relayRowEnrichment(entry *logstore.RelayLog) *schemas.SpanEnrichment {
+	str := func(v *string) string {
+		if v == nil {
+			return ""
+		}
+		return *v
+	}
+	return &schemas.SpanEnrichment{
+		VirtualKeyID: str(entry.VirtualKeyID), VirtualKeyName: str(entry.VirtualKeyName),
+		TeamID: str(entry.TeamID), TeamName: str(entry.TeamName),
+		CustomerID: str(entry.CustomerID), CustomerName: str(entry.CustomerName),
+		BusinessUnitID: str(entry.BusinessUnitID), BusinessUnitName: str(entry.BusinessUnitName),
+		ProjectID: str(entry.ProjectID), ProjectName: str(entry.ProjectName),
+		UserID: str(entry.UserID), UserName: str(entry.UserName), UserEmail: str(entry.UserEmail),
+		// The built-in label from the user agent, as the live relay span reads it; the row's App can
+		// carry a custom mapping the live span never sees.
+		App:     schemas.DetectAppFromUserAgent(str(entry.UserAgent)),
+		TeamIDs: entry.TeamIDsParsed, TeamNames: entry.TeamNamesParsed,
+		CustomerIDs: entry.CustomerIDsParsed, CustomerNames: entry.CustomerNamesParsed,
+		BusinessUnitIDs: entry.BusinessUnitIDsParsed, BusinessUnitNames: entry.BusinessUnitNamesParsed,
+	}
 }

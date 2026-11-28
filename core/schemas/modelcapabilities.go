@@ -68,6 +68,7 @@ type ModelCapabilities struct {
 	SupportsPromptCacheBreakpoints  *bool `json:"supports_prompt_cache_breakpoints,omitempty"` // Responses input_text accepts prompt_cache_breakpoint (Claude via OpenRouter, gpt-5.6+)
 	SupportsAsyncTools              *bool `json:"supports_async_tools,omitempty"`              // accepts OpenAI async on tools and replayed call items
 	SupportsCustomTools             *bool `json:"supports_custom_tools,omitempty"`             // accepts OpenAI custom (freeform) tools; false ⇒ rewritten as function tools
+	SupportsRootSchemaComposition   *bool `json:"supports_root_schema_composition,omitempty"`  // accepts a root oneOf/anyOf/allOf in function parameters; false ⇒ flattened
 	SupportsDecisions               *bool `json:"supports_decisions,omitempty"`                // served on the provider's native decisions endpoint (OpenAI POST /v1/decisions); absent ⇒ DefaultSupportsDecisions
 
 	// Model drops trailing whitespace from the text ending a user turn but keeps it mid-turn (Claude 5); absent ⇒ name detection.
@@ -400,16 +401,15 @@ func (a BedrockAPI) IsValid() bool {
 }
 
 // BedrockReasoningShape names the reasoning content variant a model uses on
-// Bedrock Converse. The two are mutually exclusive and not interchangeable:
-// replaying the wrong one is rejected (400 on Anthropic, an opaque 500 on
-// OpenAI and xAI).
+// Bedrock Converse. Anthropic rejects the redacted variant with a 400; xAI
+// models may also answer with signed reasoningText, which replays verbatim.
 type BedrockReasoningShape string
 
 const (
 	// reasoningContent.reasoningText{text,signature} — Anthropic, DeepSeek.
 	BedrockReasoningShapeText BedrockReasoningShape = "reasoning_text"
 
-	// reasoningContent.redactedContent, one opaque blob — OpenAI, xAI.
+	// reasoningContent.redactedContent, one opaque blob — OpenAI, xAI (plus xAI's signed reasoningText).
 	BedrockReasoningShapeRedacted BedrockReasoningShape = "redacted_content"
 )
 

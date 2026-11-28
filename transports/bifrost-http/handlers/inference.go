@@ -155,10 +155,12 @@ var chatParamsKnownFields = map[string]bool{
 
 var responsesParamsKnownFields = map[string]bool{
 	"model":                  true,
+	"access_programs":        true,
 	"input":                  true,
 	"fallbacks":              true,
 	"stream":                 true,
 	"background":             true,
+	"background_options":     true,
 	"conversation":           true,
 	"include":                true,
 	"instructions":           true,

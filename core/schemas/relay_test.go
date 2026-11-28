@@ -460,7 +460,9 @@ func TestRelayRedactedMasksLiteralCredentialHeaders(t *testing.T) {
 func TestRelayBodyOverrideSchemasMatchValidator(t *testing.T) {
 	cases := map[string]bool{
 		strings.Repeat("a", 128) + ".depth": true,
-		strings.Repeat("a", 129) + ".depth": false,
+		strings.Repeat("a", 500) + ".depth": true, // no length limit on a key
+		"options..depth":                    false,
+		"":                                  false,
 		"options.-1":                        false,
 		"-1.options":                        false,
 		"options.-1.depth":                  false,
@@ -526,7 +528,7 @@ func bodyOverrideNameRules(node any) []bodyOverrideNameRule {
 					}
 					if p, ok := entry["pattern"].(string); ok {
 						rule.match = append(rule.match, regexp.MustCompile(p))
-						limited = limited || strings.Contains(p, "{1,128}")
+						limited = limited || strings.Contains(p, "[A-Za-z0-9_-]+")
 					}
 					if not, ok := entry["not"].(map[string]any); ok {
 						if p, ok := not["pattern"].(string); ok {
@@ -635,4 +637,17 @@ func TestRelayConfigRepeatedRoute(t *testing.T) {
 		{Method: "GET", Path: "/", Headers: map[string]string{"X-Mode": "alpha\u00a0"}},
 	}}
 	require.NoError(t, spaced.RepeatedRoute(), "values are compared as written, as the gateway matches them")
+}
+
+// The same cases as isValidRelayGlobSegment's in ui/lib/types/schemas.relay.test.ts, so the form
+// refuses on the field exactly what the gateway refuses on save.
+func TestRelayRouteGlobSegmentsMatchTheUI(t *testing.T) {
+	valid := []string{"search", "*", "v?", "[a-z]*", "[^x]", `a\*b`, `[\]]`, "jobs-*", ""}
+	invalid := []string{"[b", "[]", "[]a]", "[a-]", "[-a]", "[a", `a\`, "[^]", `[a-\`, `x[\`}
+	for _, segment := range valid {
+		assert.NoError(t, validateEndpointRouteGlob("/v1/"+segment), segment)
+	}
+	for _, segment := range invalid {
+		assert.Error(t, validateEndpointRouteGlob("/v1/"+segment), segment)
+	}
 }

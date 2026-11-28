@@ -618,6 +618,9 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"widen_batch_jobs_provider_status_and_endpoint"}, run: migrationWidenProviderJobColumns},
 	{IDs: []string{"add_mcp_client_client_credentials_json_column"}, run: migrationAddMCPClientClientCredentialsJSONColumn},
 	{IDs: []string{"add_mcp_client_aws_sigv4_json_column"}, run: migrationAddMCPClientAWSSigV4JSONColumn},
+	{IDs: []string{"add_mcp_oauth_flow_origin_column"}, run: migrationAddMCPOauthFlowOriginColumn},
+	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
+	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1234,6 +1237,59 @@ func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger sch
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableNotification{})
+		},
+	})
+}
+
+// notificationSubjectResolutionColumns let a producer tag a notification with
+// the thing it is about and later mark it resolved once that thing is handled.
+var notificationSubjectResolutionColumns = []string{"subject_type", "subject_id", "resolved_at", "resolution"}
+
+func migrationAddNotificationSubjectResolutionColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_notification_subject_resolution_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range notificationSubjectResolutionColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableNotification{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			for _, column := range notificationSubjectResolutionColumns {
+				if err := dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableNotification{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
+}
+
+// migrationAddNotificationSubjectIndex builds the subject lookup index outside a
+// transaction, so postgres can build it concurrently.
+func migrationAddNotificationSubjectIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_notification_subject_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	const name = "idx_notifications_subject"
+	return RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return ensureIndexConcurrently(tx.WithContext(ctx), "notifications", name, "subject_type, subject_id", false)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropIndexConcurrently(tx.WithContext(ctx), "notifications", name)
 		},
 	})
 }
@@ -18071,6 +18127,32 @@ func migrationAddMCPClientAWSSigV4JSONColumn(ctx context.Context, db *gorm.DB, l
 				return fmt.Errorf("failed to drop aws_sigv4_json column: %w", err)
 			}
 			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPOauthFlowOriginColumn adds mcp_oauth_flows.origin, the dashboard
+// page a per-user sign-in started on, which the OAuth callback returns a
+// signed-in caller to. Existing flows get "" and return to the default page.
+func migrationAddMCPOauthFlowOriginColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_oauth_flow_origin_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPOauthFlow{}, "origin")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableMCPOauthFlow{}, "origin")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

@@ -1226,6 +1226,17 @@ func TestToOpenAIChatRequest_PromptCacheOptions(t *testing.T) {
 		t.Fatalf("unexpected options: %#v", openai.ChatParameters.PromptCacheOptions)
 	}
 
+	// prewarm and comparison_response_id ride along untouched.
+	warm := mkReq(schemas.OpenAI, "gpt-6.2-sol")
+	warm.Params.PromptCacheOptions = &schemas.PromptCacheOptions{Prewarm: new(true), ComparisonResponseID: new("resp_1")}
+	warmBody, err := sonic.MarshalString(ToOpenAIChatRequest(ctx, warm))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.Get(warmBody, "prompt_cache_options").Raw; got != `{"prewarm":true,"comparison_response_id":"resp_1"}` {
+		t.Fatalf("prompt_cache_options = %s", got)
+	}
+
 	// A non-OpenAI OpenAI-compatible provider strips it.
 	fw := ToOpenAIChatRequest(ctx, mkReq(schemas.Fireworks, "accounts/fireworks/models/deepseek-v3p2"))
 	if fw == nil || fw.ChatParameters.PromptCacheOptions != nil {
@@ -3767,4 +3778,162 @@ func TestOpenAIChatRequest_MessageLevelCacheControlIngress(t *testing.T) {
 	body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
 	require.NoError(t, err)
 	require.Equal(t, 3, strings.Count(string(body), `"cache_control"`), "all three breakpoints must reach OpenRouter: %s", body)
+}
+
+// Issue #5274: an assistant turn replayed with reasoning_details (signed thinking and
+// redacted blocks) must reach OpenRouter intact, or Claude re-reasons every tool-call turn.
+// Every other OpenAI-compatible target keeps reasoning_details off the wire.
+func TestToOpenAIChatRequest_OpenRouterReplaysReasoningDetails(t *testing.T) {
+	raw := []byte(`{"model":"anthropic/claude-opus-5.5","messages":[
+		{"role":"user","content":"weather in paris?"},
+		{"role":"assistant","content":"","reasoning_details":[
+			{"index":0,"type":"reasoning.text","text":"need the tool","signature":"sig-1"},
+			{"index":1,"type":"reasoning.encrypted","data":"REDACTED"}],
+		 "tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},
+		{"role":"tool","tool_call_id":"toolu_1","content":"22C"}]}`)
+	var inbound OpenAIChatRequest
+	require.NoError(t, sonic.Unmarshal(raw, &inbound))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := inbound.ToBifrostChatRequest(ctx)
+
+	bifrostReq.Provider = schemas.OpenRouter
+	body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
+	require.NoError(t, err)
+	details := gjson.GetBytes(body, "messages.1.reasoning_details")
+	require.Len(t, details.Array(), 2, string(body))
+	require.Equal(t, "reasoning.text", details.Get("0.type").String())
+	require.Equal(t, "need the tool", details.Get("0.text").String())
+	require.Equal(t, "sig-1", details.Get("0.signature").String())
+	require.Equal(t, "reasoning.encrypted", details.Get("1.type").String())
+	require.Equal(t, "REDACTED", details.Get("1.data").String())
+	require.Equal(t, "toolu_1", gjson.GetBytes(body, "messages.1.tool_calls.0.id").String())
+
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, schemas.Mistral, schemas.Groq, schemas.DeepSeek} {
+		bifrostReq.Provider = provider
+		body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
+		require.NoError(t, err)
+		require.False(t, gjson.GetBytes(body, "messages.1.reasoning_details").Exists(), "%s: %s", provider, body)
+	}
+}
+
+// A plain reasoning string replayed on /v1/chat/completions is synthesized into an unsigned
+// reasoning.text detail. OpenRouter must keep getting only reasoning_content for it: an unsigned
+// detail can become an unsigned Claude thinking block, which Anthropic rejects with no strip-retry.
+func TestToOpenAIChatRequest_OpenRouterKeepsUnsignedReasoningAsContent(t *testing.T) {
+	var messages []schemas.ChatMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"role":"user","content":"weather in paris?"},
+		{"role":"assistant","content":"","reasoning":"need the tool",
+		 "tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"toolu_1","content":"22C"}]`), &messages))
+	require.Len(t, messages[1].ChatAssistantMessage.ReasoningDetails, 1, "precondition: unsigned detail synthesized")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenRouter, Model: "anthropic/claude-opus-5.5", Input: messages,
+	}))
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(body, "messages.1.reasoning_details").Exists(), string(body))
+	require.Equal(t, "need the tool", gjson.GetBytes(body, "messages.1.reasoning_content").String(), string(body))
+}
+
+// rootUnionParams is a tagged union at the root of a tool's parameters: two object
+// alternatives sharing a const discriminator, as an MCP server may declare it.
+func rootUnionParams(t *testing.T) *schemas.ToolFunctionParameters {
+	t.Helper()
+	var params schemas.ToolFunctionParameters
+	require.NoError(t, schemas.Unmarshal([]byte(`{"type":"object","oneOf":[
+		{"type":"object","properties":{"kind":{"type":"string","const":"sales"},"region":{"type":"string"}},"required":["kind"]},
+		{"type":"object","properties":{"kind":{"type":"string","const":"inventory"},"warehouse":{"type":"string"}},"required":["kind"]}
+	]}`), &params))
+	return &params
+}
+
+// requireRootUnion asserts params kept the declared root oneOf, or was flattened into one object.
+func requireRootUnion(t *testing.T, params *schemas.ToolFunctionParameters, kept bool) {
+	t.Helper()
+	require.NotNil(t, params)
+	if kept {
+		require.Len(t, params.OneOf, 2, "the union must reach the model as declared")
+		return
+	}
+	require.Nil(t, params.OneOf, "the root union must be flattened")
+	require.NotNil(t, params.Properties)
+	require.Equal(t, []string{"kind", "region", "warehouse"}, params.Properties.Keys())
+	require.Equal(t, []string{"kind"}, params.Required)
+}
+
+// stubRootSchemaCompositionDatasheet gives gpt-4o-mini a true row and gpt-5.6-luna a false row.
+func stubRootSchemaCompositionDatasheet(t *testing.T) {
+	rows := map[string]bool{"gpt-4o-mini": true, "gpt-5.6-luna": false}
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		supported, ok := rows[model]
+		if !ok {
+			return nil
+		}
+		return &schemas.ModelCapabilities{SupportsRootSchemaComposition: new(supported)}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+// OpenAI and Azure Chat Completions reject a root oneOf in function parameters on every
+// model; other chat hosts follow the model (gpt-5 and later accept it), and the datasheet
+// row overrides that name-based fallback.
+func TestToOpenAIChatRequest_RootSchemaComposition(t *testing.T) {
+	chatReq := func(provider schemas.ModelProvider, model string, params *schemas.ToolFunctionParameters) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    model,
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+			Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "fetch_report", Parameters: params},
+			}}},
+		}
+	}
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+		kept     bool
+	}{
+		{schemas.OpenAI, "gpt-4o-mini", false},
+		{schemas.OpenAI, "gpt-5.2", false},
+		{schemas.Azure, "gpt-4o-mini", false},
+		{schemas.OpenRouter, "openai/gpt-4o-mini", false},
+		{schemas.Groq, "openai/gpt-oss-20b", false},
+		// OpenAI and Azure Chat Completions reject a root union on every model.
+		{schemas.OpenAI, "gpt-5.4-mini", false},
+		{schemas.OpenAI, "gpt-6-luna", false},
+		{schemas.Azure, "gpt-5.4-mini", false},
+		{schemas.Bedrock, "us.openai.gpt-5.6-luna", true},
+		{schemas.OpenRouter, "openai/gpt-5.6", true},
+	} {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			params := rootUnionParams(t)
+			result := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), chatReq(tc.provider, tc.model, params))
+			require.NotNil(t, result)
+			requireRootUnion(t, result.ChatParameters.Tools[0].Function.Parameters, tc.kept)
+			require.Len(t, params.OneOf, 2, "the caller's schema must not be mutated")
+		})
+	}
+
+	t.Run("datasheet row overrides the fallback", func(t *testing.T) {
+		stubRootSchemaCompositionDatasheet(t)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		result := ToOpenAIChatRequest(ctx, chatReq(schemas.Groq, "gpt-4o-mini", rootUnionParams(t)))
+		requireRootUnion(t, result.ChatParameters.Tools[0].Function.Parameters, true)
+		result = ToOpenAIChatRequest(ctx, chatReq(schemas.Bedrock, "gpt-5.6-luna", rootUnionParams(t)))
+		requireRootUnion(t, result.ChatParameters.Tools[0].Function.Parameters, false)
+		// A true row cannot make OpenAI Chat Completions accept the union.
+		result = ToOpenAIChatRequest(ctx, chatReq(schemas.OpenAI, "gpt-4o-mini", rootUnionParams(t)))
+		requireRootUnion(t, result.ChatParameters.Tools[0].Function.Parameters, false)
+	})
+
+	t.Run("schema without a root union is unchanged", func(t *testing.T) {
+		params := &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("q", map[string]any{"type": "string"}))}
+		result := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), chatReq(schemas.OpenAI, "gpt-4o-mini", params))
+		got := result.ChatParameters.Tools[0].Function.Parameters
+		require.Nil(t, got.OneOf)
+		require.Equal(t, []string{"q"}, got.Properties.Keys())
+	})
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -126,6 +127,22 @@ func TestResponsesRequestParamsNonNilWithoutParamFields(t *testing.T) {
 	}
 }
 
+// /v1/responses must carry prewarm and background_options as typed params: left to
+// extra params they only reach the provider behind the passthrough header.
+func TestPrepareResponsesRequestKeepsPrewarmAndBackgroundOptions(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"model":"openai/gpt-6.2-sol","input":"hi","background":true,` +
+		`"background_options":{"completion_window":"2h","continuation_id":"run-1"},` +
+		`"prompt_cache_options":{"prewarm":true,"comparison_response_id":"resp_1"}}`)
+	_, coreReq, err := prepareResponsesRequest(ctx, nil)
+	require.NoError(t, err)
+	raw, err := sonic.MarshalString(coreReq.Params)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"completion_window":"2h","continuation_id":"run-1"}`, gjson.Get(raw, "background_options").Raw)
+	assert.JSONEq(t, `{"prewarm":true,"comparison_response_id":"resp_1"}`, gjson.Get(raw, "prompt_cache_options").Raw)
+	assert.NotContains(t, coreReq.Params.ExtraParams, "background_options", "typed field must not also ride in extra params")
+}
+
 func TestPrepareResponsesRequestNullClearsParameters(t *testing.T) {
 	for _, tt := range []struct {
 		field string
@@ -140,6 +157,7 @@ func TestPrepareResponsesRequestNullClearsParameters(t *testing.T) {
 		{field: "tool_choice", value: `"auto"`},
 		{field: "reasoning", value: `{"effort":"low"}`},
 		{field: "store", value: `true`},
+		{field: "access_programs", value: `{"cyber":"standard"}`},
 	} {
 		for _, key := range []string{tt.field, strings.ToUpper(tt.field)} {
 			t.Run(key, func(t *testing.T) {
@@ -1069,4 +1087,28 @@ func keysOf(m map[string]any) []string {
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+// TestPrepareResponsesRequestTypesAccessPrograms pins OpenAI's Daybreak
+// access_programs selector as a typed Responses field. Left untyped it landed in
+// ExtraParams and only reached OpenAI under x-bf-passthrough-extra-params, so a
+// client asking for daybreak_blue (or opting down to standard) was silently
+// served the model's default program.
+func TestPrepareResponsesRequestTypesAccessPrograms(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"model":"openai/gpt-6.1-terra","input":"hi","access_programs":{"cyber":"daybreak_blue"}}`)
+	_, req, err := prepareResponsesRequest(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := req.Params.ExtraParams["access_programs"]; ok {
+		t.Errorf("access_programs must be a typed field, not an extra param")
+	}
+	body, err := providerUtils.MarshalSorted(openai.ToOpenAIResponsesRequest(nil, req))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"access_programs":{"cyber":"daybreak_blue"}`) {
+		t.Errorf("access_programs did not reach the OpenAI body without the passthrough header: %s", body)
+	}
 }

@@ -80,6 +80,17 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 	if cfg.Network != nil && cfg.Network.StreamIdleTimeoutInSeconds > 0 {
 		e.streamIdle = cfg.Network.StreamIdleTimeoutInSeconds
 	}
+	e.indexRoutes()
+	if cfg.Auth.Type == schemas.RelayAuthAWSSigV4 && cfg.Credential != nil && cfg.Credential.AWS != nil {
+		e.awsKey = bedrockKeyConfig(cfg.Credential.AWS)
+		e.awsRegion = cfg.Credential.AWS.Region.GetValue()
+	}
+	return e, nil
+}
+
+// indexRoutes notes the job routes, ranked once so a status check only walks the order, and whether
+// any route is disabled.
+func (e *endpoint) indexRoutes() {
 	for i := range e.routes {
 		if e.routes[i].job != nil {
 			e.hasJobs = true
@@ -89,15 +100,9 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 			e.hasDisabled = true
 		}
 	}
-	// Ranked once when the relay is built, so a status check only walks the order.
 	slices.SortStableFunc(e.jobOrder, func(a, b int) int {
 		return pollFixedText(e.routes[b].job.Poll) - pollFixedText(e.routes[a].job.Poll)
 	})
-	if cfg.Auth.Type == schemas.RelayAuthAWSSigV4 && cfg.Credential != nil && cfg.Credential.AWS != nil {
-		e.awsKey = bedrockKeyConfig(cfg.Credential.AWS)
-		e.awsRegion = cfg.Credential.AWS.Region.GetValue()
-	}
-	return e, nil
 }
 
 // plan is the outcome of matching one request against an endpoint's routes.
@@ -257,13 +262,19 @@ func (e *endpoint) buildRequest(ctx *schemas.BifrostContext, req upstreamRequest
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("error creating request", err)
 	}
-	// Headers are applied in a passthrough call's order (SetExtraHeaders, then the caller's safe
-	// headers, then the key): the operator's extra headers, the caller's x-bf-eh-* headers over them,
-	// the caller's own headers over both, and the credential last, so it always wins. A job poll is
-	// the operator's own request and takes no caller headers.
-	providerUtils.SetExtraHeadersHTTP(context.Background(), httpReq, e.cfg.ExtraHeaders, nil)
+	// A caller's x-bf-eh-* headers go first, its own headers over them, then the relay's extra headers
+	// over both, so a caller can never replace one. A job poll is the operator's own request: its
+	// headers name the operation and the job (X-Amz-Target, a {{job.id}} header), so they go over the
+	// relay's extra headers instead. The credential is applied last either way.
 	providerUtils.StripCallerAuthForInsecureURL(requestURL, req.headers)
-	if !req.internal {
+	setExtraHeaders := func() {
+		for k, v := range e.cfg.ExtraHeaders {
+			httpReq.Header.Set(k, v.GetValue())
+		}
+	}
+	if req.internal {
+		setExtraHeaders()
+	} else {
 		for k, values := range callerExtraHeaders(ctx) {
 			if e.dropsCallerHeader(k, false, true) {
 				continue
@@ -282,6 +293,9 @@ func (e *endpoint) buildRequest(ctx *schemas.BifrostContext, req upstreamRequest
 			continue
 		}
 		httpReq.Header.Set(k, v)
+	}
+	if !req.internal {
+		setExtraHeaders()
 	}
 	// net/http negotiates gzip and decodes the reply itself only when the request carries no
 	// Accept-Encoding of its own; one set here would hand the caller compressed bytes with
@@ -314,7 +328,19 @@ func (e *endpoint) dropsCallerHeader(name string, internal, extra bool) bool {
 			return true
 		}
 	}
+	// A method override would run a call as a method the relay neither routed nor priced it as (a GET
+	// sent on as a POST is never charged), so a caller's is dropped. A job poll's is the operator's
+	// own configuration (an API that reads its status with an override), so it is kept.
+	if _, override := relayMethodOverrideHeaders[lower]; override && !internal {
+		return true
+	}
 	return !internal && e.cfg.Auth.Type == schemas.RelayAuthAWSSigV4 && strings.HasPrefix(lower, "x-amz-") && lower != "x-amz-target"
+}
+
+// relayMethodOverrideHeaders are the headers some APIs (Google's among them) read to run a call as
+// another method than the one it was sent with.
+var relayMethodOverrideHeaders = map[string]struct{}{
+	"x-http-method-override": {}, "x-http-method": {}, "x-method-override": {},
 }
 
 // relayHopByHopHeaders are the connection-level names SetExtraHeaders filters out of a passthrough
@@ -403,7 +429,7 @@ func (e *endpoint) doBuffered(ctx *schemas.BifrostContext, req upstreamRequest) 
 	start := time.Now()
 	resp, err := providerUtils.DoHTTPRequest(e.client, httpReq)
 	if err != nil {
-		return nil, transportError(err, time.Since(start))
+		return nil, transportError(err, time.Since(start), e.timeouts().withCaller(ctx))
 	}
 	return e.readBuffered(resp, start, false)
 }
@@ -426,7 +452,7 @@ func (e *endpoint) readBuffered(resp *http.Response, start time.Time, bounded bo
 	body, err := io.ReadAll(resp.Body)
 	latency := time.Since(start)
 	if timedOut.Load() {
-		return nil, transportError(context.DeadlineExceeded, latency)
+		return nil, transportError(context.DeadlineExceeded, latency, e.timeouts())
 	}
 	if err != nil {
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("error reading response body", err), latency)
@@ -472,14 +498,14 @@ func (e *endpoint) readOrHandOff(resp *http.Response, start time.Time, threshold
 	if err != nil {
 		_ = resp.Body.Close()
 		if timedOut.Load() {
-			return nil, nil, false, transportError(context.DeadlineExceeded, latency)
+			return nil, nil, false, transportError(context.DeadlineExceeded, latency, e.timeouts())
 		}
 		return nil, nil, false, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("error reading response body", err), latency)
 	}
 	if int64(len(ahead)) > threshold {
 		if !stopped {
 			// The deadline fired as the read ended and closed the body the stream would forward.
-			return nil, nil, false, transportError(context.DeadlineExceeded, latency)
+			return nil, nil, false, transportError(context.DeadlineExceeded, latency, e.timeouts())
 		}
 		return nil, ahead, true, nil
 	}
@@ -521,14 +547,31 @@ func (e *endpoint) openStream(ctx *schemas.BifrostContext, req upstreamRequest) 
 		// the first read would fail. It is the timeout it is, not a cancellation.
 		_ = resp.Body.Close()
 		release()
-		return nil, start, nil, transportError(context.DeadlineExceeded, time.Since(start))
+		return nil, start, nil, transportError(context.DeadlineExceeded, time.Since(start), e.timeouts())
 	}
 	if err != nil {
 		if errors.Is(context.Cause(httpReq.Context()), context.DeadlineExceeded) {
 			err = context.DeadlineExceeded
 		}
 		release()
-		return nil, start, nil, transportError(err, time.Since(start))
+		return nil, start, nil, transportError(err, time.Since(start), e.timeouts().withCaller(ctx))
 	}
 	return resp, start, release, nil
+}
+
+// timeouts are the relay's own timeouts, for timeout errors.
+func (e *endpoint) timeouts() relayTimeouts {
+	whole := schemas.DefaultEndpointTimeoutSeconds
+	if e.cfg.Network != nil && e.cfg.Network.TimeoutSeconds > 0 {
+		whole = e.cfg.Network.TimeoutSeconds
+	}
+	return relayTimeouts{relay: e.cfg.Name, wholeSeconds: whole, streamSeconds: e.streamIdle}
+}
+
+// streamTimeouts are the relay's timeouts for a streamed reply's body, which timeout_seconds no
+// longer bounds once the stream has started.
+func (e *endpoint) streamTimeouts() relayTimeouts {
+	t := e.timeouts()
+	t.streaming = true
+	return t
 }

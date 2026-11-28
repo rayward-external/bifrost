@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	coremcp "github.com/maximhq/bifrost/core/mcp"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -650,6 +652,75 @@ func (c *captureObsPlugin) Inject(_ context.Context, trace *schemas.Trace) error
 // tokens, request type, and enrichment dimensions, so the trace-fed connectors
 // (Datadog/BigQuery/Splunk/OTEL/Kafka/Pub-Sub) can record batch/video cost that the
 // async settlement path would otherwise keep out of the tracing pipeline entirely.
+// relayTraceCapture copies the attributes of each relay span the tracer flushes; the trace itself is
+// reused once Inject returns, so it is read here.
+type relayTraceCapture struct {
+	spans chan map[string]any
+	dims  chan map[string]string // optional; the trace's x-bf-dim-* dimensions
+}
+
+func (c *relayTraceCapture) GetName() string { return "relay-trace-capture" }
+func (c *relayTraceCapture) Cleanup() error  { return nil }
+func (c *relayTraceCapture) Inject(_ context.Context, trace *schemas.Trace) error {
+	if c.dims != nil {
+		c.dims <- maps.Clone(schemas.TraceDimensions(trace.Attributes))
+	}
+	for _, span := range trace.Spans {
+		if span != nil && span.Kind == schemas.SpanKindRelay {
+			c.spans <- maps.Clone(span.Attributes)
+		}
+	}
+	return nil
+}
+
+// A settled relay job is reported as a one-span relay trace marked as a settlement, carrying the
+// job's cost and its relay, route and key, so the trace-fed connectors count it in relay cost.
+func TestEmitRelaySettlementEmitsAMarkedRelaySpan(t *testing.T) {
+	logger := testLogger{}
+	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
+	capture := &relayTraceCapture{spans: make(chan map[string]any, 1), dims: make(chan map[string]string, 2)}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{capture}, nil)
+	plugin := &LoggerPlugin{ctx: context.Background()}
+	plugin.SetSettlementTracer(tracer)
+
+	cost := 0.3
+	plugin.EmitRelaySettlement(context.Background(), &logstore.RelayLog{ID: "job-row", RelayName: "textract", RoutePath: "/v1/textract",
+		JobID: schemas.Ptr("j-1"), Cost: &cost, VirtualKeyID: schemas.Ptr("vk-1"), VirtualKeyName: schemas.Ptr("team-key"),
+		UserID: schemas.Ptr("u-1"), UserEmail: schemas.Ptr("ada@example.com"), App: schemas.Ptr("Custom Mapped App"), UserAgent: schemas.Ptr("claude-cli/1.0.0"),
+		TeamIDsParsed: []string{"t-1", "t-2"}, TeamNamesParsed: []string{"Search", "Docs"}}, map[string]string{"region": "eu-west"})
+	select {
+	case dims := <-capture.dims:
+		require.Equal(t, map[string]string{"region": "eu-west"}, dims, "the start call's custom labels")
+	case <-time.After(2 * time.Second):
+		t.Fatal("no settlement trace was flushed")
+	}
+	select {
+	case attrs := <-capture.spans:
+		require.Equal(t, true, attrs[schemas.AttrBifrostRelayJobSettlement])
+		require.Equal(t, 0.3, attrs[schemas.AttrBifrostRelayCost])
+		require.Equal(t, "textract", attrs[schemas.AttrBifrostRelayName])
+		require.Equal(t, "/v1/textract", attrs[schemas.AttrBifrostRelayRoutePath])
+		require.Equal(t, "j-1", attrs[schemas.AttrBifrostRelayJobID])
+		require.Equal(t, "team-key", attrs[schemas.AttrBifrostVirtualKeyName])
+		// The same enrichment a live relay or LLM span carries: user, app and every team.
+		require.Equal(t, "u-1", attrs[schemas.AttrBifrostUserID])
+		require.Equal(t, "ada@example.com", attrs[schemas.AttrBifrostUserEmail])
+		require.Equal(t, schemas.DetectAppFromUserAgent("claude-cli/1.0.0"), attrs[schemas.AttrBifrostApp], "the live span's built-in label, not the row's custom mapping")
+		require.NotEqual(t, "Custom Mapped App", attrs[schemas.AttrBifrostApp])
+		require.Equal(t, []string{"t-1", "t-2"}, attrs[schemas.AttrBifrostTeamIDs])
+	case <-time.After(2 * time.Second):
+		t.Fatal("no settlement trace was flushed")
+	}
+
+	// A job row without a charge reports nothing.
+	plugin.EmitRelaySettlement(context.Background(), &logstore.RelayLog{ID: "unpriced", RelayName: "textract"}, nil)
+	select {
+	case <-capture.spans:
+		t.Fatal("an unpriced job row emitted a trace")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 func TestEmitAggregateLogEmitsSettlementSpan(t *testing.T) {
 	logger := testLogger{}
 	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
@@ -6734,10 +6805,32 @@ func TestRelayJobRowTakesTheRelayFromTheReply(t *testing.T) {
 	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
 	plugin := policyTestPlugin(nil, nil, true)
 	plugin.batchStore = store
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-1", RequestID: "shared", RelayName: "slowrelay"}, "textract", &schemas.RelayJobHandle{ID: "j-77", Params: `{"job":{}}`})
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-1", RequestID: "shared", RelayName: "slowrelay"}, "textract", &schemas.RelayJobHandle{ID: "j-77", Params: `{"job":{}}`}, nil)
 	require.Len(t, store.jobs, 1)
 	for _, row := range store.jobs {
 		require.Equal(t, "textract", row.Provider)
+	}
+}
+
+// A job keeps only its start call's x-bf-dim-* values, for the settlement's metrics labels; its
+// names and email come from the start call's own row when it settles, so none are stored with it.
+func TestRelayJobRecordKeepsOnlyTheStartDimensions(t *testing.T) {
+	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.batchStore = store
+	start := &logstore.RelayLog{ID: "req-1", RequestID: "req-1", RelayName: "textract", RoutePath: "/v1/textract",
+		App: schemas.Ptr("curl"), UserAgent: schemas.Ptr("curl/8.7.1"), VirtualKeyName: schemas.Ptr("team-key"), UserEmail: schemas.Ptr("a@b.c")}
+	plugin.recordEndpointJob(start, "textract", &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{"status_path":"s"}}`}, map[string]string{"region": "eu-west"})
+	require.Len(t, store.jobs, 1)
+	for _, row := range store.jobs {
+		require.NotNil(t, row.Params)
+		var params map[string]any
+		require.NoError(t, json.Unmarshal([]byte(*row.Params), &params))
+		// The whole stored value: the relay's snapshot as it was and the dimensions, nothing else.
+		require.Equal(t, map[string]any{
+			"job":        map[string]any{"status_path": "s"},
+			"dimensions": map[string]any{"region": "eu-west"},
+		}, params)
 	}
 }
 
@@ -6748,7 +6841,7 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	job := &schemas.RelayJobHandle{ID: "j-1", IntervalSeconds: 30, Params: `{"job":{}}`}
 
 	first := &logstore.RelayLog{ID: "req-1", RequestID: "req-1", RelayName: "textract", BudgetIDsParsed: []string{"budget-1"}}
-	plugin.recordEndpointJob(first, "", job)
+	plugin.recordEndpointJob(first, "", job, nil)
 	require.Len(t, store.jobs, 1)
 	var row *cstables.TableProviderJob
 	for _, r := range store.jobs {
@@ -6760,22 +6853,46 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	require.Equal(t, `["budget-1"]`, *row.BudgetIDs)
 	require.Equal(t, "req-1", *row.SourceLogID)
 
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-2", RequestID: "req-2", RelayName: "textract"}, "", job)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-2", RequestID: "req-2", RelayName: "textract"}, "", job, nil)
 	require.Len(t, store.jobs, 1, "a retried start while the job is open records nothing new")
 
 	row.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3", RequestID: "req-3", RelayName: "textract"}, "", job)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3", RequestID: "req-3", RelayName: "textract"}, "", job, nil)
 	require.Len(t, store.jobs, 1, "a start retried after its job was charged is not charged again")
 
 	reusing := &schemas.RelayJobHandle{ID: "j-1", IntervalSeconds: 30, Params: `{"job":{}}`, ReusedIDIsNewJob: true}
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3b", RequestID: "req-3b", RelayName: "textract"}, "", reusing)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3b", RequestID: "req-3b", RelayName: "textract"}, "", reusing, nil)
 	require.Len(t, store.jobs, 2, "with reused_id_is_new_job an id reused after settlement is a new job")
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-4", RequestID: "req-4", RelayName: "textract"}, "", reusing)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-4", RequestID: "req-4", RelayName: "textract"}, "", reusing, nil)
 	require.Len(t, store.jobs, 2, "a retried start of the reused job dedupes against its slot")
 
 	store.fail = errors.New("database is down")
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-5", RequestID: "req-5", RelayName: "textract"}, "", &schemas.RelayJobHandle{ID: "j-2", Params: `{"job":{}}`})
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-5", RequestID: "req-5", RelayName: "textract"}, "", &schemas.RelayJobHandle{ID: "j-2", Params: `{"job":{}}`}, nil)
 	require.Len(t, store.jobs, 2, "a lookup error records nothing rather than risk a duplicate row")
+}
+
+// Jobs are filed under their status check, so a start route edited between two starts files the same
+// job in the same place: a retry is still one job, and reused_id_is_new_job still opens the next
+// generation rather than a fresh first one.
+func TestRelayJobRowFollowsTheStatusCheckAcrossStartRouteEdits(t *testing.T) {
+	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.batchStore = store
+	key := relay.JobPollKey(schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"})
+	before := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{}}`, RouteKey: key}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-1", RequestID: "req-1", RelayName: "textract"}, "", before, nil)
+	after := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{"usage":{"cost_per_request":0.2}}}`, RouteKey: key}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-2", RequestID: "req-2", RelayName: "textract"}, "", after, nil)
+	require.Len(t, store.jobs, 1, "a start retried after the start route was edited is the same job")
+
+	for _, row := range store.jobs {
+		row.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
+	}
+	reusing := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{}}`, RouteKey: key, ReusedIDIsNewJob: true}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3", RequestID: "req-3", RelayName: "textract"}, "", reusing, nil)
+	require.Len(t, store.jobs, 2)
+	gen2, _ := jobaccounting.RelayJobRowID("textract", key, "j-1", 2)
+	require.Contains(t, store.jobs, gen2, "a reused id after settlement opens the next generation of the same job")
 }
 
 // Past the last generation slot each start gets its own row, even when callers share an x-request-id.
@@ -6788,8 +6905,8 @@ func TestRelayJobRowPastTheLastGenerationIsKeyedByItsCall(t *testing.T) {
 		store.jobs[id] = &cstables.TableProviderJob{ID: id, JobID: scoped, AccountingStatus: cstables.ProviderJobAccountingStatusAccounted}
 	}
 	reusing := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{}}`, ReusedIDIsNewJob: true}
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "row-a", RequestID: "shared", RelayName: "textract"}, "", reusing)
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "row-b", RequestID: "shared", RelayName: "textract"}, "", reusing)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "row-a", RequestID: "shared", RelayName: "textract"}, "", reusing, nil)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "row-b", RequestID: "shared", RelayName: "textract"}, "", reusing, nil)
 	require.Len(t, store.jobs, jobaccounting.MaxRelayJobGenerations+2)
 }
 
@@ -7085,6 +7202,22 @@ func TestRelayReconcileCarriesRetainedContent(t *testing.T) {
 
 	visible := relayLogUpdateColumns(&logstore.RelayLog{ID: "row", Path: "/search?q=1"}, false)
 	require.NotContains(t, visible, logstore.RelayRetainedPathUpdate, "a visible row carries nothing extra")
+}
+
+// A start call that outlived the stale sweep is reconciled by an update, which carries job_debug so
+// an untracked job keeps its reason, not only its job_status.
+func TestRelayReconcileKeepsTheUntrackedReason(t *testing.T) {
+	entry := &logstore.RelayLog{ID: "row"}
+	applyEndpointUsage(entry, &schemas.RelayUsage{Cost: 0.01, JobUntracked: "the reply has no job id at JobId"})
+	updates := relayLogUpdateColumns(entry, false)
+	require.Equal(t, schemas.Ptr(logstore.RelayJobOutcomeUntracked), updates["job_status"])
+	raw, ok := updates["job_debug"].(string)
+	require.True(t, ok, "job_debug is in the update")
+	require.Contains(t, raw, `"outcome":"untracked"`)
+	require.Contains(t, raw, "the reply has no job id at JobId")
+
+	plain := relayLogUpdateColumns(&logstore.RelayLog{ID: "row"}, false)
+	require.NotContains(t, plain, "job_debug", "a call with no job leaves job_debug alone")
 }
 
 // streamAccount serves one provider whose upstream is a test server.
@@ -7443,4 +7576,24 @@ func TestAdmitRelaySettleIsBounded(t *testing.T) {
 	r, ok := p.admitRelaySettle("relay\x00one-more")
 	require.True(t, ok)
 	r()
+}
+
+// A job route whose reply named no usable job id marks its row as an untracked job with the reason,
+// so a fee-only charge is visible rather than silent.
+func TestRelayUntrackedJobMarksTheStartRow(t *testing.T) {
+	entry := &logstore.RelayLog{}
+	applyEndpointUsage(entry, &schemas.RelayUsage{Cost: 0.01, JobUntracked: "the reply has no job id at JobId"})
+	require.NotNil(t, entry.JobStatus)
+	require.Equal(t, logstore.RelayJobOutcomeUntracked, *entry.JobStatus)
+	require.NotNil(t, entry.JobDebugParsed)
+	require.Equal(t, logstore.RelayJobOutcomeUntracked, entry.JobDebugParsed.Outcome)
+	require.Equal(t, "the reply has no job id at JobId", entry.JobDebugParsed.LastError)
+	require.Nil(t, entry.JobID, "no job id was read, so none is stored")
+	require.NotNil(t, entry.Cost)
+	require.Equal(t, 0.01, *entry.Cost, "the fee is still charged")
+
+	tracked := &logstore.RelayLog{}
+	applyEndpointUsage(tracked, &schemas.RelayUsage{Job: &schemas.RelayJobHandle{ID: "j-1"}})
+	require.Equal(t, "started", *tracked.JobStatus)
+	require.Nil(t, tracked.JobDebugParsed)
 }

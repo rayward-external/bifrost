@@ -48,6 +48,27 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		Provider: bifrostReq.Provider,
 	}
 
+	// OpenRouter replays reasoning_details (signed thinking, redacted blocks) to the underlying
+	// model; without it Claude re-reasons every tool-call turn. A message whose details are all
+	// unsigned text adds nothing reasoning_content lacks and can become an unsigned Claude
+	// thinking block, so details are sent only for messages where one carries a signature or
+	// encrypted data, and then whole: OpenRouter needs the model's sequence unmodified.
+	// Messages map 1:1 with Input here.
+	if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.OpenRouter {
+		for i := range openaiReq.Messages {
+			assistantMessage := openaiReq.Messages[i].OpenAIChatAssistantMessage
+			if assistantMessage == nil {
+				continue
+			}
+			details := bifrostReq.Input[i].ChatAssistantMessage.ReasoningDetails
+			if slices.ContainsFunc(details, func(d schemas.ChatReasoningDetails) bool {
+				return (d.Signature != nil && *d.Signature != "") || (d.Data != nil && *d.Data != "")
+			}) {
+				assistantMessage.ReasoningDetails = details
+			}
+		}
+	}
+
 	if !caps.SupportsDeveloperRole(true) {
 		for i := range openaiReq.Messages {
 			if openaiReq.Messages[i].Role == schemas.ChatMessageRoleDeveloper {
@@ -90,12 +111,17 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)
 		if len(openaiReq.ChatParameters.Tools) > 0 {
+			// OpenAI and Azure Chat Completions reject a root composition on every model; only
+			// their Responses API takes one, so the model's capability does not apply here.
+			baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+			flattenRoot := baseProvider == schemas.OpenAI || baseProvider == schemas.Azure ||
+				!caps.SupportsRootSchemaComposition(schemas.ModelSupportsRootSchemaComposition(capModel))
 			normalizedTools := make([]schemas.ChatTool, len(openaiReq.ChatParameters.Tools))
 			for i, tool := range openaiReq.ChatParameters.Tools {
 				normalizedTools[i] = tool
 				if tool.Function != nil && tool.Function.Parameters != nil {
 					funcCopy := *tool.Function
-					funcCopy.Parameters = tool.Function.Parameters.Normalized()
+					funcCopy.Parameters = schemas.FlattenRootCompositionIf(tool.Function.Parameters, flattenRoot).Normalized()
 					normalizedTools[i].Function = &funcCopy
 					// The by-value copy carried over any precomputed serialized cache
 					// (shared MCP tools cache it at the source). Drop it so MarshalJSON

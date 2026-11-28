@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -560,6 +562,8 @@ func TestServeStreamOpenIsBoundedByTimeout(t *testing.T) {
 	assert.Less(t, time.Since(begin), 5*time.Second, "the wait for the headers is bounded by timeout_seconds")
 	require.NotNil(t, bErr.Error.Type)
 	assert.Equal(t, schemas.RequestTimedOut, *bErr.Error.Type)
+	assert.Equal(t, `the upstream did not answer within 1 second; raise timeout_seconds in relay "slow"'s network settings`, bErr.Error.Message,
+		"the message names the relay's own timeout, not the provider network config")
 }
 
 func TestServeStreamBilledBySizeOnEarlyClose(t *testing.T) {
@@ -774,6 +778,7 @@ func TestServeStreamIdleTimeoutIsATimeout(t *testing.T) {
 	require.NotNil(t, pipeline.postErr[0])
 	require.NotNil(t, pipeline.postErr[0].Error.Type)
 	assert.Equal(t, schemas.RequestTimedOut, *pipeline.postErr[0].Error.Type)
+	assert.Equal(t, `the upstream sent nothing for 1 second; raise stream_idle_timeout_in_seconds in relay "slow"'s network settings`, pipeline.postErr[0].Error.Message)
 }
 
 func TestServeJobRouteHandsBackJob(t *testing.T) {
@@ -1686,18 +1691,16 @@ func TestServeReadsModelUnderSentContentType(t *testing.T) {
 	require.Len(t, pipeline.pre, 1)
 	assert.Equal(t, "gpt-x", pipeline.pre[0].Model, "with no caller Content-Type the upstream receives the operator's JSON one")
 
-	// The caller's Content-Type replaces the operator's on the wire, as on a passthrough call, so
-	// the body is read under it.
+	// The relay's Content-Type wins over the caller's on the wire, so the body is read under it.
 	_, bErr = m.Serve(testCtx(t), Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{"content-type": "text/plain"}, Body: []byte(`{"model":"gpt-x"}`)})
 	require.Nil(t, bErr)
 	require.Len(t, pipeline.pre, 2)
-	assert.Empty(t, pipeline.pre[1].Model, "a text/plain body is not read as JSON")
+	assert.Equal(t, "gpt-x", pipeline.pre[1].Model, "the relay's JSON content type is what is sent, so the body is read as JSON")
 }
 
 // The pre-hook sees, for each header the matched route matches on, the value that selected the
-// route: the caller's copy beats the relay's own extra header, as on a passthrough call, a missing
-// caller header still shows the operator's value, and a value read from the environment is handed
-// over redacted.
+// route: the relay's own extra header beats the caller's copy, since that is what is sent, and a
+// value read from the environment is handed over redacted.
 func TestServeReportsMatchedHeaderValues(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "{}") }))
 	defer upstream.Close()
@@ -1717,8 +1720,8 @@ func TestServeReportsMatchedHeaderValues(t *testing.T) {
 	require.Nil(t, bErr)
 	require.Len(t, pipeline.pre, 1)
 	assert.Equal(t, map[string]string{
-		"x-amz-target": "Textract.GetDocumentAnalysis", // the caller's value replaces the operator's, as on a passthrough call
-		"x-tenant":     schemas.RedactedAttrValue,      // set by the relay from the environment: never copied into a row
+		"x-amz-target": "Textract.AnalyzeDocument", // the relay's value wins over the caller's
+		"x-tenant":     schemas.RedactedAttrValue,  // set by the relay from the environment: never copied into a row
 		"content-type": "application/x-amz-json-1.1",
 	}, pipeline.pre[0].RouteHeaders)
 
@@ -1905,8 +1908,8 @@ func TestLargeStatusCheckReplyIsHandedOff(t *testing.T) {
 	require.NoError(t, res.Stream.Close())
 }
 
-// A status check is matched on the headers the upstream receives: a caller's x-bf-eh-* override
-// beats the relay's own extra header of the same name.
+// A status check is matched on the headers the upstream receives: the relay's own extra header
+// wins over a caller's x-bf-eh-* copy of the same name.
 func TestStatusCheckMatchesTheHeaderTheUpstreamReceives(t *testing.T) {
 	cfg := bearerConfig("jobs", "https://jobs.example.com")
 	cfg.ExtraHeaders = map[string]schemas.SecretVar{"X-Job": *schemas.NewSecretVar("A")}
@@ -1921,7 +1924,7 @@ func TestStatusCheckMatchesTheHeaderTheUpstreamReceives(t *testing.T) {
 	assert.Equal(t, "A", e.statusCheckJobID(context.Background(), req), "the relay's header when the caller sends none")
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"x-job": {"B"}})
-	assert.Equal(t, "B", e.statusCheckJobID(ctx, req), "the caller's x-bf-eh-* override is what the upstream gets")
+	assert.Equal(t, "A", e.statusCheckJobID(ctx, req), "the relay's header is what the upstream gets, whatever the caller sends")
 }
 
 // A status check answered as an event stream keeps streaming to the caller, as before: holding the
@@ -2007,11 +2010,10 @@ func TestLargeReplyStaysBufferedWhenReadForUsage(t *testing.T) {
 	}
 }
 
-// TestServeAppliesHeadersInPassthroughOrder pins the header precedence a provider passthrough call
-// has (SetExtraHeaders, then the caller's safe headers, then the key): the operator's extra header,
-// the caller's x-bf-eh-* header over it, the caller's own header over both, and the credential
-// last. x-bf-eh-* headers are forwarded whatever their name, each value on its own line.
-func TestServeAppliesHeadersInPassthroughOrder(t *testing.T) {
+// TestServeAppliesTheRelaysHeadersLast pins the header precedence: the caller's x-bf-eh-* headers,
+// its own headers over them, the relay's extra headers over both, and the credential last. x-bf-eh-*
+// headers are forwarded whatever their name, each value on its own line.
+func TestServeAppliesTheRelaysHeadersLast(t *testing.T) {
 	var got http.Header
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.Header.Clone()
@@ -2030,16 +2032,18 @@ func TestServeAppliesHeadersInPassthroughOrder(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
 		"x-version":        {"extra"},
 		"x-tenant":         {"extra"},
+		"x-mode":           {"extra"},
 		"x-trace":          {"a", "b"},
 		"x-upstream-token": {"tok"},
 		"authorization":    {"Bearer extra"},
 		"keep-alive":       {"timeout=5"},
 	})
-	_, bErr := m.Serve(ctx, Request{Endpoint: "docs", Method: "POST", Path: "/", Headers: map[string]string{"x-tenant": "caller"}})
+	_, bErr := m.Serve(ctx, Request{Endpoint: "docs", Method: "POST", Path: "/", Headers: map[string]string{"x-tenant": "caller", "x-mode": "caller"}})
 	require.Nil(t, bErr)
 	assert.Equal(t, "operator", got.Get("X-Region"), "an operator header nobody overrides is sent")
-	assert.Equal(t, "extra", got.Get("X-Version"), "x-bf-eh-* replaces the operator's header, as on a passthrough call")
-	assert.Equal(t, "caller", got.Get("X-Tenant"), "the caller's own header replaces both")
+	assert.Equal(t, "operator", got.Get("X-Version"), "an x-bf-eh-* copy cannot replace the relay's header")
+	assert.Equal(t, "operator", got.Get("X-Tenant"), "nor can the caller's own header")
+	assert.Equal(t, "caller", got.Get("X-Mode"), "a header the relay does not set: the caller's own beats its x-bf-eh-* copy")
 	assert.Equal(t, []string{"a", "b"}, got.Values("X-Trace"), "each x-bf-eh-* value is sent on its own line")
 	assert.Equal(t, "tok", got.Get("X-Upstream-Token"), "an x-bf-eh-* header is forwarded whatever its name looks like")
 	assert.Equal(t, "Bearer sk-endpoint", got.Get("Authorization"), "the credential is applied last and always wins")
@@ -2134,4 +2138,393 @@ func TestStreamUsagePanicAtEOFIsAnInternalError(t *testing.T) {
 	require.True(t, finished)
 	require.NotNil(t, gotErr)
 	assert.Equal(t, schemas.ErrorTypeBifrostInternal, schemas.ClassifyErrorType(gotErr, schemas.RelayRequest))
+}
+
+// A caller's method override would run a GET the relay does not charge as a POST it prices, so it
+// is dropped, sent directly or as an x-bf-eh-* header.
+func TestServeDropsCallerMethodOverride(t *testing.T) {
+	var got http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		_, _ = io.WriteString(w, "{}")
+	}))
+	defer upstream.Close()
+	cfg := bearerConfig("google", upstream.URL)
+	cfg.SkipRouteCheck = true
+	m, _ := newTestManager(t, cfg)
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"x-method-override": {"POST"}})
+	_, bErr := m.Serve(ctx, Request{Endpoint: "google", Method: "GET", Path: "/v1/translate", Headers: map[string]string{
+		"X-HTTP-Method-Override": "POST", "x-http-method": "POST", "x-other": "kept",
+	}})
+	require.Nil(t, bErr)
+	assert.Empty(t, got.Get("X-HTTP-Method-Override"))
+	assert.Empty(t, got.Get("X-HTTP-Method"))
+	assert.Empty(t, got.Get("X-Method-Override"))
+	assert.Equal(t, "kept", got.Get("X-Other"))
+}
+
+// A job poll is the operator's own request: its headers name the operation and the job, so they go
+// over the relay's extra headers, which still win over a caller's.
+func TestJobPollHeadersWinOverTheRelaysExtraHeaders(t *testing.T) {
+	var got http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"RUNNING"}`)
+	}))
+	defer upstream.Close()
+	cfg := bearerConfig("textract", upstream.URL)
+	cfg.SkipRouteCheck = true
+	cfg.ExtraHeaders = map[string]schemas.SecretVar{
+		"X-Amz-Target": *schemas.NewSecretVar("Textract.StartDocumentAnalysis"),
+		"X-Job":        *schemas.NewSecretVar("A"),
+		"X-Tenant":     *schemas.NewSecretVar("acme"),
+	}
+	m, _ := newTestManager(t, cfg)
+	snap := &JobSnapshot{Job: schemas.RelayJobConfig{Poll: schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}",
+		Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis", "X-Job": "{{job.id}}"}}}}
+	_, bErr := m.PollJob(testCtx(t), "textract", snap.PollRequest("B"))
+	require.Nil(t, bErr)
+	assert.Equal(t, "Textract.GetDocumentAnalysis", got.Get("X-Amz-Target"), "the poll's operation, not the relay's")
+	assert.Equal(t, "B", got.Get("X-Job"), "the job the poll asks about, not the relay's value")
+	assert.Equal(t, "acme", got.Get("X-Tenant"), "a relay header the poll does not set is still sent")
+	assert.Equal(t, "Bearer sk-endpoint", got.Get("Authorization"), "the credential is applied last")
+}
+
+// A JSON body created for forced fields would be sent under the relay's own non-JSON Content-Type,
+// which wins on the wire, so the call is refused rather than sent mislabelled.
+func TestServeRefusesACreatedBodyUnderARelayNonJSONContentType(t *testing.T) {
+	hits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = io.WriteString(w, "{}")
+	}))
+	defer upstream.Close()
+	cfg := bearerConfig("forced", upstream.URL)
+	cfg.SkipRouteCheck = true
+	cfg.BodyOverrides = map[string]json.RawMessage{"include_usage": json.RawMessage("true")}
+	cfg.ExtraHeaders = map[string]schemas.SecretVar{"Content-Type": *schemas.NewSecretVar("text/plain")}
+	m, _ := newTestManager(t, cfg)
+	_, bErr := m.Serve(testCtx(t), Request{Endpoint: "forced", Method: "POST", Path: "/search", Headers: map[string]string{}})
+	require.NotNil(t, bErr)
+	require.NotNil(t, bErr.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, *bErr.StatusCode)
+	assert.Contains(t, bErr.Error.Message, `Content-Type to "text/plain"`)
+	assert.Zero(t, hits, "never reaches the upstream")
+
+	// A JSON relay content type is kept for the created body, as before.
+	cfg.ExtraHeaders = map[string]schemas.SecretVar{"Content-Type": *schemas.NewSecretVar("application/x-amz-json-1.1")}
+	require.NoError(t, m.Upsert(cfg))
+	_, bErr = m.Serve(testCtx(t), Request{Endpoint: "forced", Method: "POST", Path: "/search", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	assert.Equal(t, 1, hits)
+}
+
+// A job poll keeps a method override the operator configured (an API that reads its status that
+// way); only a caller's is dropped.
+func TestJobPollKeepsAConfiguredMethodOverride(t *testing.T) {
+	var got http.Header
+	var method string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, method = r.Header.Clone(), r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"RUNNING"}`)
+	}))
+	defer upstream.Close()
+	cfg := bearerConfig("jobs", upstream.URL)
+	cfg.SkipRouteCheck = true
+	m, _ := newTestManager(t, cfg)
+	snap := &JobSnapshot{Job: schemas.RelayJobConfig{Poll: schemas.RelayJobPoll{Method: "POST", Path: "/jobs/{{job.id}}",
+		Headers: map[string]string{"X-HTTP-Method-Override": "GET"}}}}
+	_, bErr := m.PollJob(testCtx(t), "jobs", snap.PollRequest("j-1"))
+	require.Nil(t, bErr)
+	assert.Equal(t, "POST", method)
+	assert.Equal(t, "GET", got.Get("X-HTTP-Method-Override"), "the operator's configured override reaches the upstream")
+}
+
+// handshakeTimeoutErr is shaped as net/http's own TLS handshake timeout: a net.Error that times out.
+type handshakeTimeoutErr struct{}
+
+func (handshakeTimeoutErr) Error() string   { return "net/http: TLS handshake timeout" }
+func (handshakeTimeoutErr) Timeout() bool   { return true }
+func (handshakeTimeoutErr) Temporary() bool { return true }
+
+type timeoutNetErr struct{}
+
+func (timeoutNetErr) Error() string   { return "i/o timeout" }
+func (timeoutNetErr) Timeout() bool   { return true }
+func (timeoutNetErr) Temporary() bool { return true }
+
+// A timeout names timeout_seconds only when that limit fired: one well short of it came from a fixed
+// connection limit, such as the TLS handshake, which raising timeout_seconds would not help.
+func TestTimeoutMessageNamesOnlyTheLimitThatFired(t *testing.T) {
+	limits := relayTimeouts{relay: "slow", wholeSeconds: 30, streamSeconds: 60}
+	// A caller deadline at 28s with a 30s relay timeout is still the caller's: it came first.
+	nearLimit := limits
+	nearLimit.callerDeadline = time.Now().Add(-time.Millisecond)
+	caller := transportError(context.DeadlineExceeded, 28*time.Second, nearLimit)
+	assert.Equal(t, "the request's own deadline passed after 28 seconds", caller.Error.Message)
+	// A caller deadline later than the relay's own leaves the relay's timeout to blame.
+	late := limits
+	late.callerDeadline = time.Now().Add(-time.Millisecond)
+	relayFirst := transportError(context.DeadlineExceeded, 31*time.Second, late)
+	assert.Contains(t, relayFirst.Error.Message, "raise timeout_seconds")
+	// A streamed reply is not bounded by timeout_seconds once it started, so a long stream ended by
+	// the caller's deadline is the caller's, even past the relay's timeout.
+	stream := limits
+	stream.streaming = true
+	stream.callerDeadline = time.Now().Add(-time.Millisecond)
+	streamed := transportError(context.DeadlineExceeded, 90*time.Second, stream)
+	assert.Equal(t, "the request's own deadline passed after 90 seconds", streamed.Error.Message)
+	// The TLS handshake limit fired: named as a connection timeout even with a relay timeout near it.
+	near := relayTimeouts{relay: "slow", wholeSeconds: 11, streamSeconds: 60}
+	handshake := transportError(&url.Error{Op: "Post", URL: "https://x", Err: handshakeTimeoutErr{}}, 10*time.Second, near)
+	assert.Equal(t, "connecting to the upstream timed out after 10 seconds", handshake.Error.Message)
+	dial := transportError(&net.OpError{Op: "dial", Net: "tcp", Err: timeoutNetErr{}}, 10*time.Second, near)
+	assert.Equal(t, "connecting to the upstream timed out after 10 seconds", dial.Error.Message)
+	early := transportError(timeoutNetErr{}, 10*time.Second, limits)
+	assert.Equal(t, schemas.RequestTimedOut, *early.Error.Type, "still a timeout")
+	assert.Equal(t, "connecting to the upstream timed out after 10 seconds", early.Error.Message)
+
+	full := transportError(timeoutNetErr{}, 30*time.Second, limits)
+	assert.Contains(t, full.Error.Message, "raise timeout_seconds", "the whole timeout ran out")
+	own := transportError(context.DeadlineExceeded, 2*time.Second, limits)
+	assert.Contains(t, own.Error.Message, "raise timeout_seconds", "the relay's own timer fired")
+	idle := transportError(providerUtils.ErrStreamIdleTimeout, 2*time.Second, limits)
+	assert.Contains(t, idle.Error.Message, "raise stream_idle_timeout_in_seconds")
+}
+
+// A Go SDK caller's own deadline that runs out before the relay's timeout names no relay setting,
+// since raising timeout_seconds would not have helped.
+func TestTimeoutFromTheCallersOwnDeadlineNamesNoSetting(t *testing.T) {
+	released := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-released:
+		}
+	}))
+	defer upstream.Close()
+	defer close(released)
+	cfg := bearerConfig("slow", upstream.URL)
+	cfg.SkipRouteCheck = true
+	cfg.Network = &schemas.RelayNetworkConfig{TimeoutSeconds: 60}
+	m, _ := newTestManager(t, cfg)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(300*time.Millisecond))
+	t.Cleanup(ctx.Cancel)
+	_, bErr := m.Serve(ctx, Request{Endpoint: "slow", Method: "POST", Path: "/x", Headers: map[string]string{}})
+	require.NotNil(t, bErr)
+	require.NotNil(t, bErr.Error)
+	assert.Contains(t, bErr.Error.Message, "the request's own deadline passed")
+	assert.NotContains(t, bErr.Error.Message, "timeout_seconds")
+}
+
+// A caller that sets its own stream idle timeout sees that value in the error, not the relay's.
+func TestStreamIdleTimeoutNamesTheTimeoutEnforced(t *testing.T) {
+	released := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {}\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-released:
+		}
+	}))
+	defer upstream.Close()
+	defer close(released)
+	cfg := bearerConfig("slow", upstream.URL)
+	cfg.Network = &schemas.RelayNetworkConfig{StreamIdleTimeoutInSeconds: 60}
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/events", Stream: schemas.Ptr(true)}}
+	m, pipeline := newTestManager(t, cfg)
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, time.Second)
+	res, bErr := m.Serve(ctx, Request{Endpoint: "slow", Method: "POST", Path: "/events", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	_, err := io.ReadAll(res.Stream)
+	require.Error(t, err)
+	require.NoError(t, res.Stream.Close())
+	require.Len(t, pipeline.postErr, 1)
+	assert.Contains(t, pipeline.postErr[0].Error.Message, "sent nothing for 1 second, the stream idle timeout this request set")
+	assert.NotContains(t, pipeline.postErr[0].Error.Message, "stream_idle_timeout_in_seconds", "the relay setting would not help")
+}
+
+// Editing a start route keeps its running jobs: they are filed under their status check, so the
+// caller's check stays free and a retried start opens no second job. Editing the status check
+// itself is a different call, so it names a different job.
+func TestStartRouteEditKeepsRunningJobs(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "POST" {
+			_, _ = io.WriteString(w, `{"id":"j-1"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"status":"RUNNING"}`)
+	}))
+	defer upstream.Close()
+	job := &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"DONE"}, Poll: schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}}
+	cfg := bearerConfig("jobs", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/start", Job: job},
+		{Method: "GET", Path: "/**", Billable: schemas.Ptr(true), Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.5)}},
+	}
+	m, _ := newTestManager(t, cfg)
+	started := map[string]bool{}
+	m.SetJobLookup(func(_ context.Context, relayName, routeKey, jobID string) (bool, error) {
+		return started[relayName+"|"+routeKey+"|"+jobID], nil
+	})
+	start := func(path string, headers map[string]string) *schemas.RelayJobHandle {
+		t.Helper()
+		res, bErr := m.Serve(testCtx(t), Request{Endpoint: "jobs", Method: "POST", Path: path, Headers: headers, Body: []byte(`{}`)})
+		require.Nil(t, bErr)
+		require.NotNil(t, res.Response.Usage)
+		require.NotNil(t, res.Response.Usage.Job)
+		return res.Response.Usage.Job
+	}
+	check := func() *Result {
+		t.Helper()
+		res, bErr := m.Serve(testCtx(t), Request{Endpoint: "jobs", Method: "GET", Path: "/jobs/j-1", Headers: map[string]string{}})
+		require.Nil(t, bErr)
+		return res
+	}
+	handle := start("/start", nil)
+	started["jobs|"+handle.RouteKey+"|j-1"] = true
+	require.NotNil(t, check().Response.JobStatusCheck, "free before the edit")
+
+	// A new start path, a header matcher and a price: none of them is the status check.
+	edited := *cfg
+	edited.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/v2/start", Headers: map[string]string{"X-Op": "start*"}, Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.2)}, Job: job},
+		cfg.Routes[1],
+	}
+	require.NoError(t, m.Upsert(&edited))
+	res := check()
+	require.NotNil(t, res.Response.JobStatusCheck, "the running job's status check stays free after the start route is edited")
+	assert.Nil(t, res.Response.Usage, "and the priced catch-all does not charge it")
+	assert.Equal(t, handle.RouteKey, start("/v2/start", map[string]string{"x-op": "start"}).RouteKey, "a retried start files the job where it already is, so it is not opened twice")
+
+	// Editing the status check makes it another call, so it names another job.
+	pollEdited := edited
+	pollEdited.Routes = []schemas.RelayRouteConfig{edited.Routes[0], edited.Routes[1]}
+	newJob := *job
+	newJob.Poll = schemas.RelayJobPoll{Method: "GET", Path: "/v2/jobs/{{job.id}}"}
+	pollEdited.Routes[0].Job = &newJob
+	require.NoError(t, m.Upsert(&pollEdited))
+	assert.NotEqual(t, handle.RouteKey, start("/v2/start", map[string]string{"x-op": "start"}).RouteKey)
+}
+
+// Routes sharing one status check read the same jobs, so a check names each job once.
+func TestStatusCheckSharedByRoutesIsLookedUpOnce(t *testing.T) {
+	poll := schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}
+	job := func(price float64) *schemas.RelayJobConfig {
+		return &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"DONE"}, Poll: poll,
+			Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(price)}}
+	}
+	cfg := bearerConfig("jobs", "https://jobs.example.com")
+	cfg.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/a", Job: job(0.1)}, {Method: "POST", Path: "/b", Job: job(0.2)}, {Method: "POST", Path: "/c", Job: job(0.3)},
+	}
+	e, err := newEndpoint(cfg, nil)
+	require.NoError(t, err)
+	candidates := e.statusCheckCandidates(context.Background(), &schemas.BifrostRelayRequest{Method: "GET", Path: "/jobs/j-1", Headers: map[string]string{}})
+	require.Len(t, candidates, 1)
+	assert.Equal(t, JobPollKey(poll), candidates[0].match.RouteKey)
+	assert.Equal(t, "j-1", candidates[0].id)
+}
+
+type identityStub struct {
+	user     *schemas.UserRef
+	vk       *schemas.EntityRef
+	teams    []schemas.EntityRef
+	project  *schemas.EntityRef
+	presents bool
+}
+
+func (i *identityStub) Credential() schemas.Credential     { return schemas.Credential{} }
+func (i *identityStub) Presented() bool                    { return i.presents }
+func (i *identityStub) User() *schemas.UserRef             { return i.user }
+func (i *identityStub) VirtualKey() *schemas.EntityRef     { return i.vk }
+func (i *identityStub) Teams() []schemas.EntityRef         { return i.teams }
+func (i *identityStub) Customers() []schemas.EntityRef     { return nil }
+func (i *identityStub) BusinessUnits() []schemas.EntityRef { return nil }
+func (i *identityStub) Project() *schemas.EntityRef        { return i.project }
+
+type grantStub struct{ identity schemas.Identity }
+
+func (g *grantStub) Identity() schemas.Identity          { return g.identity }
+func (g *grantStub) Access() schemas.Access              { return nil }
+func (g *grantStub) Limits() schemas.Limits              { return nil }
+func (g *grantStub) SetIdentity(i schemas.Identity) bool { g.identity = i; return true }
+func (g *grantStub) SetAccess(schemas.Access) bool       { return false }
+func (g *grantStub) SetLimits(schemas.Limits) bool       { return false }
+
+// A relay span carries the same SpanEnrichment an LLM span does for the same key: the user, the
+// app, and every team, not only the first one or none.
+func TestRelaySpanCarriesTheLLMSpanEnrichment(t *testing.T) {
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-cli/1.0.0")
+	ctx.SetGrant(&grantStub{identity: &identityStub{
+		user:    &schemas.UserRef{ID: "u-1", Name: "Ada", Email: "ada@example.com"},
+		vk:      &schemas.EntityRef{ID: "vk-1", Name: "team-key"},
+		teams:   []schemas.EntityRef{{ID: "t-1", Name: "Search"}, {ID: "t-2", Name: "Docs"}},
+		project: &schemas.EntityRef{ID: "p-1", Name: "Atlas"},
+	}})
+	llm := schemas.SpanEnrichmentFromContext(ctx)
+
+	rec := &rawSpanRecorder{spanRecorder: newSpanRecorder(), span: &schemas.Span{}}
+	setRelayGovernanceSpanAttrs(rec, "relay", ctx)
+	e := rec.span.Enrichment
+	require.NotNil(t, e, "the span carries the typed dimensions, as an LLM span does")
+	assert.Equal(t, "u-1", e.UserID, "the user comes from the Grant")
+	assert.Equal(t, "Ada", e.UserName)
+	assert.Equal(t, "ada@example.com", e.UserEmail)
+	assert.Equal(t, llm.App, e.App)
+	assert.NotEmpty(t, e.App)
+	assert.Equal(t, "vk-1", e.VirtualKeyID)
+	assert.Equal(t, "t-1", e.TeamID, "the attributed team first")
+	assert.Equal(t, []string{"t-1", "t-2"}, e.TeamIDs, "and every team")
+	assert.Equal(t, []string{"Search", "Docs"}, e.TeamNames)
+	assert.Equal(t, "Atlas", e.ProjectName)
+	assert.Equal(t, "u-1", rec.span.Attributes[schemas.AttrBifrostUserID], "the attribute keys connectors read are written too")
+	assert.Equal(t, []string{"t-1", "t-2"}, rec.span.Attributes[schemas.AttrBifrostTeamIDs])
+}
+
+// BenchmarkRelaySpanEnrichment measures building a relay span's SpanEnrichment once per call: no
+// Grant, and a Grant naming a user and three teams.
+func BenchmarkRelaySpanEnrichment(b *testing.B) {
+	plain := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	granted := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	granted.SetGrant(&grantStub{identity: &identityStub{
+		user:  &schemas.UserRef{ID: "u-1", Name: "Ada", Email: "ada@example.com"},
+		vk:    &schemas.EntityRef{ID: "vk-1", Name: "team-key"},
+		teams: []schemas.EntityRef{{ID: "t-1", Name: "A"}, {ID: "t-2", Name: "B"}, {ID: "t-3", Name: "C"}},
+	}})
+	for _, c := range []struct {
+		name string
+		ctx  *schemas.BifrostContext
+	}{{"no grant", plain}, {"grant with 3 teams", granted}} {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = relaySpanEnrichment(c.ctx)
+			}
+		})
+	}
+}
+
+// The relay span carries its SpanEnrichment from its start, as an LLM span does, so nothing writes it
+// at the end, when a streamed call's span closes on another goroutine alongside export.
+func TestRelaySpanCarriesItsEnrichmentFromItsStart(t *testing.T) {
+	ctx := testCtx(t)
+	ctx.SetGrant(&grantStub{identity: &identityStub{vk: &schemas.EntityRef{ID: "vk-1", Name: "team-key"}}})
+	rec := &rawSpanRecorder{spanRecorder: newSpanRecorder(), span: &schemas.Span{}}
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(rec))
+	span := startRelaySpan(ctx, nil, &schemas.BifrostRelayRequest{RelayName: "r", Method: "POST"}, time.Now())
+	require.NotNil(t, span)
+	require.NotNil(t, rec.span.Enrichment, "set when the span starts, before the call ends")
+	assert.Equal(t, "vk-1", rec.span.Enrichment.VirtualKeyID)
+	before := rec.span.Enrichment
+	span.end(ctx, nil, nil)
+	assert.Same(t, before, rec.span.Enrichment, "the end does not write it again")
 }

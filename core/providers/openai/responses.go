@@ -1093,16 +1093,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			optsCopy.TTL = nil
 			req.PromptCacheOptions = &optsCopy
 		}
-		// OpenRouter Responses accepts only mode "explicit"; "implicit" is the default, so omit it.
-		if opts := req.PromptCacheOptions; opts != nil && opts.Mode != nil && *opts.Mode == "implicit" &&
+		// OpenRouter Responses accepts prompt_cache_options only with mode "explicit" and 400s
+		// on anything else; implicit caching is its default without the object, so drop it.
+		if opts := req.PromptCacheOptions; opts != nil && (opts.Mode == nil || *opts.Mode != "explicit") &&
 			cachePromptProvider == schemas.OpenRouter {
-			if opts.TTL == nil {
-				req.PromptCacheOptions = nil
-			} else {
-				optsCopy := *opts
-				optsCopy.Mode = nil
-				req.PromptCacheOptions = &optsCopy
-			}
+			req.PromptCacheOptions = nil
+		}
+		if req.BackgroundOptions != nil && caps.FieldUnsupported(schemas.FieldBackgroundOptions, false) {
+			req.BackgroundOptions = nil
 		}
 		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
 		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
@@ -1281,13 +1279,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// strict-pydantic upstreams (e.g. sglang) reject the explicit null outright.
 	// We must copy the Tools slice since it shares the backing array with bifrostReq.Params.Tools.
 	if len(req.Tools) > 0 {
+		flattenRoot := !caps.SupportsRootSchemaComposition(schemas.ModelSupportsRootSchemaComposition(capModel))
 		normalizedTools := normalizeAsyncTools(req.Tools, asyncToolsSupported)
 		for i, tool := range normalizedTools {
 			if tool.Type == schemas.ResponsesToolTypeFunction &&
 				tool.ResponsesToolFunction != nil {
 				funcCopy := *tool.ResponsesToolFunction
 				if funcCopy.Parameters != nil {
-					funcCopy.Parameters = funcCopy.Parameters.Normalized()
+					funcCopy.Parameters = schemas.FlattenRootCompositionIf(funcCopy.Parameters, flattenRoot).Normalized()
 				}
 				if funcCopy.Strict == nil {
 					funcCopy.Strict = new(false)
@@ -1318,6 +1317,15 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagement {
 		req.ContextManagement = nil
 		delete(req.ExtraParams, "context_management")
+	}
+
+	// access_programs (Daybreak) is defined only by OpenAI's own Responses API; the other
+	// backends sharing this converter would reject or ignore it. Unlike the feature table
+	// above this is default-closed, and keyed on the base provider so a custom provider
+	// fronting OpenAI keeps it. req holds a copy of the params, so the caller's value
+	// survives for a fallback to OpenAI.
+	if req.AccessPrograms != nil && schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) != schemas.OpenAI {
+		req.AccessPrograms = nil
 	}
 
 	return req

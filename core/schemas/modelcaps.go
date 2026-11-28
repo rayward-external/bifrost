@@ -144,6 +144,7 @@ const (
 	FieldPromptCacheKey       = "prompt_cache_key"
 	FieldPromptCacheRetention = "prompt_cache_retention"
 	FieldPromptCacheOptions   = "prompt_cache_options"
+	FieldBackgroundOptions    = "background_options"
 	FieldVerbosity            = "verbosity"
 	FieldStore                = "store"
 	FieldWebSearchOptions     = "web_search_options"
@@ -312,6 +313,16 @@ func (c ModelCaps) SupportsAsyncTools(fallback bool) bool {
 func (c ModelCaps) SupportsCustomTools(fallback bool) bool {
 	if c.record != nil && c.record.SupportsCustomTools != nil {
 		return *c.record.SupportsCustomTools
+	}
+	return fallback
+}
+
+// SupportsRootSchemaComposition reports whether the model accepts a root-level
+// oneOf/anyOf/allOf in function parameters in every tool-choice mode. Models that do
+// not get it flattened.
+func (c ModelCaps) SupportsRootSchemaComposition(fallback bool) bool {
+	if c.record != nil && c.record.SupportsRootSchemaComposition != nil {
+		return *c.record.SupportsRootSchemaComposition
 	}
 	return fallback
 }

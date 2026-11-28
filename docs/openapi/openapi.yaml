@@ -891,6 +891,8 @@ paths:
   # MCP — per-user sessions (OAuth tokens + headers credentials + pending flows)
   /api/mcp/sessions:
     $ref: "./paths/management/mcp.yaml#/sessions"
+  /api/mcp/sessions/connect:
+    $ref: "./paths/management/mcp.yaml#/session-connect"
   /api/mcp/sessions/{id}:
     $ref: "./paths/management/mcp.yaml#/session-by-id"
   /api/mcp/sessions/{id}/reauth:
@@ -1992,6 +1994,8 @@ components:
       $ref: "./schemas/inference/text.yaml#/TextCompletionResponse"
 
     # ==================== Responses API ====================
+    AccessPrograms:
+      $ref: "./schemas/inference/responses.yaml#/AccessPrograms"
     ContextManagement:
       $ref: "./schemas/inference/responses.yaml#/ContextManagement"
     ResponsesRequest:

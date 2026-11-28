@@ -2120,6 +2120,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.7.0",
               "changelogs/v2.6.0",
               "changelogs/v2.5.1",
               "changelogs/v2.5.0",
@@ -2363,6 +2364,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.7.0",
               "changelogs/ent-v2.6.0",
               "changelogs/ent-v2.5.2",
               "changelogs/ent-v2.5.1",
